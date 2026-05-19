@@ -109,7 +109,7 @@ The MVP must ingest and expose:
 - Kubernetes metrics
 - Kubernetes logs
 - Netflow or Cilium Hubble flow data
-- Tracing data from Envoy and OTLP sources
+- Tracing data from Envoy
 - Alert events from ElastAlert2
 
 Success condition:
