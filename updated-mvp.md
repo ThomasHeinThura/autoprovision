@@ -35,9 +35,10 @@ The MVP is successful when the team can:
 
 - 1 jump host for Python Web UI, Ansible, and Omni
 - 1 Docker VM for Dokploy-managed services
+- Docker VM uses 2 TB local storage for active platform data
 - 3 Talos control plane nodes
 - 5 Talos worker nodes
-- External NAS or NFS for snapshots and backups
+- External NAS or NFS mounted for snapshots, backups, and long-term archive retention
 - External SQL Server for WSO2 data services
 
 ## Deployment Strategy
@@ -77,9 +78,10 @@ Use Omni to create Talos clusters and use Ansible plus ArgoCD to apply Kubernete
 
 - Jump host with Python Web UI, Ansible, ansible-runner, and Omni
 - Docker host with Dokploy and reverse proxy
+- Docker host with 2 TB local storage for active Elasticsearch and platform workloads
 - GitLab CE with registry and runner
 - Talos cluster with Cilium networking
-- External NFS mounted for backups and Elasticsearch snapshots
+- External NFS or NAS mounted for backups, Elasticsearch snapshots, and archive tiers
 
 ### 2. Docker Services
 
@@ -99,8 +101,8 @@ Use Omni to create Talos clusters and use Ansible plus ArgoCD to apply Kubernete
 - Envoy Gateway
 - OpenTelemetry Collector
 - ArgoCD
-- WSO2 API Manager
-- WSO2 Identity Server
+- WSO2 API Manager from Kubernetes YAML stored in GitLab
+- WSO2 Identity Server from Kubernetes YAML stored in GitLab
 
 ### 4. Observability
 
@@ -112,14 +114,24 @@ The MVP must ingest and expose:
 - Tracing data from Envoy
 - Alert events from ElastAlert2
 
+Retention policy required for the MVP:
+
+- Tracing kept 7 days in hot Elasticsearch, then archived to external NFS or NAS for 2 to 3 years
+- Basic application and platform logs kept 1 year, then archived
+- WSO2 logs from Logstash kept 10 years
+- OpenTelemetry metrics kept 1 to 2 years
+- OpenTelemetry container logs kept 1 year
+
 Success condition:
 
 - Data is searchable in Elasticsearch
 - Dashboards are visible in Kibana
 - At least one alert flow is verified end to end
+- Lifecycle and archive policies are configured before migration starts
 
 ### 5. Migration
 
+- Tracing lifecycle and retention policies configured before any migration step
 - Elasticsearch migration from the old 8.14 environment to 9.1.4 using snapshot and restore
 - Validation for index compatibility and reindex needs
 - WSO2 API Manager migration into the new Kubernetes deployment
@@ -153,7 +165,7 @@ The web UI is not a full platform product. It is an operations console for repea
 Complete in the lab before production execution:
 
 1. Docker compose repositories
-2. Helm values and Kubernetes manifests
+2. Helm values and Kubernetes manifests, including WSO2 APIM and WSO2 IS YAML
 3. Ansible inventory, roles, and playbooks
 4. Python Web UI
 5. Lab validation for each deployment phase
@@ -168,8 +180,9 @@ Complete in the lab before production execution:
 6. Deploy Docker services from Git
 7. Create Talos cluster
 8. Deploy Kubernetes platform services
-9. Deploy WSO2 services
-10. Run data migration and final validation
+9. Deploy WSO2 services from GitLab-managed Kubernetes YAML
+10. Configure tracing, logs, metrics, and archive lifecycle policies
+11. Run data migration and final validation
 
 ## Definition of Done
 
@@ -180,8 +193,8 @@ The MVP is complete when all of the following are true:
 3. Dokploy deploys Docker workloads from GitLab successfully.
 4. Talos cluster is running and reachable.
 5. WSO2 APIM and WSO2 IS are deployed and connected to SQL Server.
-6. Elasticsearch, Kibana, and alerting are functional.
-7. Backup and snapshot paths are mounted and tested.
+6. Elasticsearch, Kibana, alerting, and lifecycle policies are functional.
+7. Backup, snapshot, and long-term archive paths are mounted and tested.
 8. Migration steps are documented and at least one dry run is validated in the lab.
 
 ## Out of Scope for MVP

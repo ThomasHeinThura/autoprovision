@@ -29,13 +29,13 @@ The lab environment is intended for development, integration testing, and migrat
 | VM-2 | Talos worker        |    8 | 24 GB | 100 GB | Worker node for Kubernetes workloads                  |
 | VM-3 | Talos worker        |    8 | 24 GB | 100 GB | Worker node for Kubernetes workloads                  |
 | VM-4 | Jump host           |    2 |  4 GB |  50 GB | Runs Python Web UI, Ansible, ansible-runner, and Omni |
-| VM-5 | Docker platform     |   12 | 32 GB | 200 GB | Runs Dokploy-managed Docker services                  |
+| VM-5 | Docker platform     |   12 | 32 GB |   2 TB | Runs Dokploy-managed Docker services with external archive storage |
 
 ### Lab Totals
 
 - 32 vCPU
 - 88 GB RAM
-- 500 GB disk
+- 2.3 TB disk
 
 ## Lab VM Requirements
 
@@ -47,13 +47,13 @@ The lab environment is intended for development, integration testing, and migrat
 | VM-2 | Talos worker        |    8 | 32 GB | 500 GB | Worker node for Kubernetes workloads                  |
 | VM-3 | Talos worker        |    8 | 32 GB | 500 GB | Worker node for Kubernetes workloads                  |
 | VM-4 | Jump host           |    4 |  8 GB | 100 GB | Runs Python Web UI, Ansible, ansible-runner, and Omni |
-| VM-5 | Docker platform     |   24 | 96 GB |   1 TB | Runs Dokploy-managed Docker services                  |
+| VM-5 | Docker platform     |   24 | 96 GB |   2 TB | Runs Dokploy-managed Docker services with external archive storage |
 
 ### Lab Totals
 
 - 48 vCPU
 - 176 GB RAM
-- 2.3 TB disk
+- 3.3 TB disk
 
 ## Production VM Requirements
 
@@ -70,13 +70,13 @@ The production environment is intended to support the full MVP rollout and opera
 | VM-7  | Talos worker        |    8 | 32 GB | 500 GB | Kubernetes workloads                                  |
 | VM-8  | Talos worker        |    8 | 32 GB | 500 GB | Kubernetes workloads                                  |
 | VM-9  | Jump host           |    4 |  8 GB | 100 GB | Runs Python Web UI, Ansible, ansible-runner, and Omni |
-| VM-10 | Docker platform     |   24 | 96 GB |   1 TB | Runs Dokploy-managed Docker services                  |
+| VM-10 | Docker platform     |   24 | 96 GB |   2 TB | Runs Dokploy-managed Docker services with external archive storage |
 
 ### Production Totals
 
 - 80 vCPU
 - 280 GB RAM
-- 4.2 TB disk
+- 5.2 TB disk
 
 ## Docker Platform Capacity
 
@@ -97,18 +97,22 @@ The Docker platform VM hosts these services:
 - Dokploy
 - Traefik or equivalent reverse proxy
 
+It also hosts the active hot storage tier for short-retention traces, logs, and metrics before archive movement to external storage.
+
 ### Recommended Docker Host Baseline
 
 - 24 vCPU
 - 96 GB RAM
-- 1 TB local SSD storage
-- NFS mount available for snapshots and backups
+- 2 TB local SSD storage
+- External NFS or NAS mount available for snapshots, backups, and long-term archive retention
 
 ### Why this sizing is needed
 
 - Elasticsearch requires the largest memory share and local disk performance.
 - GitLab and SonarQube both need predictable memory and disk I/O.
 - Consolidating Docker services onto one VM simplifies MVP operations, but only if enough headroom is reserved.
+- Trace data stays hot in Elasticsearch for 7 days, then needs to move to external storage for 2 to 3 years.
+- Long log and metrics retention requires external archive storage beyond the Docker VM local disk.
 
 ## Jump Host Requirements
 
@@ -151,8 +155,8 @@ The jump host is the control node for provisioning and operations.
 - Envoy Gateway
 - OpenTelemetry Collector
 - ArgoCD
-- WSO2 API Manager
-- WSO2 Identity Server
+- WSO2 API Manager from GitLab-managed Kubernetes YAML
+- WSO2 Identity Server from GitLab-managed Kubernetes YAML
 
 ## External Infrastructure Requirements
 
@@ -161,10 +165,20 @@ These are not hosted in the MVP VM count, but they are mandatory dependencies.
 | Dependency      | Requirement                       | Purpose                                                |
 | --------------- | --------------------------------- | ------------------------------------------------------ |
 | SQL Server      | Reachable from Kubernetes nodes   | WSO2 APIM and WSO2 IS databases                        |
-| NAS or NFS      | Reachable from Docker platform VM | Elasticsearch snapshots and backup storage             |
+| NAS or NFS      | Reachable from Docker platform VM | Elasticsearch snapshots, backups, and long-term archive retention |
 | DNS             | Public or internal records ready  | Service hostnames and certificate issuance             |
 | SMTP relay path | Outbound access allowed           | Notification and mail testing                          |
 | Internet egress | Controlled outbound access        | Container pulls, package install, certificate issuance |
+
+## Retention Requirements
+
+| Data Type | Hot Retention | Archive Retention | Archive Location |
+| --- | --- | --- | --- |
+| Tracing | 7 days in Elasticsearch | 2 to 3 years | External NFS or NAS |
+| Basic platform and application logs | 1 year | Archive after 1 year | External NFS or NAS |
+| WSO2 logs from Logstash | Active search as needed | 10 years | External NFS or NAS |
+| OpenTelemetry metrics | Searchable retention based on capacity | 1 to 2 years | External NFS or NAS |
+| OpenTelemetry container logs | 1 year | Archive after 1 year if required | External NFS or NAS |
 
 ## Network Requirements
 
@@ -178,8 +192,8 @@ These are not hosted in the MVP VM count, but they are mandatory dependencies.
 
 1. Use SSD-backed storage for the Docker platform local disk.
 2. Keep Elasticsearch data on local fast disk, not directly on NFS.
-3. Use NFS for snapshots, backups, and cold storage paths only.
-4. Ensure enough growth room for GitLab repositories, container registry images, and Elasticsearch retention.
+3. Use external NFS or NAS for snapshots, backups, and archive paths.
+4. Ensure enough growth room for GitLab repositories, container registry images, trace archives, long-term log retention, and metrics retention.
 
 ## Recommendation
 
