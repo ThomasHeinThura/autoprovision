@@ -13,7 +13,7 @@ It separates requirements for:
 ## Core Assumptions
 
 1. Talos nodes are dedicated to Kubernetes only.
-2. The Docker platform runs on a single large VM managed by Dokploy.
+2. The Docker platform runs on a single large VM managed by Dockhand.
 3. The jump host is separate from the Docker platform.
 4. External SQL Server is provided by the customer.
 5. External NAS or NFS storage is provided by the customer.
@@ -28,8 +28,8 @@ The lab environment is intended for development, integration testing, and migrat
 | VM-1 | Talos control plane |    2 |  4 GB |  50 GB | Single control plane for lab validation only          |
 | VM-2 | Talos worker        |    8 | 24 GB | 100 GB | Worker node for Kubernetes workloads                  |
 | VM-3 | Talos worker        |    8 | 24 GB | 100 GB | Worker node for Kubernetes workloads                  |
-| VM-4 | Jump host           |    2 |  4 GB |  50 GB | Runs Python Web UI, Ansible, ansible-runner, and Omni |
-| VM-5 | Docker platform     |   12 | 32 GB |   2 TB | Runs Dokploy-managed Docker services with external archive storage |
+| VM-4 | Jump host           |    2 |  4 GB |  50 GB | Runs Python Web UI, Ansible, ansible-runner, and Headlamp |
+| VM-5 | Docker platform     |   12 | 32 GB |   2 TB | Runs Dockhand-managed Docker services with external archive storage |
 
 ### Lab Totals
 
@@ -46,8 +46,8 @@ The lab environment is intended for development, integration testing, and migrat
 | VM-1 | Talos control plane |    4 |  8 GB | 200 GB | Single control plane for lab validation only          |
 | VM-2 | Talos worker        |    8 | 32 GB | 500 GB | Worker node for Kubernetes workloads                  |
 | VM-3 | Talos worker        |    8 | 32 GB | 500 GB | Worker node for Kubernetes workloads                  |
-| VM-4 | Jump host           |    4 |  8 GB | 100 GB | Runs Python Web UI, Ansible, ansible-runner, and Omni |
-| VM-5 | Docker platform     |   24 | 96 GB |   2 TB | Runs Dokploy-managed Docker services with external archive storage |
+| VM-4 | Jump host           |    4 |  8 GB | 100 GB | Runs Python Web UI, Ansible, ansible-runner, and Headlamp |
+| VM-5 | Docker platform     |   24 | 96 GB |   2 TB | Runs Dockhand-managed Docker services with external archive storage |
 
 ### Lab Totals
 
@@ -69,8 +69,8 @@ The production environment is intended to support the full MVP rollout and opera
 | VM-6  | Talos worker        |    8 | 32 GB | 500 GB | Kubernetes workloads                                  |
 | VM-7  | Talos worker        |    8 | 32 GB | 500 GB | Kubernetes workloads                                  |
 | VM-8  | Talos worker        |    8 | 32 GB | 500 GB | Kubernetes workloads                                  |
-| VM-9  | Jump host           |    4 |  8 GB | 100 GB | Runs Python Web UI, Ansible, ansible-runner, and Omni |
-| VM-10 | Docker platform     |   24 | 96 GB |   2 TB | Runs Dokploy-managed Docker services with external archive storage |
+| VM-9  | Jump host           |    4 |  8 GB | 100 GB | Runs Python Web UI, Ansible, ansible-runner, and Headlamp |
+| VM-10 | Docker platform     |   24 | 96 GB |   2 TB | Runs Dockhand-managed Docker services with external archive storage |
 
 ### Production Totals
 
@@ -91,11 +91,10 @@ The Docker platform VM hosts these services:
 - GitLab Container Registry
 - GitLab Runner
 - SonarQube
-- PostgreSQL for SonarQube
-- Stalwart SMTP
+- Shared PostgreSQL for Dockhand, GitLab, and SonarQube
 - ElastAlert2
-- Dokploy
-- Traefik or equivalent reverse proxy
+- Dockhand
+- Traefik reverse proxy exposed on port 443
 
 It also hosts the active hot storage tier for short-retention traces, logs, and metrics before archive movement to external storage.
 
@@ -130,7 +129,7 @@ The jump host is the control node for provisioning and operations.
 - FastAPI application runtime
 - Ansible
 - ansible-runner
-- Omni CLI or Omni management components
+- Headlamp CLI or Headlamp management components
 - SSH keys and inventory data
 
 ## Kubernetes Node Requirements
@@ -167,8 +166,12 @@ These are not hosted in the MVP VM count, but they are mandatory dependencies.
 | SQL Server      | Reachable from Kubernetes nodes   | WSO2 APIM and WSO2 IS databases                        |
 | NAS or NFS      | Reachable from Docker platform VM | Elasticsearch snapshots, backups, and long-term archive retention |
 | DNS             | Public or internal records ready  | Service hostnames and certificate issuance             |
-| SMTP relay path | Outbound access allowed           | Notification and mail testing                          |
 | Internet egress | Controlled outbound access        | Container pulls, package install, certificate issuance |
+
+## Docker Network and Ingress Requirements
+
+1. All Docker platform services must use one shared Docker network.
+2. External HTTPS exposure for Docker services must be through Traefik on port 443.
 
 ## Retention Requirements
 
@@ -183,7 +186,7 @@ These are not hosted in the MVP VM count, but they are mandatory dependencies.
 ## Network Requirements
 
 1. Jump host must SSH to the Docker platform and any Linux management targets.
-2. Jump host must reach Omni and Talos management endpoints.
+2. Jump host must reach Headlamp and Talos management endpoints.
 3. Kubernetes nodes must reach the Docker platform services where integrations exist.
 4. Docker platform must reach NFS storage and required external endpoints.
 5. Public or internal DNS must resolve all required service names.

@@ -21,26 +21,31 @@ The cleanest model is:
 2. Use the Python web UI to collect environment data
 3. Install the minimum direct dependencies first
 4. Create GitLab repositories and push deployment sources there
-5. Let Dokploy deploy as many Docker services as possible from GitLab
+5. Let Dockhand deploy as many Docker services as possible from GitLab
 6. Keep only the bootstrap-critical services outside the GitOps path
 
 ### Direct install first
 
 These services should be installed directly by Ansible or the Python web UI during bootstrap:
 
-- Dokploy
+- Dockhand
 - GitLab CE
-- SMTP
+- Shared PostgreSQL for Dockhand, GitLab, and SonarQube
 
 Reason:
 
 - GitLab must exist before other services can be deployed from Git
-- SMTP is simple and can be provisioned directly as part of the base platform
-- Dokploy must exist before Dokploy can pull anything from GitLab
+- PostgreSQL should be provisioned directly as the shared database backend for Dockhand, GitLab, and SonarQube
+- Dockhand must exist before Dockhand can pull anything from GitLab
+
+### Network and ingress baseline
+
+- Use one shared Docker network for Dockhand, GitLab, SonarQube, PostgreSQL, and related services.
+- Expose external HTTPS only through Traefik on port 443.
 
 ### GitOps after bootstrap
 
-After GitLab and Dokploy are working, deploy these through Git repositories whenever possible:
+After GitLab and Dockhand are working, deploy these through Git repositories whenever possible:
 
 - ELK stack
 - SonarQube
@@ -154,11 +159,11 @@ The home page should show service cards with current state.
 
 ### Suggested status cards
 
-- Omni status
+- Headlamp status
 - Docker host status
-- Dokploy status
+- Dockhand status
 - Traefik status
-- SMTP status
+- PostgreSQL status
 - GitLab status
 - GitLab Runner status
 - Elasticsearch status
@@ -189,7 +194,7 @@ Each card should show one of these states:
 
 ## Step 5: Click a Service and Provide Inputs
 
-When the operator clicks a service card such as Omni or Docker status, the UI should open a form.
+When the operator clicks a service card such as Headlamp or Docker status, the UI should open a form.
 
 ### Common form inputs
 
@@ -209,7 +214,7 @@ For Docker host setup:
 - Domain
 - Admin email
 
-For Omni or Talos:
+For Headlamp or Talos:
 
 - Control plane IPs
 - Worker IPs
@@ -268,7 +273,7 @@ Preferred options:
 1. Store non-secret variables in SQLite
 2. Store sensitive values encrypted at rest
 3. Generate `.env` files only when needed for a deployment run
-4. Pass secrets to Ansible or Dokploy at runtime
+4. Pass secrets to Ansible or Dockhand at runtime
 
 This gives the UI memory for updates without turning Git into a secret store.
 
@@ -286,10 +291,10 @@ The UI should guide the user through a fixed sequence.
 
 1. Install Docker host base packages
 2. Install Docker CE
-3. Install Dokploy
+3. Install Dockhand
 4. Install Traefik if managed separately
 5. Mount external NFS or NAS backup and archive storage
-6. Install SMTP directly
+6. Install PostgreSQL directly
 7. Install GitLab directly
 
 ### Phase C: Git-first setup
@@ -300,11 +305,11 @@ The UI should guide the user through a fixed sequence.
 3. Push Helm values or Kubernetes manifests to GitLab
 4. Push WSO2 APIM and WSO2 IS Kubernetes YAML to GitLab
 4. Push Ansible roles and infrastructure code to GitLab
-5. Connect Dokploy to GitLab
+5. Connect Dockhand to GitLab
 
 ### Phase D: Docker service deployment from Git
 
-Deploy as much as possible from GitLab through Dokploy:
+Deploy as much as possible from GitLab through Dockhand:
 
 1. ELK stack
 2. SonarQube
@@ -313,7 +318,7 @@ Deploy as much as possible from GitLab through Dokploy:
 
 ### Phase E: Kubernetes rollout
 
-1. Create Talos cluster through Omni
+1. Create Talos cluster through Headlamp
 2. Install cert-manager
 3. Install Envoy Gateway
 4. Install OpenTelemetry Collector
@@ -350,7 +355,7 @@ The lifecycle policy needs to be configured after base setup and before migratio
 - WSO2 logs are long-lived operational records and need extended retention
 - Metrics and container logs need separate retention policies from tracing
 
-## GitLab and Dokploy Flow
+## GitLab and Dockhand Flow
 
 The intended sequence should be:
 
@@ -359,9 +364,9 @@ The intended sequence should be:
 3. Let the Python web UI render or update the compose templates for the selected environment
 4. Push compose files there
 4. Push WSO2 Kubernetes YAML there
-4. Connect Dokploy to GitLab
-5. Create Dokploy projects from Git repositories
-6. Set runtime environment variables in Dokploy or through the API
+4. Connect Dockhand to GitLab
+5. Create Dockhand projects from Git repositories
+6. Set runtime environment variables in Dockhand or through the API
 7. Trigger deploy from Git source
 
 ### Important exception
@@ -370,12 +375,12 @@ GitLab itself cannot depend on GitLab for its first install.
 
 That is why GitLab must be deployed directly first, then become the source of truth for later deployments.
 
-## SMTP and GitLab Direct Deployment
+## PostgreSQL and GitLab Direct Deployment
 
 Your direction makes sense:
 
 - GitLab should be installed directly first
-- SMTP can be installed directly first
+- PostgreSQL can be installed directly first
 - Other services should move to Git-based deployment wherever practical
 
 This gives you a mostly GitOps model without creating a bootstrap deadlock.
@@ -435,9 +440,9 @@ It is reasonable for these to stay manual if needed:
 
 The web UI can still show them as prerequisites or checklists.
 
-## NFS Requirement for Dokploy Backups
+## NFS Requirement for Dockhand Backups
 
-Yes, you should request NFS or NAS storage for Dokploy-related backups.
+Yes, you should request NFS or NAS storage for Dockhand-related backups.
 
 Why it is needed:
 
@@ -445,7 +450,7 @@ Why it is needed:
 - Tracing archive for 2 to 3 years needs external storage
 - GitLab backups should not live only on the local Docker VM
 - PostgreSQL and application backups should survive host failure
-- Dokploy-managed volumes need a backup target outside the main VM
+- Dockhand-managed volumes need a backup target outside the main VM
 - Long-term logs and metrics retention should not consume only local Docker VM disk
 
 ### Minimum request to the customer
@@ -465,9 +470,9 @@ Why it is needed:
 5. Open http://<jump-host-ip>:3000/
 6. Enter environment, VM, and credential details
 7. Install Docker platform prerequisites
-8. Install GitLab and SMTP directly
+8. Install GitLab and PostgreSQL directly
 9. Create GitLab repos and push deployment code
-10. Connect Dokploy to GitLab
+10. Connect Dockhand to GitLab
 11. Deploy remaining Docker services from Git
 12. Build Talos cluster and Kubernetes services
 13. Run ELK and API migration tasks
@@ -481,7 +486,7 @@ This design is sound for an MVP.
 The main adjustment I would make is this:
 
 - Use direct deployment only for the bootstrap-critical services
-- Push everything else toward GitLab and Dokploy or GitLab and ArgoCD
+- Push everything else toward GitLab and Dockhand or GitLab and ArgoCD
 - Use SQLite as the operational memory for state and variables
 - Keep manual customer-owned infrastructure steps clearly separated
 

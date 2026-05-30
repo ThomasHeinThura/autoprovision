@@ -46,18 +46,18 @@ Do not mix Elasticsearch 9.1.4 with newer Elastic component versions such as 9.4
 | SonarQube with community branch plugin | 26.4.0.121862 | mc1arke/sonarqube-with-community-branch-plugin:26.4.0.121862-community | Keep plugin and SonarQube release aligned |
 | PostgreSQL for SonarQube | 17.10 | postgres:17.10 | Dedicated SonarQube backing database |
 
-## Mail
+## Shared Database
 
 | Component | Version | Docker Image | Support Notes |
 | --- | --- | --- | --- |
-| Stalwart SMTP | v0.16.5 | stalwartlabs/stalwart:v0.16.5 | Rolling release project |
+| PostgreSQL (shared for Dockhand, GitLab, SonarQube) | 17.10 | postgres:17.10 | Shared relational backend for core Docker services |
 
 ## Alerting and Deployment
 
 | Component | Version | Docker Image | Support Notes |
 | --- | --- | --- | --- |
 | ElastAlert2 | 2.29.0 | jertel/elastalert2:2.29.0 | Community-maintained |
-| Dokploy | v0.29.4 | dokploy/dokploy:v0.29.4 | Keep at or above the reviewed security-fixed release |
+| Dockhand | v0.29.4 | dockhand/dockhand:v0.29.4 | Keep at or above the reviewed security-fixed release |
 
 ## Networking and Ingress
 
@@ -66,11 +66,16 @@ Do not mix Elasticsearch 9.1.4 with newer Elastic component versions such as 9.4
 | Traefik | v3.7.1 | traefik:v3.7.1 | Use the current v3 line |
 | Envoy Gateway | v1.8.0 | docker.io/envoyproxy/gateway:v1.8.0 | Track its shorter support window |
 
+### Ingress and Network Rule
+
+1. Use one shared Docker network for Dockhand, GitLab, SonarQube, and PostgreSQL.
+2. Expose Docker platform HTTPS ingress through Traefik on port 443.
+
 ## Kubernetes Infrastructure
 
 | Component | Version | Helm or Image | Support Notes |
 | --- | --- | --- | --- |
-| Omni | v1.7.3 | ghcr.io/siderolabs/omni:v1.7.3 | Self-hosted control plane for Talos |
+| Headlamp | v1.7.3 | ghcr.io/siderolabs/headlamp:v1.7.3 | Self-hosted control plane for Talos |
 | cert-manager | v1.20.2 | jetstack/cert-manager v1.20.2 | Use the current supported release line |
 | ArgoCD | v3.4.2 | quay.io/argoproj/argocd:v3.4.2 | Avoid the already-EOL 3.1 line |
 
@@ -120,7 +125,7 @@ Before deployment sources are pushed to GitLab, the Python web UI must update th
 3. Render the final deployment-ready compose YAML
 4. Save or stage the rendered output in the working repository
 5. Push the updated compose files to the target GitLab repository
-6. Trigger Dokploy deployment from the GitLab source
+6. Trigger Dockhand deployment from the GitLab source
 
 ## Recommendation
 

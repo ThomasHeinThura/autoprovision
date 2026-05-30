@@ -17,7 +17,7 @@ The MVP should prove five things:
 The MVP is successful when the team can:
 
 1. Bootstrap a jump host, one Docker platform, and a Talos cluster.
-2. Deploy Docker workloads from GitLab through Dokploy.
+2. Deploy Docker workloads from GitLab through Dockhand.
 3. Deploy Kubernetes workloads through Ansible and ArgoCD.
 4. Observe logs, metrics, traces, and alerts in Elasticsearch and Kibana.
 5. Run the rollout from a Python web UI that captures inputs and executes Ansible playbooks.
@@ -26,15 +26,15 @@ The MVP is successful when the team can:
 
 ### Lab
 
-- 1 jump host for Python Web UI, Ansible, and Omni
-- 1 Docker VM for Dokploy-managed services
+- 1 jump host for Python Web UI, Ansible, and Headlamp
+- 1 Docker VM for Dockhand-managed services
 - 1 Talos control plane node
 - 2 Talos worker nodes
 
 ### Production
 
-- 1 jump host for Python Web UI, Ansible, and Omni
-- 1 Docker VM for Dokploy-managed services
+- 1 jump host for Python Web UI, Ansible, and Headlamp
+- 1 Docker VM for Dockhand-managed services
 - Docker VM uses 2 TB local storage for active platform data
 - 3 Talos control plane nodes
 - 5 Talos worker nodes
@@ -51,33 +51,33 @@ Ansible installs the base platform directly:
 
 1. Base OS prerequisites
 2. Docker CE
-3. Dokploy
+3. Dockhand
 4. GitLab CE and container registry
 5. GitLab Runner
 6. NFS mount and backup paths
 
-This avoids the bootstrap problem where Dokploy would otherwise depend on a GitLab instance that does not exist yet.
+This avoids the bootstrap problem where Dockhand would otherwise depend on a GitLab instance that does not exist yet.
 
 ### Phase B: GitOps for Docker
 
-After GitLab is available, Dokploy pulls compose projects from GitLab and manages Docker service deployments.
+After GitLab is available, Dockhand pulls compose projects from GitLab and manages Docker service deployments.
 
 Recommended pattern:
 
 - Keep compose files in GitLab
 - Keep secrets out of Git where possible
-- Prefer Dokploy-managed environment variables over committed `.env.production` files
+- Prefer Dockhand-managed environment variables over committed `.env.production` files
 
 ### Phase C: Kubernetes Rollout
 
-Use Omni to create Talos clusters and use Ansible plus ArgoCD to apply Kubernetes components in a controlled order.
+Use Headlamp to create Talos clusters and use Ansible plus ArgoCD to apply Kubernetes components in a controlled order.
 
 ## MVP Scope
 
 ### 1. Platform Foundation
 
-- Jump host with Python Web UI, Ansible, ansible-runner, and Omni
-- Docker host with Dokploy and reverse proxy
+- Jump host with Python Web UI, Ansible, ansible-runner, and Headlamp
+- Docker host with Dockhand and reverse proxy
 - Docker host with 2 TB local storage for active Elasticsearch and platform workloads
 - GitLab CE with registry and runner
 - Talos cluster with Cilium networking
@@ -92,8 +92,14 @@ Use Omni to create Talos clusters and use Ansible plus ArgoCD to apply Kubernete
 - GitLab CE and registry
 - GitLab Runner
 - SonarQube with PostgreSQL
-- Stalwart SMTP
+- Shared PostgreSQL for Dockhand, GitLab, and SonarQube
 - ElastAlert2
+- Traefik on port 443 for external HTTPS exposure
+
+### Docker Network Standard
+
+- Use one shared Docker network for Dockhand, GitLab, SonarQube, PostgreSQL, and supporting services.
+- Publish external HTTPS traffic through Traefik only on port 443.
 
 ### 3. Kubernetes Services
 
@@ -174,9 +180,9 @@ Complete in the lab before production execution:
 
 1. Prepare jump host
 2. Prepare Docker host
-3. Install Dokploy, GitLab, runner, and NFS integration
+3. Install Dockhand, GitLab, runner, and NFS integration
 4. Push deployment repositories to GitLab
-5. Connect Dokploy to GitLab
+5. Connect Dockhand to GitLab
 6. Deploy Docker services from Git
 7. Create Talos cluster
 8. Deploy Kubernetes platform services
@@ -190,7 +196,7 @@ The MVP is complete when all of the following are true:
 
 1. Jump host can trigger the deployment flow from the web UI.
 2. GitLab stores the compose, infrastructure, and Kubernetes deployment sources.
-3. Dokploy deploys Docker workloads from GitLab successfully.
+3. Dockhand deploys Docker workloads from GitLab successfully.
 4. Talos cluster is running and reachable.
 5. WSO2 APIM and WSO2 IS are deployed and connected to SQL Server.
 6. Elasticsearch, Kibana, alerting, and lifecycle policies are functional.
@@ -208,7 +214,7 @@ The MVP is complete when all of the following are true:
 
 If the team wants the shortest path to a credible MVP, build in this order:
 
-1. GitLab bootstrap and Dokploy connection
+1. GitLab bootstrap and Dockhand connection
 2. ELK stack deployment from Git
 3. Python Web UI execution flow
 4. Talos cluster creation
