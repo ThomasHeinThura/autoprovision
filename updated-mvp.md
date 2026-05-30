@@ -1,222 +1,302 @@
-# Updated MVP
+## Updated MVP
 
-## Objective
+### Objective
 
-Deliver a workable MVP for infrastructure automation and migration that can be prepared in the lab, repeated in production, and operated through a simple control plane.
+Deliver a workable MVP for infrastructure automation and migration that can be prepared in the lab, repeated in UAT and production, and operated through a simple control plane.
 
 The MVP should prove five things:
 
-1. Core infrastructure can be provisioned reliably.
-2. Docker services can be deployed through Git-based workflows.
-3. Kubernetes services can be deployed in a controlled sequence.
+1. Core infrastructure can be provisioned reliably from a single jump host.
+2. Docker services can be deployed once via Ansible in a fixed sequence.
+3. Kubernetes services can be deployed in a controlled sequence using talosctl and ArgoCD.
 4. Observability and migration paths are functional.
-5. Operations can be triggered from a lightweight Python web UI.
+5. Operations can be triggered and monitored from a lightweight Python web UI.
 
-## Target Outcome
+***
+
+### Target Outcome
 
 The MVP is successful when the team can:
 
-1. Bootstrap a jump host, one Docker platform, and a Talos cluster.
-2. Deploy Docker workloads from GitLab through Dockhand.
-3. Deploy Kubernetes workloads through Ansible and ArgoCD.
+1. Bootstrap a jump host, one Docker platform VM, and a Talos cluster in one day per environment.
+2. Deploy all Docker workloads via Ansible from the jump host in a fixed sequence.
+3. Deploy Kubernetes workloads through talosctl, Helm, and ArgoCD.
 4. Observe logs, metrics, traces, and alerts in Elasticsearch and Kibana.
-5. Run the rollout from a Python web UI that captures inputs and executes Ansible playbooks.
+5. Run the entire rollout from a Python web UI that captures inputs and executes Ansible playbooks.
+6. Complete UAT and production deployments in parallel on the same day.
 
-## Environment Model
+***
 
-### Lab
+### Environment Model
 
-- 1 jump host for Python Web UI, Ansible, and Headlamp
-- 1 Docker VM for Dockhand-managed services
+#### Lab
+
+- 1 jump host — Python Web UI, Ansible, ansible-runner, talosctl
+- 1 Docker VM — one-time Ansible deployment of all Docker services
 - 1 Talos control plane node
 - 2 Talos worker nodes
 
-### Production
+#### UAT
 
-- 1 jump host for Python Web UI, Ansible, and Headlamp
-- 1 Docker VM for Dockhand-managed services
-- Docker VM uses 2 TB local storage for active platform data
+- 1 jump host — Python Web UI, Ansible, ansible-runner, talosctl
+- 1 Docker VM — one-time Ansible deployment of all Docker services
+- 1 Talos control plane node
+- 2 Talos worker nodes
+- External NAS or NFS mounted for snapshots and archive retention
+- External SQL Server for WSO2 data services
+
+#### Production
+
+- 1 jump host — Python Web UI, Ansible, ansible-runner, talosctl
+- 1 Docker VM — one-time Ansible deployment of all Docker services
+- Docker VM uses 2 TB local SSD storage for active platform data
 - 3 Talos control plane nodes
 - 5 Talos worker nodes
 - External NAS or NFS mounted for snapshots, backups, and long-term archive retention
 - External SQL Server for WSO2 data services
 
-## Deployment Strategy
+UAT and production deployments run in parallel on the same day. Customer VMs are pre-booted with Talos ISO and waiting for talosctl machine config apply.
 
-Use a two-phase model for Docker services:
+***
 
-### Phase A: Bootstrap
+### Deployment Strategy
 
-Ansible installs the base platform directly:
+#### Phase A: Jump Host Bootstrap
 
-1. Base OS prerequisites
-2. Docker CE
-3. Dockhand
-4. GitLab CE and container registry
-5. GitLab Runner
-6. NFS mount and backup paths
+Operator SSHs into the jump host and runs one script:
 
-This avoids the bootstrap problem where Dockhand would otherwise depend on a GitLab instance that does not exist yet.
+```bash
+ssh <username>@<jump-host-ip>
+git clone https://github.com/ThomasHeinThura/autoprovision.git
+cd autoprovision
+sh bootstrap-jumphost.sh
+```
 
-### Phase B: GitOps for Docker
+The script installs all required dependencies and starts the Python web UI as a background service.
 
-After GitLab is available, Dockhand pulls compose projects from GitLab and manages Docker service deployments.
+The operator then opens the web UI at `http://<jump-host-ip>:3000/` to continue.
 
-Recommended pattern:
+#### Phase B: Docker Platform Deployment
 
-- Keep compose files in GitLab
-- Keep secrets out of Git where possible
-- Prefer Dockhand-managed environment variables over committed `.env.production` files
+From the web UI, the operator provides the Docker VM IP, SSH username, and SSH password.
 
-### Phase C: Kubernetes Rollout
+Ansible deploys all Docker services to the Docker VM in this fixed sequence:
 
-Use Headlamp to create Talos clusters and use Ansible plus ArgoCD to apply Kubernetes components in a controlled order.
+1. Install Docker CE and base OS prerequisites.
+2. Install PostgreSQL (shared instance for GitLab, SonarQube, and platform state).
+3. Install Traefik with CORS enabled and HTTPS configuration on port 443.
+4. Install Dockhand (Docker container management and resource monitoring UI).
+5. Install GitLab CE, GitLab Runner, and GitLab Container Registry — using `https://github.com/ThomasHeinThura/gitlab-compose`.
+6. Install SonarQube.
+7. Install ELK stack — using `https://github.com/deviantony/docker-elk` as the stable base compose.
 
-## MVP Scope
+Each step is a separate Ansible playbook triggered from the web UI. The UI shows live log streaming and updates the service card status on completion.
 
-### 1. Platform Foundation
+No GitOps for Docker. All Docker services are deployed once via Ansible. Dockhand is used for container management and resource monitoring only, not for GitOps orchestration.
 
-- Jump host with Python Web UI, Ansible, ansible-runner, and Headlamp
-- Docker host with Dockhand and reverse proxy
-- Docker host with 2 TB local storage for active Elasticsearch and platform workloads
-- GitLab CE with registry and runner
-- Talos cluster with Cilium networking
-- External NFS or NAS mounted for backups, Elasticsearch snapshots, and archive tiers
+#### Phase C: Talos Cluster and Kubernetes Rollout
 
-### 2. Docker Services
+From the web UI, the operator provides control plane IPs, worker IPs, and cluster name.
 
-- Elasticsearch
-- Logstash
-- Kibana
-- Fleet Server and APM
-- GitLab CE and registry
-- GitLab Runner
-- SonarQube with PostgreSQL
-- Shared PostgreSQL for Dockhand, GitLab, and SonarQube
-- ElastAlert2
-- Traefik on port 443 for external HTTPS exposure
+Talos VMs are pre-booted with the Talos ISO by the customer. The jump host applies machine configs using talosctl.
 
-### Docker Network Standard
+Kubernetes components are deployed in this sequence:
 
-- Use one shared Docker network for Dockhand, GitLab, SonarQube, PostgreSQL, and supporting services.
-- Publish external HTTPS traffic through Traefik only on port 443.
+1. Apply Talos machine configs via talosctl from the jump host.
+2. Bootstrap the Talos cluster.
+3. Install Cilium CNI.
+4. Install cert-manager.
+5. Install Envoy Gateway.
+6. Install ArgoCD and expose the ArgoCD UI.
+7. Install Headlamp via Sidero-provided Helm chart.
+8. Install WSO2 API Manager from Kubernetes YAML stored in GitLab.
+9. Install WSO2 Identity Server from Kubernetes YAML stored in GitLab.
+10. Expose WSO2 APIM and WSO2 IS through Envoy Gateway.
+11. Install OpenTelemetry Collector.
+12. Run autoprovision Kubernetes manifests.
 
-### 3. Kubernetes Services
+UAT cluster and production cluster are created in parallel.
 
-- cert-manager
-- Envoy Gateway
-- OpenTelemetry Collector
-- ArgoCD
-- WSO2 API Manager from Kubernetes YAML stored in GitLab
-- WSO2 Identity Server from Kubernetes YAML stored in GitLab
+#### Phase D: Observability, Migration, and Validation
 
-### 4. Observability
+1. Configure Elasticsearch ILM lifecycle and retention policies.
+2. Configure log, metrics, and trace archive paths to external NFS or NAS.
+3. Run Elasticsearch migration from old 8.14 environment to 9.1.4 using snapshot and restore.
+4. Validate index compatibility and reindex where needed.
+5. Run WSO2 APIM credential migration into the new Kubernetes deployment.
+6. Create initial ElastAlert2 rule set.
+7. Validate end-to-end alert flow.
+8. Test out and sign off.
+
+***
+
+### MVP Scope
+
+#### 1. Platform Foundation
+
+- Jump host with Python Web UI, Ansible, ansible-runner, and talosctl.
+- Docker VM with all Docker services deployed once via Ansible.
+- Docker VM with 2 TB local SSD storage for active Elasticsearch and platform workloads.
+- GitLab CE with registry and runner.
+- Talos cluster with Cilium networking.
+- External NFS or NAS mounted for backups, Elasticsearch snapshots, and archive tiers.
+
+#### 2. Docker Services
+
+Deployed once via Ansible in fixed sequence. No ongoing GitOps management.
+
+- PostgreSQL (shared instance for GitLab, SonarQube, and platform state).
+- Traefik on port 443 for external HTTPS exposure.
+- Dockhand (container management and resource monitoring UI).
+- GitLab CE with container registry and GitLab Runner.
+- SonarQube.
+- Elasticsearch, Logstash, Kibana.
+- Fleet Server and APM Server (via Elastic Agent).
+- ElastAlert2.
+
+**Docker Network Standard**
+
+- Use one shared Docker network for all Docker platform services.
+- Publish all external HTTPS traffic through Traefik on port 443 only.
+
+#### 3. Kubernetes Services
+
+- Cilium CNI.
+- cert-manager.
+- Envoy Gateway (Kubernetes ingress only).
+- ArgoCD.
+- Headlamp (via Sidero-provided Helm chart).
+- OpenTelemetry Collector.
+- WSO2 API Manager — Kubernetes YAML stored in GitLab.
+- WSO2 Identity Server — Kubernetes YAML stored in GitLab.
+
+#### 4. Observability
 
 The MVP must ingest and expose:
 
-- Kubernetes metrics
-- Kubernetes logs
-- Netflow or Cilium Hubble flow data
-- Tracing data from Envoy
-- Alert events from ElastAlert2
+- Kubernetes metrics.
+- Kubernetes logs.
+- Cilium Hubble flow data.
+- Tracing data from Envoy.
+- Alert events from ElastAlert2.
 
-Retention policy required for the MVP:
+Retention policy:
 
-- Tracing kept 7 days in hot Elasticsearch, then archived to external NFS or NAS for 2 to 3 years
-- Basic application and platform logs kept 1 year, then archived
-- WSO2 logs from Logstash kept 10 years
-- OpenTelemetry metrics kept 1 to 2 years
-- OpenTelemetry container logs kept 1 year
+| Data Type                    | Hot Retention           | Archive Retention    | Archive Location    |
+| ---------------------------- | ----------------------- | -------------------- | ------------------- |
+| Tracing                      | 7 days in Elasticsearch | 2 to 3 years         | External NFS or NAS |
+| Basic platform and app logs  | 1 year                  | Archive after 1 year | External NFS or NAS |
+| WSO2 logs from Logstash      | Active search as needed | 10 years             | External NFS or NAS |
+| OpenTelemetry metrics        | Based on capacity       | 1 to 2 years         | External NFS or NAS |
+| OpenTelemetry container logs | 1 year                  | Archive after 1 year | External NFS or NAS |
 
-Success condition:
+Success conditions:
 
-- Data is searchable in Elasticsearch
-- Dashboards are visible in Kibana
-- At least one alert flow is verified end to end
-- Lifecycle and archive policies are configured before migration starts
+- Data is searchable in Elasticsearch.
+- Dashboards are visible in Kibana.
+- At least one alert flow is verified end to end.
+- Lifecycle and archive policies are configured before migration starts.
 
-### 5. Migration
+#### 5. Migration
 
-- Tracing lifecycle and retention policies configured before any migration step
-- Elasticsearch migration from the old 8.14 environment to 9.1.4 using snapshot and restore
-- Validation for index compatibility and reindex needs
-- WSO2 API Manager migration into the new Kubernetes deployment
-- Initial ElastAlert2 rule set created for the new environment
+- Tracing lifecycle and retention policies configured before any migration step.
+- Elasticsearch migration from old 8.14 environment to 9.1.4 using snapshot and restore.
+- Validation for index compatibility and reindex needs.
+- WSO2 API Manager credential migration into the new Kubernetes deployment.
+- Initial ElastAlert2 rule set created for the new environment.
 
-## Python Web UI MVP
+***
 
-The web UI is not a full platform product. It is an operations console for repeatable deployment.
+### Python Web UI MVP
 
-### Required capabilities
+The web UI is an operations console for repeatable deployment. It is not a full platform product.
 
-- Inventory form for lab and production values
-- Variable input for domains, IPs, credentials, NFS paths, and migration inputs
-- One-click execution for individual Ansible steps
-- Run-all flow for the standard deployment sequence
-- Live job log streaming
-- Job status and history
+**Required Capabilities**
 
-### Suggested stack
+- Inventory form for lab, UAT, and production values.
+- Variable input for Docker VM IP, SSH credentials, domain names, NFS paths, and migration inputs.
+- One-click execution for individual Ansible steps.
+- Run-all flow for the standard deployment sequence.
+- Live job log streaming via WebSocket.
+- Service card status display per environment.
+- Job status and history.
 
-- FastAPI
-- Jinja2 templates
-- HTMX for lightweight interactivity
-- SQLite for local job tracking
-- WebSocket log streaming
+**Suggested Stack**
 
-## Delivery Sequence
+- FastAPI.
+- Jinja2 templates.
+- HTMX for lightweight interactivity.
+- SQLite for job state and environment variables.
+- WebSocket log streaming.
 
-### Prep Period
+***
 
-Complete in the lab before production execution:
+### Delivery Sequence
 
-1. Docker compose repositories
-2. Helm values and Kubernetes manifests, including WSO2 APIM and WSO2 IS YAML
-3. Ansible inventory, roles, and playbooks
-4. Python Web UI
-5. Lab validation for each deployment phase
+#### Prep Period — Lab
 
-### Production Execution
+Complete in the lab before UAT and production execution:
 
-1. Prepare jump host
-2. Prepare Docker host
-3. Install Dockhand, GitLab, runner, and NFS integration
-4. Push deployment repositories to GitLab
-5. Connect Dockhand to GitLab
-6. Deploy Docker services from Git
-7. Create Talos cluster
-8. Deploy Kubernetes platform services
-9. Deploy WSO2 services from GitLab-managed Kubernetes YAML
-10. Configure tracing, logs, metrics, and archive lifecycle policies
-11. Run data migration and final validation
+1. Docker compose repositories and templates.
+2. Helm values and Kubernetes manifests including WSO2 APIM and WSO2 IS YAML.
+3. Ansible inventory, roles, and playbooks.
+4. Python Web UI.
+5. Bootstrap script for jump host.
+6. Lab validation of each deployment phase end to end.
 
-## Definition of Done
+#### Execution Day — UAT and Production in Parallel
+
+Both environments follow the same sequence simultaneously:
+
+1. SSH into jump host.
+2. Clone autoprovision repo and run bootstrap script.
+3. Open Python web UI.
+4. Enter Docker VM IP, SSH credentials, and environment values.
+5. Run Phase B Docker deployment sequence (PostgreSQL → Traefik → Dockhand → GitLab → SonarQube → ELK).
+6. Apply Talos machine configs via talosctl to pre-booted VMs.
+7. Bootstrap Talos cluster.
+8. Deploy Kubernetes services in sequence (Cilium → cert-manager → Envoy Gateway → ArgoCD → Headlamp → WSO2 APIM → WSO2 IS → OTel Collector).
+9. Configure observability lifecycle and retention policies.
+10. Run migration tasks.
+11. Test and validate.
+
+***
+
+### Definition of Done
 
 The MVP is complete when all of the following are true:
 
-1. Jump host can trigger the deployment flow from the web UI.
-2. GitLab stores the compose, infrastructure, and Kubernetes deployment sources.
-3. Dockhand deploys Docker workloads from GitLab successfully.
-4. Talos cluster is running and reachable.
+1. Jump host can trigger the full deployment flow from the web UI.
+2. All Docker services are deployed and running on the Docker VM.
+3. GitLab stores the Kubernetes deployment sources for WSO2 and platform services.
+4. Talos cluster is running and reachable via talosctl.
 5. WSO2 APIM and WSO2 IS are deployed and connected to SQL Server.
 6. Elasticsearch, Kibana, alerting, and lifecycle policies are functional.
 7. Backup, snapshot, and long-term archive paths are mounted and tested.
 8. Migration steps are documented and at least one dry run is validated in the lab.
+9. UAT and production environments both pass validation on execution day.
 
-## Out of Scope for MVP
+***
 
-- Full self-service portal features beyond deployment operations
-- Advanced role-based access control in the web UI
-- Full disaster recovery orchestration beyond backup and restore validation
-- Broad CI or release engineering beyond what is required for GitLab and GitOps deployment
+### Out of Scope for MVP
 
-## Immediate Next Build Focus
+- Full self-service portal features beyond deployment operations.
+- Advanced role-based access control in the web UI.
+- Full disaster recovery orchestration beyond backup and restore validation.
+- Broad CI or release engineering beyond GitLab setup.
+- Ongoing GitOps management of Docker services.
 
-If the team wants the shortest path to a credible MVP, build in this order:
+***
 
-1. GitLab bootstrap and Dockhand connection
-2. ELK stack deployment from Git
-3. Python Web UI execution flow
-4. Talos cluster creation
-5. ArgoCD and WSO2 deployment
-6. Migration rehearsal and final validation
+### Immediate Next Build Focus
+
+Shortest path to a credible MVP, in order:
+
+1. Jump host bootstrap script and autoprovision repo skeleton.
+2. Python Web UI shell — status cards, inventory form, Ansible runner wiring.
+3. Ansible playbooks for Docker VM — Phase B sequence.
+4. Docker compose templates — PostgreSQL, Traefik, Dockhand, GitLab, SonarQube, ELK.
+5. talosctl cluster bootstrap playbook and Cilium install.
+6. Kubernetes manifests — cert-manager, Envoy Gateway, ArgoCD, Headlamp, WSO2.
+7. Lab dry run — full sequence end to end.
+8. UAT and production execution day.
