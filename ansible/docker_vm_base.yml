@@ -1,0 +1,30 @@
+- name: Bootstrap Docker VM base packages
+  hosts: docker_lab:docker_uat:docker_prod
+  become: true
+  tasks:
+    - name: Ensure apt cache is updated (Debian/Ubuntu)
+      apt:
+        update_cache: yes
+      when: ansible_os_family == "Debian"
+
+    - name: Install base packages (git, curl, wget)
+      package:
+        name:
+          - git
+          - curl
+          - wget
+        state: present
+
+    - name: Install Docker using convenience script
+      shell: |
+        curl -fsSL https://get.docker.com -o /tmp/get-docker.sh
+        sh /tmp/get-docker.sh
+      args:
+        creates: /usr/bin/docker
+
+    - name: Ensure docker service is enabled and started
+      systemd:
+        name: docker
+        state: started
+        enabled: true
+
