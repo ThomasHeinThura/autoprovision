@@ -1,0 +1,43 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:17.10
+    container_name: pg-platform
+    environment:
+      POSTGRES_USER: platform
+      POSTGRES_PASSWORD: platform_password
+      POSTGRES_DB: platform
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    networks:
+      - platform
+
+  traefik:
+    image: traefik:v3.7.1
+    container_name: traefik
+    command:
+      - "--providers.docker=true"
+      - "--entrypoints.websecure.address=:443"
+      - "--api.dashboard=true"
+    ports:
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - platform
+
+  dockhand:
+    image: dockhand/dockhand:v0.29.4
+    container_name: dockhand
+    ports:
+      - "8080:8080"
+    networks:
+      - platform
+
+volumes:
+  pg_data:
+
+networks:
+  platform:
+    name: platform
