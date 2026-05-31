@@ -35,6 +35,38 @@ require_cmd kubectl
 require_cmd helm
 require_cmd cilium
 
+apply_talos_config() {
+  local node="$1"
+  local base_file="$2"
+  local patch_file="${3:-}"
+
+  # If secure API is already up, use talosconfig + endpoints.
+  if talosctl --talosconfig "$WORK_DIR/talosconfig" --endpoints "$FIRST_CP" --nodes "$node" version >/dev/null 2>&1; then
+    if [ -n "$patch_file" ]; then
+      talosctl apply-config \
+        --talosconfig "$WORK_DIR/talosconfig" \
+        --endpoints "$FIRST_CP" \
+        --nodes "$node" \
+        --file "$base_file" \
+        --config-patch @"$patch_file"
+    else
+      talosctl apply-config \
+        --talosconfig "$WORK_DIR/talosconfig" \
+        --endpoints "$FIRST_CP" \
+        --nodes "$node" \
+        --file "$base_file"
+    fi
+    return
+  fi
+
+  # Otherwise fall back to insecure maintenance mode.
+  if [ -n "$patch_file" ]; then
+    talosctl apply-config --insecure --nodes "$node" --file "$base_file" --config-patch @"$patch_file"
+  else
+    talosctl apply-config --insecure --nodes "$node" --file "$base_file"
+  fi
+}
+
 CONTROL_PLANE_IPS_RAW="$(trim_csv "$CONTROL_PLANE_IPS_RAW")"
 WORKER_IPS_RAW="$(trim_csv "$WORKER_IPS_RAW")"
 
@@ -89,10 +121,10 @@ cluster:
   allowSchedulingOnControlPlanes: true
 YAML
     echo "[INFO] Applying control-plane config to $ip (with allowSchedulingOnControlPlanes)"
-    talosctl apply-config --insecure --nodes "$ip" --file controlplane.yaml --config-patch @"$patch_file"
+    apply_talos_config "$ip" "controlplane.yaml" "$patch_file"
   else
     echo "[INFO] Applying control-plane config to $ip"
-    talosctl apply-config --insecure --nodes "$ip" --file controlplane.yaml
+    apply_talos_config "$ip" "controlplane.yaml"
   fi
 done
 
@@ -100,7 +132,7 @@ done
 if [ "${#WORKER_IPS[@]}" -gt 0 ] && [ -n "${WORKER_IPS[0]:-}" ]; then
   for ip in "${WORKER_IPS[@]}"; do
     echo "[INFO] Applying worker config to $ip"
-    talosctl apply-config --insecure --nodes "$ip" --file worker.yaml
+    apply_talos_config "$ip" "worker.yaml"
   done
 fi
 
