@@ -38,7 +38,7 @@
       shell: |
         export GITLAB_DOMAIN='{{ gitlab_domain_safe }}'
         export GITLAB_REGISTRY_DOMAIN='{{ gitlab_registry_domain_safe }}'
-        docker compose -f docker-compose.gitlab.yml up -d --force-recreate --remove-orphans
+        docker compose -f docker-compose.gitlab.yml up -d --force-recreate gitlab gitlab-runner
       args:
         chdir: "{{ compose_dir }}"
 
