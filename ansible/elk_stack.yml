@@ -1,29 +1,20 @@
-- name: Deploy ELK stack from deviantony/docker-elk
+- name: Deploy ELK stack from vendored docker/elk directory
   hosts: docker_vm
   become: true
   vars:
     repo_root: "/home/{{ ansible_user }}/autoprovision"
     elk_dir: "{{ repo_root }}/docker/elk"
-    elk_repo: "https://github.com/deviantony/docker-elk.git"
     kibana_domain: "{{ kibana_domain | default('kibana.local') }}"
   tasks:
     - name: Show ELK directory
       debug:
         msg: "Using elk_dir={{ elk_dir }}"
 
-    - name: Ensure ELK directory parent exists
+    - name: Ensure ELK directory exists (already copied from repo)
       file:
-        path: "{{ elk_dir | dirname }}"
+        path: "{{ elk_dir }}"
         state: directory
         mode: '0755'
-
-    - name: Clone or update docker-elk repo
-      become_user: "{{ ansible_user }}"
-      git:
-        repo: "{{ elk_repo }}"
-        dest: "{{ elk_dir }}"
-        version: main
-        force: yes
 
     - name: Run ELK setup (docker compose up setup)
       shell: docker compose up setup
