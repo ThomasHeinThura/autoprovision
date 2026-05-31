@@ -71,26 +71,7 @@
           [session_server]
             session_timeout = 1800
 
-          # Add your runner token after first GitLab UI registration.
-          [[runners]]
-            name = "local-docker-runner"
-            url = "https://{{ gitlab_domain_safe }}"
-            executor = "docker"
-            [runners.cache]
-              MaxUploadedArchiveSize = 0
-            [runners.docker]
-              tls_verify = false
-              image = "alpine:latest"
-              privileged = true
-              disable_entrypoint_overwrite = false
-              oom_kill_disable = false
-              disable_cache = false
-              volumes = ["/var/run/docker.sock:/var/run/docker.sock", "/cache", "/etc/gitlab-runner/certs/{{ gitlab_domain_safe }}.crt:/usr/local/share/ca-certificates/local-dev-ca.crt:ro"]
-              volume_keep = false
-              extra_hosts = ["{{ gitlab_domain_safe }}:host-gateway", "{{ gitlab_registry_domain_safe }}:host-gateway"]
-              pull_policy = ["if-not-present"]
-              shm_size = 0
-              network_mtu = 0
+          # Runner blocks are added only during explicit registration.
 
     - name: Ensure runner URL follows selected GitLab domain
       lineinfile:
@@ -98,6 +79,27 @@
         regexp: '^\s*url\s*=\s*".*"\s*$'
         line: '  url = "https://{{ gitlab_domain_safe }}"'
         backrefs: false
+
+    - name: Detect placeholder token in runner config
+      shell: |
+        grep -Eq 'PASTE_NEW_RUNNER_TOKEN_HERE|token\s*=\s*"PASTE' "{{ runner_config_dir }}/config.toml"
+      register: placeholder_token_check
+      failed_when: false
+      changed_when: false
+
+    - name: Reset runner config when placeholder token is present and no token was provided
+      copy:
+        dest: "{{ runner_config_dir }}/config.toml"
+        mode: "0644"
+        content: |
+          concurrent = 1
+          check_interval = 0
+          connection_max_age = "15m0s"
+          shutdown_timeout = 0
+
+          [session_server]
+            session_timeout = 1800
+      when: gitlab_runner_token_safe | length == 0 and placeholder_token_check.rc == 0
 
     - name: Ensure GitLab database exists in pg-platform
       shell: |
@@ -133,6 +135,20 @@
       until: gitlab_readiness.rc == 0
       changed_when: false
 
+    - name: Reset runner config before registration when token is provided
+      copy:
+        dest: "{{ runner_config_dir }}/config.toml"
+        mode: "0644"
+        content: |
+          concurrent = 1
+          check_interval = 0
+          connection_max_age = "15m0s"
+          shutdown_timeout = 0
+
+          [session_server]
+            session_timeout = 1800
+      when: gitlab_runner_token_safe | length > 0
+
     - name: Register GitLab runner when token is provided
       shell: |
         docker exec gitlab-runner gitlab-runner register \
@@ -158,13 +174,13 @@
       shell: docker exec gitlab-runner gitlab-runner verify
       register: runner_verify
       changed_when: false
-      failed_when: false
+      failed_when: gitlab_runner_token_safe | length > 0 and runner_verify.rc != 0
 
     - name: Report runner verification result
       debug:
         msg: >-
           GitLab runner verify rc={{ runner_verify.rc }}.
-          {{ 'Runner is registered and reachable.' if runner_verify.rc == 0 else 'Runner is running but not verified yet. Provide gitlab_runner_token to auto-register.' }}
+          {{ 'Runner is registered and reachable.' if runner_verify.rc == 0 else 'Runner is running in unregistered mode. Provide gitlab_runner_token to register it.' }}
 
     - name: Report GitLab deployment complete
       debug:
