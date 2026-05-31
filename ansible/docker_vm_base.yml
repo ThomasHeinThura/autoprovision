@@ -9,7 +9,7 @@
       apt:
         update_cache: yes
         cache_valid_time: 3600
-      when: ansible_os_family == "Debian"
+      when: ansible_facts["os_family"] == "Debian"
 
     - name: Install base packages
       package:
@@ -40,6 +40,14 @@
         name: "{{ ansible_user }}"
         groups: docker
         append: yes
+
+    - name: Ensure repo parent directory exists
+      file:
+        path: "{{ repo_dest | dirname }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
 
     - name: Clone autoprovision repo on Docker VM
       git:
