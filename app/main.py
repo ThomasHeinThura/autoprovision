@@ -7,13 +7,57 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ANSIBLE_DIR = os.path.join(BASE_DIR, "ansible")
 INVENTORY_FILE = os.path.join(ANSIBLE_DIR, "inventory")
 
-app = FastAPI(title="Autoprovision Control Plane", version="0.5.0")
+app = FastAPI(title="Autoprovision Control Plane", version="0.6.0")
 
 # ─── helpers ──────────────────────────────────────────────────────────────────
 
 def _env_to_group(env: str) -> str:
     m = {"lab": "docker_lab", "uat": "docker_uat", "prod": "docker_prod"}
     return m.get((env or "").lower(), "docker_lab")
+
+
+def _read_inventory_defaults():
+    """Best-effort parse of last inventory to prefill form.
+
+    Returns (env, docker_ip, ssh_user) or ("lab", "", "autoprovision") if not found.
+    """
+    env = "lab"
+    docker_ip = ""
+    ssh_user = "autoprovision"
+    if not os.path.exists(INVENTORY_FILE):
+        return env, docker_ip, ssh_user
+    try:
+        with open(INVENTORY_FILE, "r", encoding="utf-8") as f:
+            lines = [l.strip() for l in f.readlines() if l.strip()]
+        # First non-header line under [docker_vm]
+        group = None
+        for line in lines:
+            if line.startswith("[") and line.endswith("]"):
+                group = line.strip("[]")
+                continue
+            if group == "docker_vm" and not line.startswith("["):
+                parts = line.split()
+                if parts:
+                    docker_ip = parts[0]
+                for p in parts[1:]:
+                    if p.startswith("ansible_user="):
+                        ssh_user = p.split("=", 1)[1]
+                break
+        # Find env group
+        for line in lines:
+            if line.startswith("[") and line.endswith("]"):
+                name = line.strip("[]")
+                if name in ("docker_lab", "docker_uat", "docker_prod"):
+                    if "lab" in name:
+                        env = "lab"
+                    elif "uat" in name:
+                        env = "uat"
+                    elif "prod" in name:
+                        env = "prod"
+                    break
+    except Exception:
+        pass
+    return env, docker_ip, ssh_user
 
 
 def _write_inventory(env: str, docker_ip: str, ssh_user: str, ssh_pass: str) -> None:
@@ -71,6 +115,7 @@ async def healthz():
 
 @app.get("/", response_class=HTMLResponse)
 async def index():
+    env_default, docker_ip_default, ssh_user_default = _read_inventory_defaults()
     log_base = _read_log("docker-base.log")
     log_platform = _read_log("docker-platform.log")
     log_elk = _read_log("elk.log")
@@ -101,7 +146,7 @@ async def index():
     </style>
   </head>
   <body>
-    <h1>Autoprovision Control Plane <span style="font-size:.9rem;color:#6b7280;">v0.5.0</span></h1>
+    <h1>Autoprovision Control Plane <span style="font-size:.9rem;color:#6b7280;">v0.6.0</span></h1>
     <p><small>Jump host is ready. Use the forms below to provision Docker VM and Kubernetes cluster.</small></p>
 
     <div class="grid">
@@ -109,20 +154,20 @@ async def index():
       <div class="col">
         <div class="card">
           <h2>&#9881; Environment &amp; SSH</h2>
-          <p><small>Shared form — saved to Ansible inventory before each action.</small></p>
+          <p><small>Shared form — saved to Ansible inventory before each action. Values are prefilled from your last successful run; adjust only if needed.</small></p>
           <form id="env-form">
             <label>Environment
               <select name="env" id="f-env">
-                <option value="lab">Lab</option>
-                <option value="uat">UAT</option>
-                <option value="prod">Production</option>
+                <option value="lab" {'selected' if env_default == 'lab' else ''}>Lab</option>
+                <option value="uat" {'selected' if env_default == 'uat' else ''}>UAT</option>
+                <option value="prod" {'selected' if env_default == 'prod' else ''}>Production</option>
               </select>
             </label>
             <label>Docker VM IP
-              <input id="f-docker-ip" name="docker_ip" placeholder="192.168.x.x" />
+              <input id="f-docker-ip" name="docker_ip" placeholder="192.168.x.x" value="{docker_ip_default}" />
             </label>
             <label>SSH username
-              <input id="f-ssh-user" name="ssh_user" placeholder="ubuntu" value="ubuntu" />
+              <input id="f-ssh-user" name="ssh_user" placeholder="autoprovision" value="{ssh_user_default}" />
             </label>
             <label>SSH password (leave empty to use key)
               <input id="f-ssh-pass" name="ssh_pass" type="password" placeholder="••••••••" />
@@ -221,7 +266,7 @@ async def action_bootstrap_docker(request: Request):
     body = await request.json()
     env      = body.get("env", "lab")
     docker_ip = body.get("docker_ip", "")
-    ssh_user  = body.get("ssh_user", "ubuntu")
+    ssh_user  = body.get("ssh_user", "autoprovision")
     ssh_pass  = body.get("ssh_pass", "")
     if not docker_ip:
         return JSONResponse({"error": "docker_ip required"}, status_code=400)
@@ -236,7 +281,7 @@ async def action_platform_up(request: Request):
     body = await request.json()
     env      = body.get("env", "lab")
     docker_ip = body.get("docker_ip", "")
-    ssh_user  = body.get("ssh_user", "ubuntu")
+    ssh_user  = body.get("ssh_user", "autoprovision")
     ssh_pass  = body.get("ssh_pass", "")
     dockhand_domain = body.get("dockhand_domain", "dockhand.local")
     if not docker_ip:
@@ -256,7 +301,7 @@ async def action_elk_up(request: Request):
     body = await request.json()
     env      = body.get("env", "lab")
     docker_ip = body.get("docker_ip", "")
-    ssh_user  = body.get("ssh_user", "ubuntu")
+    ssh_user  = body.get("ssh_user", "autoprovision")
     ssh_pass  = body.get("ssh_pass", "")
     kibana_domain = body.get("kibana_domain", "kibana.local")
     if not docker_ip:
