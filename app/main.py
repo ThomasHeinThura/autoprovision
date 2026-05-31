@@ -4,6 +4,7 @@ import asyncio
 import os
 import sqlite3
 import subprocess
+import uuid
 from datetime import datetime, timezone
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -15,6 +16,7 @@ TRAEFIK_CERT_FILE = os.path.join(TRAEFIK_CERTS_DIR, "local-dev-tls.crt")
 TRAEFIK_KEY_FILE = os.path.join(TRAEFIK_CERTS_DIR, "local-dev-tls.key")
 
 app = FastAPI(title="Autoprovision Control Plane", version="0.7.0")
+JOBS: dict[str, dict] = {}
 
 # ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -251,6 +253,88 @@ def _read_log(name: str) -> str:
         return f.read()
 
 
+def _read_log_tail(name: str, max_chars: int = 60000) -> str:
+    content = _read_log(name)
+    if len(content) <= max_chars:
+        return content
+    return content[-max_chars:]
+
+
+def _action_plan(action: str, body: dict) -> dict:
+    if action == "bootstrap-docker":
+        return {
+            "playbook": "ansible/docker_vm_base.yml",
+            "log_name": "docker-base.log",
+            "extra_vars": None,
+        }
+    if action == "platform-up":
+        return {
+            "playbook": "ansible/docker_platform_up.yml",
+            "log_name": "docker-platform.log",
+            "extra_vars": {"dockhand_domain": body.get("dockhand_domain", "dockhand.example.com")},
+        }
+    if action == "elk-up":
+        return {
+            "playbook": "ansible/elk_stack.yml",
+            "log_name": "elk.log",
+            "extra_vars": {"kibana_domain": body.get("kibana_domain", "kibana.example.com")},
+        }
+    if action == "gitlab-up":
+        return {
+            "playbook": "ansible/gitlab_stack.yml",
+            "log_name": "gitlab.log",
+            "extra_vars": {
+                "gitlab_domain": body.get("gitlab_domain", "gitlab.example.com"),
+                "gitlab_registry_domain": body.get("gitlab_registry_domain", "registry.example.com"),
+            },
+        }
+    if action == "sonarqube-up":
+        return {
+            "playbook": "ansible/sonarqube_stack.yml",
+            "log_name": "sonarqube.log",
+            "extra_vars": {"sonarqube_domain": body.get("sonarqube_domain", "sonar.example.com")},
+        }
+    raise ValueError(f"unsupported action: {action}")
+
+
+def _get_playbook_task_list(playbook_rel: str) -> str:
+    cmd = [
+        "ansible-playbook",
+        "-i",
+        INVENTORY_FILE,
+        os.path.join(BASE_DIR, playbook_rel),
+        "--list-tasks",
+    ]
+    try:
+        p = subprocess.run(cmd, cwd=BASE_DIR, capture_output=True, text=True, check=False)
+    except Exception as e:
+        return f"Could not render task list: {e}"
+    output = (p.stdout or "") + ("\n" + p.stderr if p.stderr else "")
+    return output.strip() or "No tasks found."
+
+
+async def _run_action_job(job_id: str, action: str, body: dict):
+    try:
+        env = body.get("env", "lab")
+        docker_ip = body.get("docker_ip", "")
+        ssh_user = body.get("ssh_user", "autoprovision")
+        ssh_pass = body.get("ssh_pass", "")
+        if not docker_ip:
+            raise ValueError("docker_ip required")
+
+        _save_ui_state(body)
+        _write_inventory(env, docker_ip, ssh_user, ssh_pass)
+        plan = _action_plan(action, body)
+        JOBS[job_id]["status"] = "running"
+        JOBS[job_id]["log_name"] = plan["log_name"]
+        rc = await _run_playbook(plan["playbook"], plan["log_name"], extra_vars=plan["extra_vars"])
+        JOBS[job_id]["rc"] = rc
+        JOBS[job_id]["status"] = "completed" if rc == 0 else "failed"
+    except Exception as e:
+        JOBS[job_id]["status"] = "failed"
+        JOBS[job_id]["error"] = str(e)
+
+
 def _ensure_traefik_certs_dir() -> None:
     os.makedirs(TRAEFIK_CERTS_DIR, exist_ok=True)
 
@@ -357,6 +441,85 @@ async def get_ui_state():
 async def save_ui_state(request: Request):
     body = await request.json()
     return JSONResponse(_save_ui_state(body))
+
+
+@app.post("/actions/gitlab-plan")
+async def gitlab_plan(request: Request):
+    body = await request.json()
+    _save_ui_state(body)
+    plan_text = _get_playbook_task_list("ansible/gitlab_stack.yml")
+    return JSONResponse(
+        {
+            "plan": plan_text,
+            "last_log": _read_log_tail("gitlab.log", 25000),
+            "message": "Preview only. Click Deploy GitLab Stack to start deployment.",
+        }
+    )
+
+
+@app.post("/actions/preview")
+async def action_preview(request: Request):
+    body = await request.json()
+    action = (body.get("action") or "").strip()
+    payload = body.get("payload") or {}
+
+    try:
+        plan = _action_plan(action, payload)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+
+    _save_ui_state(payload)
+    plan_text = _get_playbook_task_list(plan["playbook"])
+    return JSONResponse(
+        {
+            "action": action,
+            "plan": plan_text,
+            "last_log": _read_log_tail(plan["log_name"], 30000),
+            "message": "Preview only. Click Deploy to start this action.",
+        }
+    )
+
+
+@app.post("/actions/start")
+async def start_action(request: Request):
+    body = await request.json()
+    action = (body.get("action") or "").strip()
+    payload = body.get("payload") or {}
+
+    try:
+        _action_plan(action, payload)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+
+    job_id = str(uuid.uuid4())
+    JOBS[job_id] = {
+        "action": action,
+        "status": "queued",
+        "rc": None,
+        "error": None,
+        "log_name": None,
+        "started_at": _utc_now(),
+    }
+    JOBS[job_id]["task"] = asyncio.create_task(_run_action_job(job_id, action, payload))
+    return JSONResponse({"job_id": job_id, "status": "queued"})
+
+
+@app.get("/actions/job/{job_id}")
+async def get_action_job(job_id: str):
+    job = JOBS.get(job_id)
+    if not job:
+        return JSONResponse({"error": "job_not_found"}, status_code=404)
+    log = _read_log_tail(job["log_name"], 60000) if job.get("log_name") else ""
+    return JSONResponse(
+        {
+            "job_id": job_id,
+            "action": job.get("action"),
+            "status": job.get("status"),
+            "rc": job.get("rc"),
+            "error": job.get("error"),
+            "log": log,
+        }
+    )
 
 
 @app.get("/", response_class=HTMLResponse)
