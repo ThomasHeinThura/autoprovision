@@ -41,18 +41,25 @@
         groups: docker
         append: yes
 
-    - name: Ensure repo parent directory exists
+    - name: Ensure /opt exists
       file:
-        path: "{{ repo_dest | dirname }}"
+        path: /opt
         state: directory
         owner: root
         group: root
         mode: "0755"
 
-    - name: Clone autoprovision repo on Docker VM
+    - name: Clone autoprovision repo on Docker VM (as root)
       git:
         repo: "{{ repo_url }}"
         dest: "{{ repo_dest }}"
         version: main
         force: no
-      become_user: "{{ ansible_user }}"
+
+    - name: Set ownership of repo to automation user
+      file:
+        path: "{{ repo_dest }}"
+        state: directory
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        recurse: yes
