@@ -233,7 +233,7 @@
             <div class="row">
               <div class="field">
                 <label for="ssh-user">SSH User</label>
-                <input id="ssh-user" value="ubuntu" />
+                <input id="ssh-user" value="autoprovision" />
               </div>
               <div class="field">
                 <label for="ssh-pass">SSH Password (optional)</label>
@@ -270,12 +270,52 @@
     <script>
       const logAction = document.getElementById('log-action');
       const bigLog = document.getElementById('big-log');
+      const persistFieldIds = ['env', 'docker-ip', 'ssh-user', 'dockhand-domain', 'kibana-domain'];
+
+      function persistPayload() {
+        return {
+          env: document.getElementById('env').value,
+          docker_ip: document.getElementById('docker-ip').value.trim(),
+          ssh_user: document.getElementById('ssh-user').value.trim() || 'autoprovision',
+          dockhand_domain: document.getElementById('dockhand-domain').value.trim(),
+          kibana_domain: document.getElementById('kibana-domain').value.trim(),
+        };
+      }
+
+      async function loadPersistedState() {
+        try {
+          const response = await fetch('/state/ui');
+          if (!response.ok) {
+            return;
+          }
+          const data = await response.json();
+          document.getElementById('env').value = data.env || 'lab';
+          document.getElementById('docker-ip').value = data.docker_ip || '';
+          document.getElementById('ssh-user').value = data.ssh_user || 'autoprovision';
+          document.getElementById('dockhand-domain').value = data.dockhand_domain || '';
+          document.getElementById('kibana-domain').value = data.kibana_domain || '';
+        } catch (error) {
+          setLog('State Load', `Could not load saved values: ${error}`);
+        }
+      }
+
+      async function savePersistedState() {
+        try {
+          await fetch('/state/ui', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(persistPayload()),
+          });
+        } catch (_) {
+          // No-op: keep UI usable even if state persistence fails.
+        }
+      }
 
       function sharedPayload() {
         return {
           env: document.getElementById('env').value,
           docker_ip: document.getElementById('docker-ip').value.trim(),
-          ssh_user: document.getElementById('ssh-user').value.trim() || 'ubuntu',
+          ssh_user: document.getElementById('ssh-user').value.trim() || 'autoprovision',
           ssh_pass: document.getElementById('ssh-pass').value,
           dockhand_domain: document.getElementById('dockhand-domain').value.trim(),
           kibana_domain: document.getElementById('kibana-domain').value.trim(),
@@ -292,6 +332,7 @@
           setLog(actionName, 'Error: Docker VM IP is required.');
           return;
         }
+        await savePersistedState();
         setLog(actionName, 'Running...');
         try {
           const response = await fetch(endpoint, {
@@ -329,6 +370,14 @@
         }
         postAction('/actions/elk-up', payload, 'ELK Stack');
       }
+
+      persistFieldIds.forEach((id) => {
+        const el = document.getElementById(id);
+        el.addEventListener('change', savePersistedState);
+        el.addEventListener('blur', savePersistedState);
+      });
+
+      loadPersistedState();
     </script>
   </body>
 </html>

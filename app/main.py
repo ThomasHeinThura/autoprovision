@@ -2,10 +2,13 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 import asyncio
 import os
+import sqlite3
+from datetime import datetime, timezone
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ANSIBLE_DIR = os.path.join(BASE_DIR, "ansible")
 INVENTORY_FILE = os.path.join(ANSIBLE_DIR, "inventory")
+STATE_DB = os.path.join(BASE_DIR, "data", "state.db")
 
 app = FastAPI(title="Autoprovision Control Plane", version="0.6.0")
 
@@ -14,6 +17,99 @@ app = FastAPI(title="Autoprovision Control Plane", version="0.6.0")
 def _env_to_group(env: str) -> str:
     m = {"lab": "docker_lab", "uat": "docker_uat", "prod": "docker_prod"}
     return m.get((env or "").lower(), "docker_lab")
+
+
+def _ensure_state_db() -> None:
+    os.makedirs(os.path.dirname(STATE_DB), exist_ok=True)
+    conn = sqlite3.connect(STATE_DB)
+    try:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS ui_state (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                env TEXT NOT NULL DEFAULT 'lab',
+                docker_ip TEXT NOT NULL DEFAULT '',
+                ssh_user TEXT NOT NULL DEFAULT 'autoprovision',
+                dockhand_domain TEXT NOT NULL DEFAULT '',
+                kibana_domain TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO ui_state (id, env, docker_ip, ssh_user, dockhand_domain, kibana_domain, updated_at)
+            SELECT 1, 'lab', '', 'autoprovision', '', '', ?
+            WHERE NOT EXISTS (SELECT 1 FROM ui_state WHERE id = 1)
+            """,
+            (_utc_now(),),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _read_ui_state() -> dict:
+    _ensure_state_db()
+    conn = sqlite3.connect(STATE_DB)
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute(
+            "SELECT env, docker_ip, ssh_user, dockhand_domain, kibana_domain, updated_at FROM ui_state WHERE id = 1"
+        ).fetchone()
+    finally:
+        conn.close()
+
+    if not row:
+        return {
+            "env": "lab",
+            "docker_ip": "",
+            "ssh_user": "autoprovision",
+            "dockhand_domain": "",
+            "kibana_domain": "",
+            "updated_at": None,
+        }
+    return dict(row)
+
+
+def _save_ui_state(data: dict) -> dict:
+    _ensure_state_db()
+    env = (data.get("env") or "lab").lower()
+    if env not in ("lab", "uat", "prod"):
+        env = "lab"
+
+    docker_ip = (data.get("docker_ip") or "").strip()
+    ssh_user = (data.get("ssh_user") or "autoprovision").strip() or "autoprovision"
+    dockhand_domain = (data.get("dockhand_domain") or "").strip()
+    kibana_domain = (data.get("kibana_domain") or "").strip()
+    updated_at = _utc_now()
+
+    conn = sqlite3.connect(STATE_DB)
+    try:
+        conn.execute(
+            """
+            UPDATE ui_state
+            SET env = ?, docker_ip = ?, ssh_user = ?, dockhand_domain = ?, kibana_domain = ?, updated_at = ?
+            WHERE id = 1
+            """,
+            (env, docker_ip, ssh_user, dockhand_domain, kibana_domain, updated_at),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    return {
+        "env": env,
+        "docker_ip": docker_ip,
+        "ssh_user": ssh_user,
+        "dockhand_domain": dockhand_domain,
+        "kibana_domain": kibana_domain,
+        "updated_at": updated_at,
+    }
 
 
 def _read_inventory_defaults():
@@ -113,6 +209,17 @@ async def healthz():
     return {"status": "ok"}
 
 
+@app.get("/state/ui")
+async def get_ui_state():
+    return JSONResponse(_read_ui_state())
+
+
+@app.post("/state/ui")
+async def save_ui_state(request: Request):
+    body = await request.json()
+    return JSONResponse(_save_ui_state(body))
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index():
     ui_file = os.path.join(BASE_DIR, "app", "ui_preview.html")
@@ -127,6 +234,7 @@ async def action_bootstrap_docker(request: Request):
     docker_ip = body.get("docker_ip", "")
     ssh_user  = body.get("ssh_user", "autoprovision")
     ssh_pass  = body.get("ssh_pass", "")
+    _save_ui_state(body)
     if not docker_ip:
         return JSONResponse({"error": "docker_ip required"}, status_code=400)
     _write_inventory(env, docker_ip, ssh_user, ssh_pass)
@@ -143,6 +251,7 @@ async def action_platform_up(request: Request):
     ssh_user  = body.get("ssh_user", "autoprovision")
     ssh_pass  = body.get("ssh_pass", "")
     dockhand_domain = body.get("dockhand_domain", "dockhand.local")
+    _save_ui_state(body)
     if not docker_ip:
         return JSONResponse({"error": "docker_ip required"}, status_code=400)
     _write_inventory(env, docker_ip, ssh_user, ssh_pass)
@@ -163,6 +272,7 @@ async def action_elk_up(request: Request):
     ssh_user  = body.get("ssh_user", "autoprovision")
     ssh_pass  = body.get("ssh_pass", "")
     kibana_domain = body.get("kibana_domain", "kibana.local")
+    _save_ui_state(body)
     if not docker_ip:
         return JSONResponse({"error": "docker_ip required"}, status_code=400)
     _write_inventory(env, docker_ip, ssh_user, ssh_pass)
