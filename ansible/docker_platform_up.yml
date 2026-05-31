@@ -2,7 +2,8 @@
   hosts: docker_vm
   become: true
   vars:
-    compose_dir: "/opt/autoprovision/docker"
+    repo_root: "/home/{{ ansible_user }}/autoprovision"
+    compose_dir: "{{ repo_root }}/docker"
   tasks:
     - name: Ensure compose directory exists
       file:
@@ -11,12 +12,12 @@
         mode: '0755'
 
     - name: Pull latest images
-      shell: docker compose -f {{ compose_dir }}/docker-compose.platform.yml pull
+      shell: docker compose -f docker-compose.platform.yml pull
       args:
         chdir: "{{ compose_dir }}"
 
     - name: Bring up platform stack
-      shell: docker compose -f {{ compose_dir }}/docker-compose.platform.yml up -d
+      shell: docker compose -f docker-compose.platform.yml up -d
       args:
         chdir: "{{ compose_dir }}"
 
