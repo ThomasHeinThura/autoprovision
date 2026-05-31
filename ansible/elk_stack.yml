@@ -1,0 +1,45 @@
+- name: Deploy ELK stack from deviantony/docker-elk
+  hosts: docker_vm
+  become: true
+  vars:
+    repo_root: "/home/{{ ansible_user }}/autoprovision"
+    elk_dir: "{{ repo_root }}/docker/elk"
+    elk_repo: "https://github.com/deviantony/docker-elk.git"
+    kibana_domain: "{{ kibana_domain | default('kibana.local') }}"
+  tasks:
+    - name: Show ELK directory
+      debug:
+        msg: "Using elk_dir={{ elk_dir }}"
+
+    - name: Ensure ELK directory parent exists
+      file:
+        path: "{{ elk_dir | dirname }}"
+        state: directory
+        mode: '0755'
+
+    - name: Clone or update docker-elk repo
+      become_user: "{{ ansible_user }}"
+      git:
+        repo: "{{ elk_repo }}"
+        dest: "{{ elk_dir }}"
+        version: main
+        force: yes
+
+    - name: Run ELK setup (docker compose up setup)
+      shell: docker compose up setup
+      args:
+        chdir: "{{ elk_dir }}"
+
+    - name: Start core ELK + Fleet
+      shell: docker compose -f docker-compose.yml -f extensions/fleet/fleet-compose.yml up -d
+      args:
+        chdir: "{{ elk_dir }}"
+
+    - name: Start APM + Logstash agents
+      shell: docker compose -f extensions/fleet/agent-apmserver-compose.yml -f extensions/logstash/logstash-compose.yml up -d
+      args:
+        chdir: "{{ elk_dir }}"
+
+    - name: Report ELK deployment complete
+      debug:
+        msg: "ELK stack deployed from {{ elk_dir }}."
