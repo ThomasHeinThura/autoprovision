@@ -138,64 +138,134 @@ Ansible will log in as this automation user and use `sudo` (become) without prom
 
 ---
 
-## 5. Verify the web UI
+## 5. Run Phases B1–B3 from the web UI
 
-From your browser, open the URL printed by the script, for example:
+1. Open the web UI
 
-```text
-http://192.168.139.64:3000/
-```
+   ```text
+   http://<jump-host-ip>:3000/
+   ```
 
-You should see a minimal placeholder page:
+2. Fill the "Environment & SSH" form:
 
-- Title: **Autoprovision Control Plane**
-- Text: "Jump host bootstrap completed. FastAPI web UI is running."
+   - Environment: `lab`, `uat`, or `prod`.
+   - Docker VM IP: the IP address of your Docker platform VM.
+   - SSH username: `autoprovision` (or your automation user).
+   - SSH password: password for that user (leave empty if using SSH key).
+   - Dockhand domain: e.g. `dockhand.example.com`.
+   - Kibana domain: e.g. `kibana.example.com`.
+   - GitLab domain (reserved for later): e.g. `gitlab.example.com`.
 
-Health check endpoint:
+3. Phase B1 — Docker VM base setup
 
-```text
-http://192.168.139.64:3000/healthz
-```
+   - Click **"Run Phase B1: Bootstrap Docker base"**.
+   - What it does on the Docker VM:
+     - Updates apt cache.
+     - Installs base packages (`git`, `curl`, `wget`, `ca-certificates`, `gnupg`, `lsb-release`).
+     - Installs Docker CE using the official convenience script.
+     - Ensures the `docker` service is enabled and started.
+     - Adds the automation user to the `docker` group.
+     - Clones this repo into `/home/<automation-user>/autoprovision`.
+   - The log panel shows each task and the final Ansible recap.
 
-Returns:
+4. Phase B2 — Start platform stack (Postgres + Traefik + Dockhand)
 
-```json
-{"status": "ok"}
-```
+   - Click **"Run Phase B2: Start platform stack"**.
+   - What it does on the Docker VM:
+     - Uses `/home/<automation-user>/autoprovision/docker` as the compose directory.
+     - Runs `docker compose -f docker-compose.platform.yml pull` to pull the Postgres, Traefik, and Dockhand images.
+     - Runs `docker compose -f docker-compose.platform.yml up -d`.
+     - Waits for the `pg-platform` container healthcheck to report `healthy`.
+   - The log panel prints:
+     - The compose directory.
+     - Pull/start output.
+     - `Postgres health: healthy` when the database is ready.
+   - After success, you should see on the Docker VM:
 
-This confirms that:
+     ```bash
+     docker ps
+     # ... pg-platform (Postgres), traefik, dockhand all running
+     ```
 
-- The jump host has Python, Ansible, talosctl.
-- The virtualenv is working.
-- Uvicorn is serving `app.main:app` on port 3000.
+5. Phase B3 — ELK stack (docker-elk)
+
+   - Click **"Phase B3: Deploy ELK stack"**.
+   - What it does on the Docker VM:
+     - Clones or updates `https://github.com/deviantony/docker-elk.git` into `/home/<automation-user>/autoprovision/docker/elk`.
+     - Runs initial setup:
+
+       ```bash
+       docker compose up setup
+       ```
+
+       This initializes built-in users (`elastic`, `logstash_internal`, `kibana_system`, etc.) with passwords from `.env` in the `docker-elk` repo.
+
+     - Starts Elasticsearch, Logstash, Kibana, Fleet Server, and APM Server with:
+
+       ```bash
+       docker compose \
+         -f docker-compose.yml \
+         -f extensions/fleet/fleet-compose.yml \
+         -f extensions/fleet/agent-apmserver-compose.yml \
+         up -d
+       ```
+
+   - The log panel prints the ELK directory, setup output, and a final message:
+
+     ```text
+     ELK stack (Elasticsearch, Logstash, Kibana, Fleet, APM Server) deployed from /home/<automation-user>/autoprovision/docker/elk.
+     ```
 
 ---
 
-## 6. Next steps (not implemented yet)
+## 6. Default ELK credentials
 
-The current UI is only a placeholder. The next steps are:
+The `docker-elk` stack uses credentials defined in its `.env` file. By default (if you do not change `.env`):
 
-1. **Service cards and forms**
-   - Implement the service cards described in `installation-steps.md`.
-   - Add forms for environment selection (Lab/UAT/Prod), Docker VM IP, Talos node IPs, SQL Server details, etc.
+- **Elasticsearch & Kibana user:** `elastic`
+- **Password:** `changeme`
 
-2. **Ansible integration**
-   - Wire buttons in the UI to run Ansible playbooks via `ansible-runner`.
-   - Implement roles/playbooks for:
-     - Docker platform (PostgreSQL, Traefik, Dockhand, GitLab, SonarQube, ELK, ElastAlert2).
-     - Talos cluster creation and Cilium install.
-     - Kubernetes platform services (cert-manager, Envoy Gateway, ArgoCD, Headlamp, OTel).
-     - WSO2 APIM/IS deployment and migration jobs.
+After Phase B3 completes and containers are healthy:
 
-3. **State and job history**
-   - Replace the placeholder `state.db` logic with real migrations.
-   - Store environments, variables, job history, and statuses in SQLite.
-   - Expose job logs and history through the UI.
+- Elasticsearch API:
 
-4. **Docker VM automation**
-   - On the Docker VM, use Ansible from the jump host to:
-     - Install base tools (`git`, `curl`, `wget`, Docker).
-     - Clone `autoprovision` repository.
-     - Run Docker compose stacks from `docker/uat/*` or `docker/prod/*` in the defined order.
+  ```bash
+  curl -u elastic:changeme http://<docker-vm-ip>:9200
+  ```
 
-All of these steps are described at a high level in `installation-steps.md`. The README focuses only on getting the jump host ready and the web UI running.
+- Kibana UI:
+
+  ```text
+  http://<docker-vm-ip>:5601
+  ```
+
+  Log in with `elastic` / `changeme` and then rotate passwords as required.
+
+Note: the Fleet-managed APM Server container (`elk-apm-server-1`) looks for an agent policy named `Agent Policy APM Server` in Fleet. Until that policy exists in Kibana/Fleet, the APM container may restart with a "policy not found" error. This does not affect the core ELK stack (Elasticsearch, Logstash, Kibana, Fleet Server).
+
+---
+
+## 7. Health checks and troubleshooting
+
+- Platform stack:
+
+  ```bash
+  docker ps
+  # Expect: pg-platform, traefik, dockhand running
+  ```
+
+- ELK core services:
+
+  ```bash
+  docker ps
+  # Expect: elk-elasticsearch-1, elk-logstash-1, elk-kibana-1, elk-fleet-server-1
+  ```
+
+- APM Server:
+
+  ```bash
+  docker logs elk-apm-server-1
+  # If you see "policy not found" for "Agent Policy APM Server", create that policy in Kibana Fleet before relying on APM.
+  ```
+
+For more in-depth observability and Kubernetes deployment steps, see `installation-steps.md` and `updated-mvp.md`.
