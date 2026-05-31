@@ -6,6 +6,7 @@
     compose_dir: "{{ repo_root }}/docker"
     traefik_dir: "{{ compose_dir }}/traefik"
     dockhand_domain_safe: "{{ dockhand_domain | default('dockhand.local') }}"
+    dockhand_internal_port_safe: "{{ dockhand_internal_port | default('80') }}"
   tasks:
     - name: Show compose directory
       debug:
@@ -32,6 +33,7 @@
     - name: Pull latest platform images (Postgres, Traefik, Dockhand)
       shell: |
         export DOCKHAND_DOMAIN='{{ dockhand_domain_safe }}'
+        export DOCKHAND_INTERNAL_PORT='{{ dockhand_internal_port_safe }}'
         docker compose -f docker-compose.platform.yml pull
       args:
         chdir: "{{ compose_dir }}"
@@ -39,7 +41,8 @@
     - name: Bring up platform stack (Postgres + Traefik + Dockhand)
       shell: |
         export DOCKHAND_DOMAIN='{{ dockhand_domain_safe }}'
-        docker compose -f docker-compose.platform.yml up -d
+        export DOCKHAND_INTERNAL_PORT='{{ dockhand_internal_port_safe }}'
+        docker compose -f docker-compose.platform.yml up -d --force-recreate --remove-orphans
       args:
         chdir: "{{ compose_dir }}"
 

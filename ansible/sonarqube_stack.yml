@@ -35,7 +35,7 @@
     - name: Bring up SonarQube stack
       shell: |
         export SONARQUBE_DOMAIN='{{ sonarqube_domain_safe }}'
-        docker compose -f docker-compose.platform.yml -f docker-compose.sonarqube.yml up -d sonarqube
+        docker compose -f docker-compose.platform.yml -f docker-compose.sonarqube.yml up -d --force-recreate sonarqube
       args:
         chdir: "{{ compose_dir }}"
 
