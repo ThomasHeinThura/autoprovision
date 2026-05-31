@@ -12,26 +12,40 @@ services:
     image: gitlab/gitlab-ce:19.0.1-ce.0
     container_name: gitlab
     restart: unless-stopped
-    hostname: ${GITLAB_DOMAIN:-gitlab.local}
+    hostname: ${GITLAB_DOMAIN:-gitlab.example.com}
+    shm_size: '256m'
     environment:
       GITLAB_OMNIBUS_CONFIG: |
-        external_url 'https://${GITLAB_DOMAIN:-gitlab.local}'
-        nginx['listen_https'] = false
-        nginx['listen_port'] = 8929
-        nginx['proxy_set_headers'] = { 'X-Forwarded-Proto' => 'https', 'X-Forwarded-Ssl' => 'on' }
+        external_url 'https://${GITLAB_DOMAIN:-gitlab.example.com}'
+        gitlab_rails['gitlab_shell_ssh_port'] = 2222
+
+        postgresql['enable'] = false
         gitlab_rails['db_adapter'] = 'postgresql'
         gitlab_rails['db_encoding'] = 'utf8'
         gitlab_rails['db_host'] = 'postgres'
         gitlab_rails['db_port'] = 5432
+        gitlab_rails['db_database'] = 'gitlab'
         gitlab_rails['db_username'] = '${POSTGRES_USER:-platform}'
         gitlab_rails['db_password'] = '${POSTGRES_PASSWORD:-changeme}'
-        gitlab_rails['db_database'] = 'gitlab'
-        registry_external_url 'https://${GITLAB_REGISTRY_DOMAIN:-registry.local}'
+
+        nginx['listen_port'] = 80
+        nginx['listen_https'] = false
+        nginx['proxy_set_headers'] = { 'X-Forwarded-Proto' => 'https', 'X-Forwarded-Ssl' => 'on' }
+
+        registry['enable'] = true
+        registry_external_url 'https://${GITLAB_REGISTRY_DOMAIN:-registry.example.com}'
+        registry_nginx['enable'] = true
         registry_nginx['listen_https'] = false
         registry_nginx['listen_port'] = 5050
+        registry_nginx['proxy_set_headers'] = { 'X-Forwarded-Proto' => 'https', 'X-Forwarded-Ssl' => 'on' }
+        gitlab_rails['registry_enabled'] = true
+        gitlab_rails['registry_host'] = '${GITLAB_REGISTRY_DOMAIN:-registry.example.com}'
+        gitlab_rails['registry_port'] = '443'
+
+        prometheus['enable'] = false
+        alertmanager['enable'] = false
+        node_exporter['enable'] = false
     ports:
-      - "8929:8929"
-      - "5050:5050"
       - "2222:22"
     volumes:
       - gitlab_config:/etc/gitlab
@@ -42,13 +56,13 @@ services:
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=platform"
-      - "traefik.http.routers.gitlab.rule=Host(`${GITLAB_DOMAIN:-gitlab.local}`)"
+      - "traefik.http.routers.gitlab.rule=Host(`${GITLAB_DOMAIN:-gitlab.example.com}`)"
       - "traefik.http.routers.gitlab.entrypoints=websecure"
       - "traefik.http.routers.gitlab.tls=true"
       - "traefik.http.routers.gitlab.tls.certresolver=le"
       - "traefik.http.routers.gitlab.middlewares=security-headers@file"
-      - "traefik.http.services.gitlab.loadbalancer.server.port=8929"
-      - "traefik.http.routers.registry.rule=Host(`${GITLAB_REGISTRY_DOMAIN:-registry.local}`)"
+      - "traefik.http.services.gitlab.loadbalancer.server.port=80"
+      - "traefik.http.routers.registry.rule=Host(`${GITLAB_REGISTRY_DOMAIN:-registry.example.com}`)"
       - "traefik.http.routers.registry.entrypoints=websecure"
       - "traefik.http.routers.registry.tls=true"
       - "traefik.http.routers.registry.tls.certresolver=le"
@@ -59,17 +73,23 @@ services:
     image: gitlab/gitlab-runner:v19.0.1
     container_name: gitlab-runner
     restart: unless-stopped
+    privileged: true
+    extra_hosts:
+      - "${GITLAB_DOMAIN:-gitlab.example.com}:host-gateway"
+      - "${GITLAB_REGISTRY_DOMAIN:-registry.example.com}:host-gateway"
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - gitlab_runner_config:/etc/gitlab-runner
+      - ./runner-config:/etc/gitlab-runner
+      - ./traefik/certs/local-dev-tls.crt:/etc/gitlab-runner/certs/${GITLAB_DOMAIN:-gitlab.example.com}.crt:ro
+      - /var/run/docker.sock:/var/run/docker.sock
     networks:
       - platform
+    depends_on:
+      - gitlab
 
 volumes:
   gitlab_config:
   gitlab_logs:
   gitlab_data:
-  gitlab_runner_config:
 
 networks:
   platform:

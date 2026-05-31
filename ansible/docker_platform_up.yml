@@ -5,6 +5,7 @@
     repo_root: "/home/{{ ansible_user }}/autoprovision"
     compose_dir: "{{ repo_root }}/docker"
     traefik_dir: "{{ compose_dir }}/traefik"
+    traefik_certs_dir: "{{ traefik_dir }}/certs"
     dockhand_domain_safe: "{{ dockhand_domain | default('dockhand.local') }}"
   tasks:
     - name: Show compose directory
@@ -20,6 +21,12 @@
     - name: Ensure Traefik directory exists
       file:
         path: "{{ traefik_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Ensure Traefik certs directory exists
+      file:
+        path: "{{ traefik_certs_dir }}"
         state: directory
         mode: "0755"
 

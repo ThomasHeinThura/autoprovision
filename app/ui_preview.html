@@ -133,6 +133,12 @@
         gap: 9px;
       }
 
+      .sub-actions {
+        margin-top: 10px;
+        display: grid;
+        gap: 9px;
+      }
+
       .btn-run {
         width: 100%;
         border: 1px solid #0f766e;
@@ -149,6 +155,16 @@
       .btn-run.alt {
         border-color: #0f766e;
         background: linear-gradient(135deg, #0d9488, var(--brand-3));
+      }
+
+      .btn-run.ghost {
+        border-color: #64748b;
+        background: linear-gradient(135deg, #64748b, #475569);
+      }
+
+      .btn-run.warn {
+        border-color: #b45309;
+        background: linear-gradient(135deg, #d97706, #b45309);
       }
 
       .btn-run:hover {
@@ -188,6 +204,24 @@
         line-height: 1.45;
         overflow: auto;
         white-space: pre-wrap;
+      }
+
+      .tls-box {
+        border: 1px solid #cbd5e1;
+        border-radius: 10px;
+        padding: 10px;
+        background: #f8fafc;
+      }
+
+      textarea {
+        width: 100%;
+        border: 1px solid #cbd5e1;
+        border-radius: 10px;
+        padding: 9px 10px;
+        font-size: 0.82rem;
+        min-height: 90px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        resize: vertical;
       }
 
       @media (max-width: 980px) {
@@ -242,32 +276,51 @@
             </div>
             <div class="field">
               <label for="dockhand-domain">Dockhand Domain (for Platform Stack)</label>
-              <input id="dockhand-domain" placeholder="dockhand.example.com" />
+              <input id="dockhand-domain" value="dockhand.example.com" placeholder="dockhand.example.com" />
             </div>
             <div class="field">
               <label for="kibana-domain">Kibana Domain (for ELK Stack)</label>
-              <input id="kibana-domain" placeholder="kibana.example.com" />
+              <input id="kibana-domain" value="kibana.example.com" placeholder="kibana.example.com" />
             </div>
             <div class="field">
               <label for="gitlab-domain">GitLab Domain</label>
-              <input id="gitlab-domain" placeholder="gitlab.example.com" />
+              <input id="gitlab-domain" value="gitlab.example.com" placeholder="gitlab.example.com" />
             </div>
             <div class="field">
               <label for="gitlab-registry-domain">GitLab Registry Domain</label>
-              <input id="gitlab-registry-domain" placeholder="registry.example.com" />
+              <input id="gitlab-registry-domain" value="registry.example.com" placeholder="registry.example.com" />
             </div>
             <div class="field">
               <label for="sonarqube-domain">SonarQube Domain</label>
-              <input id="sonarqube-domain" placeholder="sonarqube.example.com" />
+              <input id="sonarqube-domain" value="sonar.example.com" placeholder="sonar.example.com" />
+            </div>
+            <p class="hint">
+              Default domains are pre-filled. If you change domains, point DNS records to the Docker VM before HTTPS ACME challenge.
+              If DNS is not ready, use self-signed TLS generation below.
+            </p>
+            <div class="tls-box">
+              <label for="tls-cert">Custom TLS Certificate PEM (optional)</label>
+              <textarea id="tls-cert" placeholder="-----BEGIN CERTIFICATE-----"></textarea>
+              <label for="tls-key">Custom TLS Key PEM (optional)</label>
+              <textarea id="tls-key" placeholder="-----BEGIN PRIVATE KEY-----"></textarea>
             </div>
           </div>
 
           <div class="actions">
+            <button class="btn-run ghost" type="button" onclick="saveConfigOnly()">Submit and Save Variable Config</button>
+            <button class="btn-run warn" type="button" onclick="configureTls()">Run TLS Generation / Apply Cert</button>
             <button class="btn-run" type="button" onclick="runDockerBase()">Docker VM Base Setup</button>
             <button class="btn-run alt" type="button" onclick="runPlatform()">Platform Stack</button>
             <button class="btn-run alt" type="button" onclick="runElk()">ELK Stack</button>
             <button class="btn-run alt" type="button" onclick="runGitLab()">GitLab Stack</button>
             <button class="btn-run alt" type="button" onclick="runSonarQube()">SonarQube Stack</button>
+          </div>
+
+          <div class="sub-actions">
+            <button class="btn-run ghost" type="button" onclick="verifyDomain('dockhand.example.com')">Check https://dockhand.example.com/</button>
+            <button class="btn-run ghost" type="button" onclick="verifyDomain('kibana.example.com')">Check https://kibana.example.com/</button>
+            <button class="btn-run ghost" type="button" onclick="verifyDomain('gitlab.example.com')">Check https://gitlab.example.com/</button>
+            <button class="btn-run ghost" type="button" onclick="verifyDomain('sonar.example.com')">Check https://sonar.example.com/</button>
           </div>
         </aside>
 
@@ -318,11 +371,11 @@
           document.getElementById('env').value = data.env || 'lab';
           document.getElementById('docker-ip').value = data.docker_ip || '';
           document.getElementById('ssh-user').value = data.ssh_user || 'autoprovision';
-          document.getElementById('dockhand-domain').value = data.dockhand_domain || '';
-          document.getElementById('kibana-domain').value = data.kibana_domain || '';
-          document.getElementById('gitlab-domain').value = data.gitlab_domain || '';
-          document.getElementById('gitlab-registry-domain').value = data.gitlab_registry_domain || '';
-          document.getElementById('sonarqube-domain').value = data.sonarqube_domain || '';
+          document.getElementById('dockhand-domain').value = data.dockhand_domain || 'dockhand.example.com';
+          document.getElementById('kibana-domain').value = data.kibana_domain || 'kibana.example.com';
+          document.getElementById('gitlab-domain').value = data.gitlab_domain || 'gitlab.example.com';
+          document.getElementById('gitlab-registry-domain').value = data.gitlab_registry_domain || 'registry.example.com';
+          document.getElementById('sonarqube-domain').value = data.sonarqube_domain || 'sonar.example.com';
         } catch (error) {
           setLog('State Load', `Could not load saved values: ${error}`);
         }
@@ -330,13 +383,18 @@
 
       async function savePersistedState() {
         try {
-          await fetch('/state/ui', {
+          const response = await fetch('/state/ui', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(persistPayload()),
           });
+          if (!response.ok) {
+            throw new Error(`State save failed: ${response.status}`);
+          }
+          return await response.json();
         } catch (_) {
           // No-op: keep UI usable even if state persistence fails.
+          return null;
         }
       }
 
@@ -387,10 +445,43 @@
         postAction('/actions/bootstrap-docker', sharedPayload(), 'Docker VM Base Setup');
       }
 
+      async function saveConfigOnly() {
+        setLog('Save Config', 'Saving variable config...');
+        const result = await savePersistedState();
+        if (result) {
+          setLog('Save Config', JSON.stringify(result, null, 2));
+        } else {
+          setLog('Save Config', 'Could not save config. Check backend logs.');
+        }
+      }
+
+      async function configureTls() {
+        const payload = sharedPayload();
+        payload.cert_pem = document.getElementById('tls-cert').value.trim();
+        payload.key_pem = document.getElementById('tls-key').value.trim();
+
+        setLog('TLS Configuration', 'Applying TLS configuration...');
+        try {
+          const response = await fetch('/tls/configure', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          });
+          const data = await response.json();
+          if (!response.ok) {
+            setLog('TLS Configuration', data.details || JSON.stringify(data, null, 2));
+            return;
+          }
+          setLog('TLS Configuration', `${data.message}\n\n${data.dns_note}`);
+        } catch (error) {
+          setLog('TLS Configuration', `Error: ${error}`);
+        }
+      }
+
       function runPlatform() {
         const payload = sharedPayload();
         if (!payload.dockhand_domain) {
-          payload.dockhand_domain = 'dockhand.local';
+          payload.dockhand_domain = 'dockhand.example.com';
         }
         postAction('/actions/platform-up', payload, 'Platform Stack');
       }
@@ -398,7 +489,7 @@
       function runElk() {
         const payload = sharedPayload();
         if (!payload.kibana_domain) {
-          payload.kibana_domain = 'kibana.local';
+          payload.kibana_domain = 'kibana.example.com';
         }
         postAction('/actions/elk-up', payload, 'ELK Stack');
       }
@@ -406,10 +497,10 @@
       function runGitLab() {
         const payload = sharedPayload();
         if (!payload.gitlab_domain) {
-          payload.gitlab_domain = 'gitlab.local';
+          payload.gitlab_domain = 'gitlab.example.com';
         }
         if (!payload.gitlab_registry_domain) {
-          payload.gitlab_registry_domain = 'registry.local';
+          payload.gitlab_registry_domain = 'registry.example.com';
         }
         postAction('/actions/gitlab-up', payload, 'GitLab Stack');
       }
@@ -417,9 +508,13 @@
       function runSonarQube() {
         const payload = sharedPayload();
         if (!payload.sonarqube_domain) {
-          payload.sonarqube_domain = 'sonarqube.local';
+          payload.sonarqube_domain = 'sonar.example.com';
         }
         postAction('/actions/sonarqube-up', payload, 'SonarQube Stack');
+      }
+
+      function verifyDomain(domain) {
+        setLog('Domain Check', `Run from terminal:\ncurl -Lvk https://${domain}/`);
       }
 
       persistFieldIds.forEach((id) => {

@@ -3,12 +3,16 @@ from fastapi.responses import HTMLResponse, JSONResponse
 import asyncio
 import os
 import sqlite3
+import subprocess
 from datetime import datetime, timezone
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ANSIBLE_DIR = os.path.join(BASE_DIR, "ansible")
 INVENTORY_FILE = os.path.join(ANSIBLE_DIR, "inventory")
 STATE_DB = os.path.join(BASE_DIR, "data", "state.db")
+TRAEFIK_CERTS_DIR = os.path.join(BASE_DIR, "docker", "traefik", "certs")
+TRAEFIK_CERT_FILE = os.path.join(TRAEFIK_CERTS_DIR, "local-dev-tls.crt")
+TRAEFIK_KEY_FILE = os.path.join(TRAEFIK_CERTS_DIR, "local-dev-tls.key")
 
 app = FastAPI(title="Autoprovision Control Plane", version="0.7.0")
 
@@ -55,7 +59,10 @@ def _ensure_state_db() -> None:
                 id, env, docker_ip, ssh_user, dockhand_domain, kibana_domain,
                 gitlab_domain, gitlab_registry_domain, sonarqube_domain, updated_at
             )
-            SELECT 1, 'lab', '', 'autoprovision', '', '', '', '', '', ?
+            SELECT 1, 'lab', '', 'autoprovision',
+                   'dockhand.example.com', 'kibana.example.com',
+                   'gitlab.example.com', 'registry.example.com', 'sonar.example.com',
+                   ?
             WHERE NOT EXISTS (SELECT 1 FROM ui_state WHERE id = 1)
             """,
             (_utc_now(),),
@@ -91,11 +98,11 @@ def _read_ui_state() -> dict:
             "env": "lab",
             "docker_ip": "",
             "ssh_user": "autoprovision",
-            "dockhand_domain": "",
-            "kibana_domain": "",
-            "gitlab_domain": "",
-            "gitlab_registry_domain": "",
-            "sonarqube_domain": "",
+            "dockhand_domain": "dockhand.example.com",
+            "kibana_domain": "kibana.example.com",
+            "gitlab_domain": "gitlab.example.com",
+            "gitlab_registry_domain": "registry.example.com",
+            "sonarqube_domain": "sonar.example.com",
             "updated_at": None,
         }
     return dict(row)
@@ -109,11 +116,11 @@ def _save_ui_state(data: dict) -> dict:
 
     docker_ip = (data.get("docker_ip") or "").strip()
     ssh_user = (data.get("ssh_user") or "autoprovision").strip() or "autoprovision"
-    dockhand_domain = (data.get("dockhand_domain") or "").strip()
-    kibana_domain = (data.get("kibana_domain") or "").strip()
-    gitlab_domain = (data.get("gitlab_domain") or "").strip()
-    gitlab_registry_domain = (data.get("gitlab_registry_domain") or "").strip()
-    sonarqube_domain = (data.get("sonarqube_domain") or "").strip()
+    dockhand_domain = (data.get("dockhand_domain") or "dockhand.example.com").strip()
+    kibana_domain = (data.get("kibana_domain") or "kibana.example.com").strip()
+    gitlab_domain = (data.get("gitlab_domain") or "gitlab.example.com").strip()
+    gitlab_registry_domain = (data.get("gitlab_registry_domain") or "registry.example.com").strip()
+    sonarqube_domain = (data.get("sonarqube_domain") or "sonar.example.com").strip()
     updated_at = _utc_now()
 
     conn = sqlite3.connect(STATE_DB)
@@ -244,6 +251,96 @@ def _read_log(name: str) -> str:
         return f.read()
 
 
+def _ensure_traefik_certs_dir() -> None:
+    os.makedirs(TRAEFIK_CERTS_DIR, exist_ok=True)
+
+
+def _build_san(domains: list[str]) -> str:
+    return ",".join(f"DNS:{d}" for d in domains if d)
+
+
+def _generate_self_signed_cert(domains: list[str]) -> None:
+    _ensure_traefik_certs_dir()
+    primary = domains[0] if domains else "localhost"
+    san = _build_san(domains) or f"DNS:{primary}"
+    cmd = [
+        "openssl",
+        "req",
+        "-x509",
+        "-nodes",
+        "-newkey",
+        "rsa:2048",
+        "-sha256",
+        "-days",
+        "365",
+        "-subj",
+        f"/CN={primary}",
+        "-addext",
+        f"subjectAltName={san}",
+        "-keyout",
+        TRAEFIK_KEY_FILE,
+        "-out",
+        TRAEFIK_CERT_FILE,
+    ]
+    subprocess.run(cmd, check=True, capture_output=True, text=True)
+
+
+def _write_provided_cert(cert_pem: str, key_pem: str) -> None:
+    _ensure_traefik_certs_dir()
+    with open(TRAEFIK_CERT_FILE, "w", encoding="utf-8") as f:
+        f.write(cert_pem.strip() + "\n")
+    with open(TRAEFIK_KEY_FILE, "w", encoding="utf-8") as f:
+        f.write(key_pem.strip() + "\n")
+
+
+@app.post("/tls/configure")
+async def configure_tls(request: Request):
+    body = await request.json()
+    cert_pem = (body.get("cert_pem") or "").strip()
+    key_pem = (body.get("key_pem") or "").strip()
+    domains = [
+        (body.get("dockhand_domain") or "dockhand.example.com").strip(),
+        (body.get("kibana_domain") or "kibana.example.com").strip(),
+        (body.get("gitlab_domain") or "gitlab.example.com").strip(),
+        (body.get("sonarqube_domain") or "sonar.example.com").strip(),
+        (body.get("gitlab_registry_domain") or "registry.example.com").strip(),
+    ]
+
+    try:
+        if cert_pem and key_pem:
+            _write_provided_cert(cert_pem, key_pem)
+            mode = "provided"
+            message = "TLS certificate and key saved for Traefik. Re-run Platform Stack to apply."
+        else:
+            _generate_self_signed_cert(domains)
+            mode = "self-signed"
+            message = "Self-signed TLS certificate generated for current domains. Re-run Platform Stack to apply."
+    except subprocess.CalledProcessError as e:
+        return JSONResponse(
+            {
+                "error": "openssl_failed",
+                "details": e.stderr or e.stdout or str(e),
+            },
+            status_code=500,
+        )
+    except FileNotFoundError:
+        return JSONResponse(
+            {
+                "error": "openssl_not_found",
+                "details": "OpenSSL is not installed on this machine.",
+            },
+            status_code=500,
+        )
+
+    return JSONResponse(
+        {
+            "mode": mode,
+            "message": message,
+            "dns_note": "If you use custom public domains with Let's Encrypt, ensure DNS records point to this Docker VM before requesting ACME certificates.",
+        }
+    )
+
+
 # ─── routes ───────────────────────────────────────────────────────────────────
 
 @app.get("/healthz")
@@ -292,7 +389,7 @@ async def action_platform_up(request: Request):
     docker_ip = body.get("docker_ip", "")
     ssh_user  = body.get("ssh_user", "autoprovision")
     ssh_pass  = body.get("ssh_pass", "")
-    dockhand_domain = body.get("dockhand_domain", "dockhand.local")
+    dockhand_domain = body.get("dockhand_domain", "dockhand.example.com")
     _save_ui_state(body)
     if not docker_ip:
         return JSONResponse({"error": "docker_ip required"}, status_code=400)
@@ -313,7 +410,7 @@ async def action_elk_up(request: Request):
     docker_ip = body.get("docker_ip", "")
     ssh_user  = body.get("ssh_user", "autoprovision")
     ssh_pass  = body.get("ssh_pass", "")
-    kibana_domain = body.get("kibana_domain", "kibana.local")
+    kibana_domain = body.get("kibana_domain", "kibana.example.com")
     _save_ui_state(body)
     if not docker_ip:
         return JSONResponse({"error": "docker_ip required"}, status_code=400)
@@ -334,8 +431,8 @@ async def action_gitlab_up(request: Request):
     docker_ip = body.get("docker_ip", "")
     ssh_user = body.get("ssh_user", "autoprovision")
     ssh_pass = body.get("ssh_pass", "")
-    gitlab_domain = body.get("gitlab_domain", "gitlab.local")
-    gitlab_registry_domain = body.get("gitlab_registry_domain", "registry.local")
+    gitlab_domain = body.get("gitlab_domain", "gitlab.example.com")
+    gitlab_registry_domain = body.get("gitlab_registry_domain", "registry.example.com")
     _save_ui_state(body)
     if not docker_ip:
         return JSONResponse({"error": "docker_ip required"}, status_code=400)
@@ -359,7 +456,7 @@ async def action_sonarqube_up(request: Request):
     docker_ip = body.get("docker_ip", "")
     ssh_user = body.get("ssh_user", "autoprovision")
     ssh_pass = body.get("ssh_pass", "")
-    sonarqube_domain = body.get("sonarqube_domain", "sonarqube.local")
+    sonarqube_domain = body.get("sonarqube_domain", "sonar.example.com")
     _save_ui_state(body)
     if not docker_ip:
         return JSONResponse({"error": "docker_ip required"}, status_code=400)

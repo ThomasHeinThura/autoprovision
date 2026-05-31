@@ -4,8 +4,9 @@
   vars:
     repo_root: "/home/{{ ansible_user }}/autoprovision"
     compose_dir: "{{ repo_root }}/docker"
-    gitlab_domain_safe: "{{ gitlab_domain | default('gitlab.local') }}"
-    gitlab_registry_domain_safe: "{{ gitlab_registry_domain | default('registry.local') }}"
+    runner_config_dir: "{{ compose_dir }}/runner-config"
+    gitlab_domain_safe: "{{ gitlab_domain | default('gitlab.example.com') }}"
+    gitlab_registry_domain_safe: "{{ gitlab_registry_domain | default('registry.example.com') }}"
   tasks:
     - name: Show compose directory
       debug:
@@ -16,6 +17,53 @@
         path: "{{ compose_dir }}"
         state: directory
         mode: "0755"
+
+    - name: Ensure GitLab runner config directory exists
+      file:
+        path: "{{ runner_config_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Ensure GitLab runner system id file exists
+      file:
+        path: "{{ runner_config_dir }}/.runner_system_id"
+        state: touch
+        mode: "0644"
+
+    - name: Seed GitLab runner config template if missing
+      copy:
+        dest: "{{ runner_config_dir }}/config.toml"
+        mode: "0644"
+        force: false
+        content: |
+          concurrent = 1
+          check_interval = 0
+          connection_max_age = "15m0s"
+          shutdown_timeout = 0
+
+          [session_server]
+            session_timeout = 1800
+
+          # Add your runner token after first GitLab UI registration.
+          [[runners]]
+            name = "local-docker-runner"
+            url = "https://{{ gitlab_domain_safe }}"
+            executor = "docker"
+            [runners.cache]
+              MaxUploadedArchiveSize = 0
+            [runners.docker]
+              tls_verify = false
+              image = "alpine:latest"
+              privileged = true
+              disable_entrypoint_overwrite = false
+              oom_kill_disable = false
+              disable_cache = false
+              volumes = ["/var/run/docker.sock:/var/run/docker.sock", "/cache", "/etc/gitlab-runner/certs/{{ gitlab_domain_safe }}.crt:/usr/local/share/ca-certificates/local-dev-ca.crt:ro"]
+              volume_keep = false
+              extra_hosts = ["{{ gitlab_domain_safe }}:host-gateway", "{{ gitlab_registry_domain_safe }}:host-gateway"]
+              pull_policy = ["if-not-present"]
+              shm_size = 0
+              network_mtu = 0
 
     - name: Ensure GitLab database exists in pg-platform
       shell: |
