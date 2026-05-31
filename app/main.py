@@ -144,7 +144,7 @@ async def index():
       <div class="col">
         <div class="card">
           <h2>&#128040; Phase B1 — Docker VM base setup</h2>
-          <p><small>Installs git, curl, wget, Docker CE on the Docker VM. Clones this repo to <code>/opt/autoprovision</code>.</small></p>
+          <p><small>Installs git, curl, wget, Docker CE on the Docker VM. Clones this repo to <code>/home/&lt;automation-user&gt;/autoprovision</code>.</small></p>
           <button onclick="submitAction('/actions/bootstrap-docker', 'log-base')">&#9654; Run Phase B1: Bootstrap Docker base</button>
           <hr/>
           <small>Last run output:</small>
@@ -153,7 +153,7 @@ async def index():
 
         <div class="card">
           <h2>&#128679; Phase B2 — Start platform stack (Postgres + Traefik + Dockhand)</h2>
-          <p><small>Runs <code>docker compose -f docker-compose.platform.yml up -d</code> on the Docker VM.</small></p>
+          <p><small>Runs <code>docker compose -f docker-compose.platform.yml up -d</code> in the Docker VM repo's <code>docker/</code> directory.</small></p>
           <button onclick="submitAction('/actions/platform-up', 'log-platform')">&#9654; Run Phase B2: Start platform stack</button>
           <hr/>
           <small>Last run output:</small>
