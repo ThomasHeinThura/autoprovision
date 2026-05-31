@@ -5,25 +5,35 @@
     repo_root: "/home/{{ ansible_user }}/autoprovision"
     compose_dir: "{{ repo_root }}/docker"
   tasks:
+    - name: Show compose directory
+      debug:
+        msg: "Using compose_dir={{ compose_dir }}"
+
     - name: Ensure compose directory exists
       file:
         path: "{{ compose_dir }}"
         state: directory
         mode: '0755'
 
-    - name: Pull latest images
+    - name: Pull latest platform images (Postgres, Traefik, Dockhand)
       shell: docker compose -f docker-compose.platform.yml pull
       args:
         chdir: "{{ compose_dir }}"
 
-    - name: Bring up platform stack
+    - name: Bring up platform stack (Postgres + Traefik + Dockhand)
       shell: docker compose -f docker-compose.platform.yml up -d
       args:
         chdir: "{{ compose_dir }}"
 
     - name: Wait for Postgres to be healthy
-      shell: docker inspect --format='{{.State.Health.Status}}' pg-platform
+      shell: >
+        docker inspect --format='{{"{{"}}.State.Health.Status{{"}}"}}' pg-platform
       register: pg_health
       until: pg_health.stdout == "healthy"
       retries: 20
       delay: 5
+      changed_when: false
+
+    - name: Report Postgres health status
+      debug:
+        msg: "Postgres health: {{ pg_health.stdout }}"
