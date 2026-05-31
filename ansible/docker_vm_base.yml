@@ -3,7 +3,7 @@
   become: true
   vars:
     repo_url: "https://github.com/ThomasHeinThura/autoprovision.git"
-    repo_dest: "/opt/autoprovision"
+    repo_dest: "/home/{{ ansible_user }}/autoprovision"
   tasks:
     - name: Update apt cache (Debian/Ubuntu)
       apt:
@@ -41,25 +41,18 @@
         groups: docker
         append: yes
 
-    - name: Ensure /opt exists
+    - name: Ensure repo parent directory exists (automation user home)
       file:
-        path: /opt
+        path: "{{ repo_dest | dirname }}"
         state: directory
-        owner: root
-        group: root
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
         mode: "0755"
 
-    - name: Clone autoprovision repo on Docker VM (as root)
+    - name: Clone autoprovision repo on Docker VM (into automation user home)
+      become_user: "{{ ansible_user }}"
       git:
         repo: "{{ repo_url }}"
         dest: "{{ repo_dest }}"
         version: main
         force: no
-
-    - name: Set ownership of repo to automation user
-      file:
-        path: "{{ repo_dest }}"
-        state: directory
-        owner: "{{ ansible_user }}"
-        group: "{{ ansible_user }}"
-        recurse: yes
