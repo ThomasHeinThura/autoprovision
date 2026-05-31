@@ -73,6 +73,7 @@ cluster:
 YAML
 
 talosctl gen config "$CLUSTER_NAME" "https://$FIRST_CP:6443" \
+  --force \
   --install-disk "/dev/$INSTALL_DISK" \
   --config-patch @cluster-patch.yaml
 
