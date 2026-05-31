@@ -1,0 +1,47 @@
+- name: Deploy GitLab stack from compose file
+  hosts: docker_vm
+  become: true
+  vars:
+    repo_root: "/home/{{ ansible_user }}/autoprovision"
+    compose_dir: "{{ repo_root }}/docker"
+    gitlab_domain_safe: "{{ gitlab_domain | default('gitlab.local') }}"
+    gitlab_registry_domain_safe: "{{ gitlab_registry_domain | default('registry.local') }}"
+  tasks:
+    - name: Show compose directory
+      debug:
+        msg: "Using compose_dir={{ compose_dir }}"
+
+    - name: Ensure compose directory exists
+      file:
+        path: "{{ compose_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Ensure GitLab database exists in pg-platform
+      shell: |
+        set -e
+        if ! docker exec pg-platform psql -U platform -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='gitlab'" | grep -q 1; then
+          docker exec pg-platform psql -U platform -d postgres -c "CREATE DATABASE gitlab"
+        fi
+      register: gitlab_db_result
+      changed_when: "'CREATE DATABASE' in (gitlab_db_result.stdout | default(''))"
+
+    - name: Pull latest GitLab images
+      shell: >
+        GITLAB_DOMAIN='{{ gitlab_domain_safe }}'
+        GITLAB_REGISTRY_DOMAIN='{{ gitlab_registry_domain_safe }}'
+        docker compose -f docker-compose.gitlab.yml pull
+      args:
+        chdir: "{{ compose_dir }}"
+
+    - name: Bring up GitLab stack
+      shell: >
+        GITLAB_DOMAIN='{{ gitlab_domain_safe }}'
+        GITLAB_REGISTRY_DOMAIN='{{ gitlab_registry_domain_safe }}'
+        docker compose -f docker-compose.gitlab.yml up -d
+      args:
+        chdir: "{{ compose_dir }}"
+
+    - name: Report GitLab deployment complete
+      debug:
+        msg: "GitLab stack deployed with domain {{ gitlab_domain_safe }} and registry {{ gitlab_registry_domain_safe }}."

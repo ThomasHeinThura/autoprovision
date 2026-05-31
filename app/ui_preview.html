@@ -248,12 +248,26 @@
               <label for="kibana-domain">Kibana Domain (for ELK Stack)</label>
               <input id="kibana-domain" placeholder="kibana.example.com" />
             </div>
+            <div class="field">
+              <label for="gitlab-domain">GitLab Domain</label>
+              <input id="gitlab-domain" placeholder="gitlab.example.com" />
+            </div>
+            <div class="field">
+              <label for="gitlab-registry-domain">GitLab Registry Domain</label>
+              <input id="gitlab-registry-domain" placeholder="registry.example.com" />
+            </div>
+            <div class="field">
+              <label for="sonarqube-domain">SonarQube Domain</label>
+              <input id="sonarqube-domain" placeholder="sonarqube.example.com" />
+            </div>
           </div>
 
           <div class="actions">
             <button class="btn-run" type="button" onclick="runDockerBase()">Docker VM Base Setup</button>
             <button class="btn-run alt" type="button" onclick="runPlatform()">Platform Stack</button>
             <button class="btn-run alt" type="button" onclick="runElk()">ELK Stack</button>
+            <button class="btn-run alt" type="button" onclick="runGitLab()">GitLab Stack</button>
+            <button class="btn-run alt" type="button" onclick="runSonarQube()">SonarQube Stack</button>
           </div>
         </aside>
 
@@ -270,7 +284,16 @@
     <script>
       const logAction = document.getElementById('log-action');
       const bigLog = document.getElementById('big-log');
-      const persistFieldIds = ['env', 'docker-ip', 'ssh-user', 'dockhand-domain', 'kibana-domain'];
+      const persistFieldIds = [
+        'env',
+        'docker-ip',
+        'ssh-user',
+        'dockhand-domain',
+        'kibana-domain',
+        'gitlab-domain',
+        'gitlab-registry-domain',
+        'sonarqube-domain',
+      ];
 
       function persistPayload() {
         return {
@@ -279,6 +302,9 @@
           ssh_user: document.getElementById('ssh-user').value.trim() || 'autoprovision',
           dockhand_domain: document.getElementById('dockhand-domain').value.trim(),
           kibana_domain: document.getElementById('kibana-domain').value.trim(),
+          gitlab_domain: document.getElementById('gitlab-domain').value.trim(),
+          gitlab_registry_domain: document.getElementById('gitlab-registry-domain').value.trim(),
+          sonarqube_domain: document.getElementById('sonarqube-domain').value.trim(),
         };
       }
 
@@ -294,6 +320,9 @@
           document.getElementById('ssh-user').value = data.ssh_user || 'autoprovision';
           document.getElementById('dockhand-domain').value = data.dockhand_domain || '';
           document.getElementById('kibana-domain').value = data.kibana_domain || '';
+          document.getElementById('gitlab-domain').value = data.gitlab_domain || '';
+          document.getElementById('gitlab-registry-domain').value = data.gitlab_registry_domain || '';
+          document.getElementById('sonarqube-domain').value = data.sonarqube_domain || '';
         } catch (error) {
           setLog('State Load', `Could not load saved values: ${error}`);
         }
@@ -319,6 +348,9 @@
           ssh_pass: document.getElementById('ssh-pass').value,
           dockhand_domain: document.getElementById('dockhand-domain').value.trim(),
           kibana_domain: document.getElementById('kibana-domain').value.trim(),
+          gitlab_domain: document.getElementById('gitlab-domain').value.trim(),
+          gitlab_registry_domain: document.getElementById('gitlab-registry-domain').value.trim(),
+          sonarqube_domain: document.getElementById('sonarqube-domain').value.trim(),
         };
       }
 
@@ -369,6 +401,25 @@
           payload.kibana_domain = 'kibana.local';
         }
         postAction('/actions/elk-up', payload, 'ELK Stack');
+      }
+
+      function runGitLab() {
+        const payload = sharedPayload();
+        if (!payload.gitlab_domain) {
+          payload.gitlab_domain = 'gitlab.local';
+        }
+        if (!payload.gitlab_registry_domain) {
+          payload.gitlab_registry_domain = 'registry.local';
+        }
+        postAction('/actions/gitlab-up', payload, 'GitLab Stack');
+      }
+
+      function runSonarQube() {
+        const payload = sharedPayload();
+        if (!payload.sonarqube_domain) {
+          payload.sonarqube_domain = 'sonarqube.local';
+        }
+        postAction('/actions/sonarqube-up', payload, 'SonarQube Stack');
       }
 
       persistFieldIds.forEach((id) => {

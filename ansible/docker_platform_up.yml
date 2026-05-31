@@ -4,6 +4,7 @@
   vars:
     repo_root: "/home/{{ ansible_user }}/autoprovision"
     compose_dir: "{{ repo_root }}/docker"
+    dockhand_domain_safe: "{{ dockhand_domain | default('dockhand.local') }}"
   tasks:
     - name: Show compose directory
       debug:
@@ -13,15 +14,19 @@
       file:
         path: "{{ compose_dir }}"
         state: directory
-        mode: '0755'
+        mode: "0755"
 
     - name: Pull latest platform images (Postgres, Traefik, Dockhand)
-      shell: docker compose -f docker-compose.platform.yml pull
+      shell: >
+        DOCKHAND_DOMAIN='{{ dockhand_domain_safe }}'
+        docker compose -f docker-compose.platform.yml pull
       args:
         chdir: "{{ compose_dir }}"
 
     - name: Bring up platform stack (Postgres + Traefik + Dockhand)
-      shell: docker compose -f docker-compose.platform.yml up -d
+      shell: >
+        DOCKHAND_DOMAIN='{{ dockhand_domain_safe }}'
+        docker compose -f docker-compose.platform.yml up -d
       args:
         chdir: "{{ compose_dir }}"
 

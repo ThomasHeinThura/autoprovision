@@ -1,0 +1,44 @@
+- name: Deploy SonarQube stack from compose file
+  hosts: docker_vm
+  become: true
+  vars:
+    repo_root: "/home/{{ ansible_user }}/autoprovision"
+    compose_dir: "{{ repo_root }}/docker"
+    sonarqube_domain_safe: "{{ sonarqube_domain | default('sonarqube.local') }}"
+  tasks:
+    - name: Show compose directory
+      debug:
+        msg: "Using compose_dir={{ compose_dir }}"
+
+    - name: Ensure compose directory exists
+      file:
+        path: "{{ compose_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Ensure SonarQube database exists in pg-platform
+      shell: |
+        set -e
+        if ! docker exec pg-platform psql -U platform -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='sonarqube'" | grep -q 1; then
+          docker exec pg-platform psql -U platform -d postgres -c "CREATE DATABASE sonarqube"
+        fi
+      register: sonarqube_db_result
+      changed_when: "'CREATE DATABASE' in (sonarqube_db_result.stdout | default(''))"
+
+    - name: Pull latest SonarQube images
+      shell: >
+        SONARQUBE_DOMAIN='{{ sonarqube_domain_safe }}'
+        docker compose -f docker-compose.sonarqube.yml pull
+      args:
+        chdir: "{{ compose_dir }}"
+
+    - name: Bring up SonarQube stack
+      shell: >
+        SONARQUBE_DOMAIN='{{ sonarqube_domain_safe }}'
+        docker compose -f docker-compose.sonarqube.yml up -d
+      args:
+        chdir: "{{ compose_dir }}"
+
+    - name: Report SonarQube deployment complete
+      debug:
+        msg: "SonarQube stack deployed with domain {{ sonarqube_domain_safe }}."

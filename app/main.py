@@ -10,7 +10,7 @@ ANSIBLE_DIR = os.path.join(BASE_DIR, "ansible")
 INVENTORY_FILE = os.path.join(ANSIBLE_DIR, "inventory")
 STATE_DB = os.path.join(BASE_DIR, "data", "state.db")
 
-app = FastAPI(title="Autoprovision Control Plane", version="0.6.0")
+app = FastAPI(title="Autoprovision Control Plane", version="0.7.0")
 
 # ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -32,14 +32,30 @@ def _ensure_state_db() -> None:
                 ssh_user TEXT NOT NULL DEFAULT 'autoprovision',
                 dockhand_domain TEXT NOT NULL DEFAULT '',
                 kibana_domain TEXT NOT NULL DEFAULT '',
+                gitlab_domain TEXT NOT NULL DEFAULT '',
+                gitlab_registry_domain TEXT NOT NULL DEFAULT '',
+                sonarqube_domain TEXT NOT NULL DEFAULT '',
                 updated_at TEXT NOT NULL
             )
             """
         )
+        # Backward-compatible schema upgrades for existing DBs.
+        cols = {
+            row[1] for row in conn.execute("PRAGMA table_info(ui_state)").fetchall()
+        }
+        if "gitlab_domain" not in cols:
+            conn.execute("ALTER TABLE ui_state ADD COLUMN gitlab_domain TEXT NOT NULL DEFAULT ''")
+        if "gitlab_registry_domain" not in cols:
+            conn.execute("ALTER TABLE ui_state ADD COLUMN gitlab_registry_domain TEXT NOT NULL DEFAULT ''")
+        if "sonarqube_domain" not in cols:
+            conn.execute("ALTER TABLE ui_state ADD COLUMN sonarqube_domain TEXT NOT NULL DEFAULT ''")
         conn.execute(
             """
-            INSERT INTO ui_state (id, env, docker_ip, ssh_user, dockhand_domain, kibana_domain, updated_at)
-            SELECT 1, 'lab', '', 'autoprovision', '', '', ?
+            INSERT INTO ui_state (
+                id, env, docker_ip, ssh_user, dockhand_domain, kibana_domain,
+                gitlab_domain, gitlab_registry_domain, sonarqube_domain, updated_at
+            )
+            SELECT 1, 'lab', '', 'autoprovision', '', '', '', '', '', ?
             WHERE NOT EXISTS (SELECT 1 FROM ui_state WHERE id = 1)
             """,
             (_utc_now(),),
@@ -59,7 +75,13 @@ def _read_ui_state() -> dict:
     conn.row_factory = sqlite3.Row
     try:
         row = conn.execute(
-            "SELECT env, docker_ip, ssh_user, dockhand_domain, kibana_domain, updated_at FROM ui_state WHERE id = 1"
+            """
+            SELECT
+                env, docker_ip, ssh_user, dockhand_domain, kibana_domain,
+                gitlab_domain, gitlab_registry_domain, sonarqube_domain, updated_at
+            FROM ui_state
+            WHERE id = 1
+            """
         ).fetchone()
     finally:
         conn.close()
@@ -71,6 +93,9 @@ def _read_ui_state() -> dict:
             "ssh_user": "autoprovision",
             "dockhand_domain": "",
             "kibana_domain": "",
+            "gitlab_domain": "",
+            "gitlab_registry_domain": "",
+            "sonarqube_domain": "",
             "updated_at": None,
         }
     return dict(row)
@@ -86,6 +111,9 @@ def _save_ui_state(data: dict) -> dict:
     ssh_user = (data.get("ssh_user") or "autoprovision").strip() or "autoprovision"
     dockhand_domain = (data.get("dockhand_domain") or "").strip()
     kibana_domain = (data.get("kibana_domain") or "").strip()
+    gitlab_domain = (data.get("gitlab_domain") or "").strip()
+    gitlab_registry_domain = (data.get("gitlab_registry_domain") or "").strip()
+    sonarqube_domain = (data.get("sonarqube_domain") or "").strip()
     updated_at = _utc_now()
 
     conn = sqlite3.connect(STATE_DB)
@@ -93,10 +121,21 @@ def _save_ui_state(data: dict) -> dict:
         conn.execute(
             """
             UPDATE ui_state
-            SET env = ?, docker_ip = ?, ssh_user = ?, dockhand_domain = ?, kibana_domain = ?, updated_at = ?
+            SET env = ?, docker_ip = ?, ssh_user = ?, dockhand_domain = ?, kibana_domain = ?,
+                gitlab_domain = ?, gitlab_registry_domain = ?, sonarqube_domain = ?, updated_at = ?
             WHERE id = 1
             """,
-            (env, docker_ip, ssh_user, dockhand_domain, kibana_domain, updated_at),
+            (
+                env,
+                docker_ip,
+                ssh_user,
+                dockhand_domain,
+                kibana_domain,
+                gitlab_domain,
+                gitlab_registry_domain,
+                sonarqube_domain,
+                updated_at,
+            ),
         )
         conn.commit()
     finally:
@@ -108,6 +147,9 @@ def _save_ui_state(data: dict) -> dict:
         "ssh_user": ssh_user,
         "dockhand_domain": dockhand_domain,
         "kibana_domain": kibana_domain,
+        "gitlab_domain": gitlab_domain,
+        "gitlab_registry_domain": gitlab_registry_domain,
+        "sonarqube_domain": sonarqube_domain,
         "updated_at": updated_at,
     }
 
@@ -282,6 +324,52 @@ async def action_elk_up(request: Request):
         extra_vars={"kibana_domain": kibana_domain},
     )
     log = _read_log("elk.log")
+    return JSONResponse({"rc": rc, "log": log})
+
+
+@app.post("/actions/gitlab-up")
+async def action_gitlab_up(request: Request):
+    body = await request.json()
+    env = body.get("env", "lab")
+    docker_ip = body.get("docker_ip", "")
+    ssh_user = body.get("ssh_user", "autoprovision")
+    ssh_pass = body.get("ssh_pass", "")
+    gitlab_domain = body.get("gitlab_domain", "gitlab.local")
+    gitlab_registry_domain = body.get("gitlab_registry_domain", "registry.local")
+    _save_ui_state(body)
+    if not docker_ip:
+        return JSONResponse({"error": "docker_ip required"}, status_code=400)
+    _write_inventory(env, docker_ip, ssh_user, ssh_pass)
+    rc = await _run_playbook(
+        "ansible/gitlab_stack.yml",
+        "gitlab.log",
+        extra_vars={
+            "gitlab_domain": gitlab_domain,
+            "gitlab_registry_domain": gitlab_registry_domain,
+        },
+    )
+    log = _read_log("gitlab.log")
+    return JSONResponse({"rc": rc, "log": log})
+
+
+@app.post("/actions/sonarqube-up")
+async def action_sonarqube_up(request: Request):
+    body = await request.json()
+    env = body.get("env", "lab")
+    docker_ip = body.get("docker_ip", "")
+    ssh_user = body.get("ssh_user", "autoprovision")
+    ssh_pass = body.get("ssh_pass", "")
+    sonarqube_domain = body.get("sonarqube_domain", "sonarqube.local")
+    _save_ui_state(body)
+    if not docker_ip:
+        return JSONResponse({"error": "docker_ip required"}, status_code=400)
+    _write_inventory(env, docker_ip, ssh_user, ssh_pass)
+    rc = await _run_playbook(
+        "ansible/sonarqube_stack.yml",
+        "sonarqube.log",
+        extra_vars={"sonarqube_domain": sonarqube_domain},
+    )
+    log = _read_log("sonarqube.log")
     return JSONResponse({"rc": rc, "log": log})
 
 
