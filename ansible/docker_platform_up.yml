@@ -1,0 +1,28 @@
+- name: Bring up Docker platform stack (Postgres + Traefik + Dockhand)
+  hosts: docker_vm
+  become: true
+  vars:
+    compose_dir: "/opt/autoprovision/docker"
+  tasks:
+    - name: Ensure compose directory exists
+      file:
+        path: "{{ compose_dir }}"
+        state: directory
+        mode: '0755'
+
+    - name: Pull latest images
+      shell: docker compose -f {{ compose_dir }}/docker-compose.platform.yml pull
+      args:
+        chdir: "{{ compose_dir }}"
+
+    - name: Bring up platform stack
+      shell: docker compose -f {{ compose_dir }}/docker-compose.platform.yml up -d
+      args:
+        chdir: "{{ compose_dir }}"
+
+    - name: Wait for Postgres to be healthy
+      shell: docker inspect --format='{{.State.Health.Status}}' pg-platform
+      register: pg_health
+      until: pg_health.stdout == "healthy"
+      retries: 20
+      delay: 5

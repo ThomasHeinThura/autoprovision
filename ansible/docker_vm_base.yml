@@ -1,21 +1,28 @@
-- name: Bootstrap Docker VM base packages
-  hosts: docker_lab:docker_uat:docker_prod
+- name: Bootstrap Docker VM — base packages and Docker
+  hosts: docker_vm
   become: true
+  vars:
+    repo_url: "https://github.com/ThomasHeinThura/autoprovision.git"
+    repo_dest: "/opt/autoprovision"
   tasks:
-    - name: Ensure apt cache is updated (Debian/Ubuntu)
+    - name: Update apt cache (Debian/Ubuntu)
       apt:
         update_cache: yes
+        cache_valid_time: 3600
       when: ansible_os_family == "Debian"
 
-    - name: Install base packages (git, curl, wget)
+    - name: Install base packages
       package:
         name:
           - git
           - curl
           - wget
+          - ca-certificates
+          - gnupg
+          - lsb-release
         state: present
 
-    - name: Install Docker using convenience script
+    - name: Install Docker using official convenience script (idempotent via creates)
       shell: |
         curl -fsSL https://get.docker.com -o /tmp/get-docker.sh
         sh /tmp/get-docker.sh
@@ -28,3 +35,16 @@
         state: started
         enabled: true
 
+    - name: Add ansible_user to docker group
+      user:
+        name: "{{ ansible_user }}"
+        groups: docker
+        append: yes
+
+    - name: Clone autoprovision repo on Docker VM
+      git:
+        repo: "{{ repo_url }}"
+        dest: "{{ repo_dest }}"
+        version: main
+        force: no
+      become_user: "{{ ansible_user }}"

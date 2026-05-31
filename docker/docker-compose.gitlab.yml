@@ -1,0 +1,70 @@
+version: '3.8'
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GitLab CE + GitLab Runner + Container Registry
+# Version: 19.0.1-ce.0
+# Requires: platform network (start docker-compose.platform.yml first)
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+
+  gitlab:
+    image: gitlab/gitlab-ce:19.0.1-ce.0
+    container_name: gitlab
+    restart: unless-stopped
+    hostname: ${GITLAB_DOMAIN:-gitlab.local}
+    environment:
+      GITLAB_OMNIBUS_CONFIG: |
+        external_url 'https://${GITLAB_DOMAIN:-gitlab.local}'
+        nginx['listen_https'] = false
+        nginx['listen_port'] = 8929
+        nginx['proxy_set_headers'] = { 'X-Forwarded-Proto' => 'https', 'X-Forwarded-Ssl' => 'on' }
+        gitlab_rails['db_adapter'] = 'postgresql'
+        gitlab_rails['db_encoding'] = 'utf8'
+        gitlab_rails['db_host'] = 'postgres'
+        gitlab_rails['db_port'] = 5432
+        gitlab_rails['db_username'] = '${POSTGRES_USER:-platform}'
+        gitlab_rails['db_password'] = '${POSTGRES_PASSWORD:-changeme}'
+        gitlab_rails['db_database'] = 'gitlab'
+        registry_external_url 'https://${GITLAB_REGISTRY_DOMAIN:-registry.local}'
+        registry_nginx['listen_https'] = false
+        registry_nginx['listen_port'] = 5050
+    ports:
+      - "8929:8929"
+      - "5050:5050"
+      - "2222:22"
+    volumes:
+      - gitlab_config:/etc/gitlab
+      - gitlab_logs:/var/log/gitlab
+      - gitlab_data:/var/opt/gitlab
+    networks:
+      - platform
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.gitlab.rule=Host(`${GITLAB_DOMAIN:-gitlab.local}`)"
+      - "traefik.http.routers.gitlab.entrypoints=websecure"
+      - "traefik.http.services.gitlab.loadbalancer.server.port=8929"
+      - "traefik.http.routers.registry.rule=Host(`${GITLAB_REGISTRY_DOMAIN:-registry.local}`)"
+      - "traefik.http.routers.registry.entrypoints=websecure"
+      - "traefik.http.services.registry.loadbalancer.server.port=5050"
+
+  gitlab-runner:
+    image: gitlab/gitlab-runner:v19.0.1
+    container_name: gitlab-runner
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - gitlab_runner_config:/etc/gitlab-runner
+    networks:
+      - platform
+
+volumes:
+  gitlab_config:
+  gitlab_logs:
+  gitlab_data:
+  gitlab_runner_config:
+
+networks:
+  platform:
+    external: true
+    name: platform
