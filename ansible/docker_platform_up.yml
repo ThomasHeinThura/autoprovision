@@ -4,6 +4,7 @@
   vars:
     repo_root: "/home/{{ ansible_user }}/autoprovision"
     compose_dir: "{{ repo_root }}/docker"
+    traefik_dir: "{{ compose_dir }}/traefik"
     dockhand_domain_safe: "{{ dockhand_domain | default('dockhand.local') }}"
   tasks:
     - name: Show compose directory
@@ -16,16 +17,28 @@
         state: directory
         mode: "0755"
 
+    - name: Ensure Traefik directory exists
+      file:
+        path: "{{ traefik_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Ensure Traefik acme file exists with strict permissions
+      file:
+        path: "{{ traefik_dir }}/acme.json"
+        state: touch
+        mode: "0600"
+
     - name: Pull latest platform images (Postgres, Traefik, Dockhand)
-      shell: >
-        DOCKHAND_DOMAIN='{{ dockhand_domain_safe }}'
+      shell: |
+        export DOCKHAND_DOMAIN='{{ dockhand_domain_safe }}'
         docker compose -f docker-compose.platform.yml pull
       args:
         chdir: "{{ compose_dir }}"
 
     - name: Bring up platform stack (Postgres + Traefik + Dockhand)
-      shell: >
-        DOCKHAND_DOMAIN='{{ dockhand_domain_safe }}'
+      shell: |
+        export DOCKHAND_DOMAIN='{{ dockhand_domain_safe }}'
         docker compose -f docker-compose.platform.yml up -d
       args:
         chdir: "{{ compose_dir }}"

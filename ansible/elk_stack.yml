@@ -14,15 +14,18 @@
       file:
         path: "{{ elk_dir }}"
         state: directory
-        mode: '0755'
+        mode: "0755"
 
     - name: Run ELK setup (docker compose up setup)
-      shell: docker compose up setup
+      shell: |
+        export KIBANA_DOMAIN='{{ kibana_domain }}'
+        docker compose up setup
       args:
         chdir: "{{ elk_dir }}"
 
     - name: Start ELK + Fleet + APM Server
-      shell: >
+      shell: |
+        export KIBANA_DOMAIN='{{ kibana_domain }}'
         docker compose -f docker-compose.yml -f extensions/fleet/fleet-compose.yml -f extensions/fleet/agent-apmserver-compose.yml up -d
       args:
         chdir: "{{ elk_dir }}"

@@ -32,20 +32,15 @@ services:
     container_name: traefik
     restart: unless-stopped
     command:
-      - "--providers.docker=true"
-      - "--providers.docker.exposedbydefault=false"
-      - "--entrypoints.websecure.address=:443"
-      - "--entrypoints.web.address=:80"
-      - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
-      - "--entrypoints.web.http.redirections.entrypoint.scheme=https"
-      - "--api.dashboard=true"
-      - "--log.level=INFO"
+      - "--configFile=/etc/traefik/traefik.yml"
     ports:
       - "80:80"
       - "443:443"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
-      - traefik_certs:/certs
+      - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./traefik/dynamic:/etc/traefik/dynamic:ro
+      - ./traefik/acme.json:/etc/traefik/acme.json
     networks:
       - platform
 
@@ -62,13 +57,16 @@ services:
       - platform
     labels:
       - "traefik.enable=true"
+      - "traefik.docker.network=platform"
       - "traefik.http.routers.dockhand.rule=Host(`${DOCKHAND_DOMAIN:-dockhand.local}`)"
       - "traefik.http.routers.dockhand.entrypoints=websecure"
+      - "traefik.http.routers.dockhand.tls=true"
+      - "traefik.http.routers.dockhand.tls.certresolver=le"
+      - "traefik.http.routers.dockhand.middlewares=security-headers@file"
       - "traefik.http.services.dockhand.loadbalancer.server.port=8080"
 
 volumes:
   pg_data:
-  traefik_certs:
 
 networks:
   platform:

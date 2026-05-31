@@ -27,17 +27,17 @@
       changed_when: "'CREATE DATABASE' in (gitlab_db_result.stdout | default(''))"
 
     - name: Pull latest GitLab images
-      shell: >
-        GITLAB_DOMAIN='{{ gitlab_domain_safe }}'
-        GITLAB_REGISTRY_DOMAIN='{{ gitlab_registry_domain_safe }}'
+      shell: |
+        export GITLAB_DOMAIN='{{ gitlab_domain_safe }}'
+        export GITLAB_REGISTRY_DOMAIN='{{ gitlab_registry_domain_safe }}'
         docker compose -f docker-compose.gitlab.yml pull
       args:
         chdir: "{{ compose_dir }}"
 
     - name: Bring up GitLab stack
-      shell: >
-        GITLAB_DOMAIN='{{ gitlab_domain_safe }}'
-        GITLAB_REGISTRY_DOMAIN='{{ gitlab_registry_domain_safe }}'
+      shell: |
+        export GITLAB_DOMAIN='{{ gitlab_domain_safe }}'
+        export GITLAB_REGISTRY_DOMAIN='{{ gitlab_registry_domain_safe }}'
         docker compose -f docker-compose.gitlab.yml up -d
       args:
         chdir: "{{ compose_dir }}"

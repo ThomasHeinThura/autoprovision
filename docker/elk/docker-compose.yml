@@ -118,13 +118,26 @@ services:
       KIBANA_SYSTEM_PASSWORD: ${KIBANA_SYSTEM_PASSWORD:-}
     networks:
       - elk
+      - platform
     depends_on:
       - elasticsearch
     restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=platform"
+      - "traefik.http.routers.kibana.rule=Host(`${KIBANA_DOMAIN:-kibana.local}`)"
+      - "traefik.http.routers.kibana.entrypoints=websecure"
+      - "traefik.http.routers.kibana.tls=true"
+      - "traefik.http.routers.kibana.tls.certresolver=le"
+      - "traefik.http.routers.kibana.middlewares=security-headers@file"
+      - "traefik.http.services.kibana.loadbalancer.server.port=5601"
 
 networks:
   elk:
     driver: bridge
+  platform:
+    external: true
+    name: platform
 
 volumes:
   elasticsearch:

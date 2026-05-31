@@ -26,8 +26,12 @@ services:
       - platform
     labels:
       - "traefik.enable=true"
+      - "traefik.docker.network=platform"
       - "traefik.http.routers.sonarqube.rule=Host(`${SONARQUBE_DOMAIN:-sonarqube.local}`)"
       - "traefik.http.routers.sonarqube.entrypoints=websecure"
+      - "traefik.http.routers.sonarqube.tls=true"
+      - "traefik.http.routers.sonarqube.tls.certresolver=le"
+      - "traefik.http.routers.sonarqube.middlewares=security-headers@file"
       - "traefik.http.services.sonarqube.loadbalancer.server.port=9000"
 
 volumes:
