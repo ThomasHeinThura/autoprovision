@@ -86,57 +86,55 @@ Then restart with:
 
 ---
 
-## 4. Prepare the Docker VM user (one-time)
+## 4. Prepare the Docker VM automation user (one-time)
 
-The Docker VM (where GitLab/ELK/SonarQube will run) must have a user that:
+For security and clarity, use a **dedicated automation user** on the Docker VM instead of a personal account.
 
-- Can SSH in with a username and password.
-- Can `sudo` to root without a password (NOPASSWD).
-
-Example (Docker VM):
+On the Docker VM (example user `autoprovision`):
 
 ```bash
-# SSH into the Docker VM once
-ssh bimdevops@192.168.79.131
+# SSH into the Docker VM once as an existing sudo-capable user
+ssh existing-admin@<docker-vm-ip>
 
-# Check that sudo works without a password
-sudo -l
-sudo id
-```
+# 1) Create the automation user
+sudo adduser autoprovision
 
-Expected output:
+# 2) (Optional but common) add it to the sudo group
+sudo usermod -aG sudo autoprovision
 
-```text
-User bimdevops may run the following commands on docker:
-    (ALL : ALL) ALL
-
-bimdevops ALL=(ALL) NOPASSWD:ALL
-
-uid=0(root) gid=0(root) groups=0(root)
-```
-
-If this is not yet configured, add a sudoers snippet on the Docker VM:
-
-```bash
+# 3) Give it passwordless sudo via a sudoers snippet
 sudo visudo -f /etc/sudoers.d/autoprovision
 ```
 
 Add:
 
 ```text
-bimdevops ALL=(ALL) NOPASSWD:ALL
+autoprovision ALL=(ALL) NOPASSWD:ALL
 ```
 
-replace `bimdevops` with whatever automation user you decide to use.
+Save and exit.
+
+Verify the automation user:
+
+```bash
+su - autoprovision
+sudo -l
+sudo id
+```
+
+Expected:
+
+- `sudo -l` shows `NOPASSWD: ALL` for `autoprovision`.
+- `sudo id` prints `uid=0(root) gid=0(root) groups=0(root)` without prompting for a password.
 
 This is a **one-time** requirement per environment image. Once the Docker VM (or template) has this user set up, all future runs from the jump host will work without manual SSH.
 
 In the web UI, you will then use:
 
-- SSH username: the automation user (for example, `bimdevops`).
-- SSH password: the same login password.
+- SSH username: `autoprovision`.
+- SSH password: the login password you set with `adduser`.
 
-Ansible will log in as this user and use `sudo` (become) without prompting for a password.
+Ansible will log in as this automation user and use `sudo` (become) without prompting for a password.
 
 ---
 
