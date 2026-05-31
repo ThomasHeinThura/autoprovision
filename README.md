@@ -11,6 +11,8 @@ This repository contains:
 - `version.md` – version matrix (Talos, Cilium, Elastic, GitLab, WSO2, etc.).
 - `wso2_apim.md` – WSO2 APIM design and migration notes.
 - `app/` – Python FastAPI web UI (control plane).
+- `ansible/` – Ansible playbooks for all phases.
+- `docker/` – Docker compose files for the platform stack and ELK.
 
 ---
 
@@ -24,8 +26,6 @@ Install basic tools first:
 sudo apt update
 sudo apt install -y git curl wget sshpass
 ```
-
-(If you run a different distro, install `git`, `curl`, `wget`, and `sshpass` with the equivalent package manager.)
 
 ---
 
@@ -43,8 +43,6 @@ cd autoprovision
 
 ## 3. Run the bootstrap script (once)
 
-Make the script executable and run it with bash:
-
 ```bash
 chmod +x bootstrap-jumphost.sh
 ./bootstrap-jumphost.sh
@@ -52,33 +50,27 @@ chmod +x bootstrap-jumphost.sh
 
 What this script does:
 
-- Installs system dependencies (git, curl, Python 3, venv, pip, Ansible, ansible-runner, sshpass, talosctl).
+- Installs system dependencies (git, curl, Python 3, venv, pip, Ansible, sshpass, talosctl).
 - Creates a Python virtualenv in `.venv/`.
-- Installs Python dependencies from `requirements.txt` (FastAPI, Uvicorn, Ansible, ansible-runner).
+- Installs Python dependencies from `requirements.txt` (FastAPI, Uvicorn, Ansible).
 - Creates `data/` directories for state, logs, inventory, generated env files.
-- Initializes an empty SQLite DB at `data/state.db` (placeholder until the app manages migrations).
 - Starts the FastAPI web UI on port `3000` using `uvicorn app.main:app`.
 - Prints the URL to open at the end.
 
 Example output:
 
 ```text
-[INFO]  Preparing data directories...
-[INFO]  Initializing empty state DB at /home/<user>/autoprovision/data/state.db...
-[INFO]  Starting Python web UI on port 3000...
-[INFO]  Web UI started via uvicorn (app.main:app).
-
 [INFO]  Bootstrap complete.
-Open: http://192.168.139.64:3000/
+Open: http://<jump-host-ip>:3000/
 ```
 
-To stop the web UI later:
+To stop the web UI:
 
 ```bash
 pkill -f "uvicorn app.main:app"
 ```
 
-Then restart with:
+To restart:
 
 ```bash
 ./bootstrap-jumphost.sh
@@ -88,21 +80,13 @@ Then restart with:
 
 ## 4. Prepare the Docker VM automation user (one-time)
 
-For security and clarity, use a **dedicated automation user** on the Docker VM instead of a personal account.
-
-On the Docker VM (example user `autoprovision`):
+On the Docker VM, create a dedicated automation user:
 
 ```bash
-# SSH into the Docker VM once as an existing sudo-capable user
 ssh existing-admin@<docker-vm-ip>
 
-# 1) Create the automation user
 sudo adduser autoprovision
-
-# 2) (Optional but common) add it to the sudo group
 sudo usermod -aG sudo autoprovision
-
-# 3) Give it passwordless sudo via a sudoers snippet
 sudo visudo -f /etc/sudoers.d/autoprovision
 ```
 
@@ -112,160 +96,273 @@ Add:
 autoprovision ALL=(ALL) NOPASSWD:ALL
 ```
 
-Save and exit.
-
-Verify the automation user:
+Verify:
 
 ```bash
 su - autoprovision
-sudo -l
 sudo id
+# Expected: uid=0(root) ... without password prompt
 ```
 
-Expected:
+In the web UI, enter:
 
-- `sudo -l` shows `NOPASSWD: ALL` for `autoprovision`.
-- `sudo id` prints `uid=0(root) gid=0(root) groups=0(root)` without prompting for a password.
-
-This is a **one-time** requirement per environment image. Once the Docker VM (or template) has this user set up, all future runs from the jump host will work without manual SSH.
-
-In the web UI, you will then use:
-
-- SSH username: `autoprovision`.
-- SSH password: the login password you set with `adduser`.
-
-Ansible will log in as this automation user and use `sudo` (become) without prompting for a password.
+- SSH username: `autoprovision`
+- SSH password: the password set with `adduser`
 
 ---
 
-## 5. Run Phases B1–B3 from the web UI
+## 5. Open the web UI and fill the form
 
-1. Open the web UI
+```text
+http://<jump-host-ip>:3000/
+```
 
-   ```text
-   http://<jump-host-ip>:3000/
+Fill the **"Environment & SSH"** form:
+
+| Field | Example |
+|---|---|
+| Environment | `lab` / `uat` / `prod` |
+| Docker VM IP | `192.168.79.131` |
+| SSH username | `autoprovision` |
+| SSH password | your password |
+| Dockhand domain | `dockhand.example.com` |
+| Kibana domain | `kibana.example.com` |
+| GitLab domain | `gitlab.example.com` |
+
+---
+
+## 6. Phase B1 — Docker VM base setup
+
+Click **"Run Phase B1: Bootstrap Docker base"**.
+
+What it does on the Docker VM:
+
+- Updates apt cache.
+- Installs base packages: `git`, `curl`, `wget`, `ca-certificates`, `gnupg`, `lsb-release`.
+- Installs Docker CE using the official convenience script.
+- Ensures the `docker` service is enabled and started.
+- Adds the automation user to the `docker` group.
+- Clones this repo into `/home/<automation-user>/autoprovision`.
+
+Expected final log line:
+
+```text
+ok=8  changed=1  unreachable=0  failed=0
+```
+
+Verify on Docker VM:
+
+```bash
+docker --version
+ls ~/autoprovision
+```
+
+---
+
+## 7. Phase B2 — Start platform stack (Postgres + Traefik + Dockhand)
+
+Click **"Run Phase B2: Start platform stack"**.
+
+What it does on the Docker VM:
+
+- Uses `/home/<automation-user>/autoprovision/docker` as the compose directory.
+- Pulls Postgres 17, Traefik v3, and Dockhand images.
+- Runs `docker compose -f docker-compose.platform.yml up -d`.
+- Waits for the `pg-platform` Postgres container healthcheck to report `healthy` (retries up to 20 times, 5s delay).
+
+Expected log output:
+
+```text
+TASK [Show compose directory]
+ok: "Using compose_dir=/home/autoprovision/autoprovision/docker"
+
+TASK [Pull latest platform images (Postgres, Traefik, Dockhand)]
+changed: ...
+
+TASK [Bring up platform stack (Postgres + Traefik + Dockhand)]
+changed: ...
+
+TASK [Wait for Postgres to be healthy]
+ok: ...
+
+TASK [Report Postgres health status]
+ok: "Postgres health: healthy"
+
+ok=7  changed=2  unreachable=0  failed=0
+```
+
+Verify on Docker VM:
+
+```bash
+docker ps
+# Expect: pg-platform (healthy), traefik, dockhand
+```
+
+---
+
+## 8. Phase B3 — ELK stack (Elasticsearch + Logstash + Kibana + Fleet + APM)
+
+### 8a. Before running B3: verify kibana.yml has encryption keys
+
+The ELK stack is committed to `docker/elk/` inside this repo.  
+Kibana requires encryption keys for Fleet to work. Without them you will see:
+
+```text
+Unable to initialize Fleet
+Agent binary source needs encrypted saved object api key to be set
+```
+
+The `kibana/config/kibana.yml` inside `docker/elk/` already includes:
+
+```yaml
+xpack.encryptedSavedObjects.encryptionKey: "Add-more-than-32-characters-for-the-key-value"
+xpack.fleet.agents.tlsCheckDisabled: true
+```
+
+**Before your first deployment**, replace the placeholder with a real 32+ character key:
+
+```bash
+# Generate a key (run once, keep the output)
+openssl rand -hex 32
+```
+
+Edit `docker/elk/kibana/config/kibana.yml` and replace the placeholder value, then commit to the repo so B3 picks it up automatically.
+
+The file also pre-declares the `Agent Policy APM Server` policy (and Fleet Server Policy) under `xpack.fleet.agentPolicies`, which means the APM agent will find its policy on first boot without manual Kibana UI steps.
+
+### 8b. Run B3
+
+Click **"Phase B3: Deploy ELK stack"**.
+
+What it does on the Docker VM:
+
+1. Confirms the ELK directory exists at `/home/<automation-user>/autoprovision/docker/elk`.
+2. Runs initial user setup (one-time per stack):
+
+   ```bash
+   docker compose up setup
    ```
 
-2. Fill the "Environment & SSH" form:
+   This creates built-in users (`elastic`, `logstash_internal`, `kibana_system`, etc.) with passwords from the `.env` file.
 
-   - Environment: `lab`, `uat`, or `prod`.
-   - Docker VM IP: the IP address of your Docker platform VM.
-   - SSH username: `autoprovision` (or your automation user).
-   - SSH password: password for that user (leave empty if using SSH key).
-   - Dockhand domain: e.g. `dockhand.example.com`.
-   - Kibana domain: e.g. `kibana.example.com`.
-   - GitLab domain (reserved for later): e.g. `gitlab.example.com`.
+3. Starts all services:
 
-3. Phase B1 — Docker VM base setup
+   ```bash
+   docker compose \
+     -f docker-compose.yml \
+     -f extensions/fleet/fleet-compose.yml \
+     -f extensions/fleet/agent-apmserver-compose.yml \
+     up -d
+   ```
 
-   - Click **"Run Phase B1: Bootstrap Docker base"**.
-   - What it does on the Docker VM:
-     - Updates apt cache.
-     - Installs base packages (`git`, `curl`, `wget`, `ca-certificates`, `gnupg`, `lsb-release`).
-     - Installs Docker CE using the official convenience script.
-     - Ensures the `docker` service is enabled and started.
-     - Adds the automation user to the `docker` group.
-     - Clones this repo into `/home/<automation-user>/autoprovision`.
-   - The log panel shows each task and the final Ansible recap.
+   Services started:
 
-4. Phase B2 — Start platform stack (Postgres + Traefik + Dockhand)
+   | Container | Role | Port |
+   |---|---|---|
+   | `elk-elasticsearch-1` | Elasticsearch | 9200, 9300 |
+   | `elk-logstash-1` | Logstash | 5044, 50000, 9600 |
+   | `elk-kibana-1` | Kibana UI | 5601 |
+   | `elk-fleet-server-1` | Fleet Server | 8220 |
+   | `elk-apm-server-1` | APM Agent | 8200 |
 
-   - Click **"Run Phase B2: Start platform stack"**.
-   - What it does on the Docker VM:
-     - Uses `/home/<automation-user>/autoprovision/docker` as the compose directory.
-     - Runs `docker compose -f docker-compose.platform.yml pull` to pull the Postgres, Traefik, and Dockhand images.
-     - Runs `docker compose -f docker-compose.platform.yml up -d`.
-     - Waits for the `pg-platform` container healthcheck to report `healthy`.
-   - The log panel prints:
-     - The compose directory.
-     - Pull/start output.
-     - `Postgres health: healthy` when the database is ready.
-   - After success, you should see on the Docker VM:
+Expected final log line:
 
-     ```bash
-     docker ps
-     # ... pg-platform (Postgres), traefik, dockhand all running
-     ```
+```text
+ELK stack (Elasticsearch, Logstash, Kibana, Fleet, APM Server) deployed from /home/.../docker/elk.
+```
 
-5. Phase B3 — ELK stack (docker-elk)
+Verify on Docker VM:
 
-   - Click **"Phase B3: Deploy ELK stack"**.
-   - What it does on the Docker VM:
-     - Clones or updates `https://github.com/deviantony/docker-elk.git` into `/home/<automation-user>/autoprovision/docker/elk`.
-     - Runs initial setup:
+```bash
+docker ps
+# Expect all 5 ELK containers running
 
-       ```bash
-       docker compose up setup
-       ```
+curl -u elastic:changeme http://localhost:9200
+# Expect JSON with cluster_name: docker-cluster
+```
 
-       This initializes built-in users (`elastic`, `logstash_internal`, `kibana_system`, etc.) with passwords from `.env` in the `docker-elk` repo.
+### 8c. APM Server startup sequence
 
-     - Starts Elasticsearch, Logstash, Kibana, Fleet Server, and APM Server with:
+The APM container (`elk-apm-server-1`) connects to Fleet and looks for `Agent Policy APM Server`.
 
-       ```bash
-       docker compose \
-         -f docker-compose.yml \
-         -f extensions/fleet/fleet-compose.yml \
-         -f extensions/fleet/agent-apmserver-compose.yml \
-         up -d
-       ```
+Normal sequence on first boot:
 
-   - The log panel prints the ELK directory, setup output, and a final message:
+1. Early restarts with `connect: connection refused` — **normal**, Kibana is still starting.
+2. `Kibana server is not ready yet` — **normal**, Kibana is initializing.
+3. Fleet starts, policy `Agent Policy APM Server` is found (pre-declared in `kibana.yml`), agent enrolls and stays `Up`.
 
-     ```text
-     ELK stack (Elasticsearch, Logstash, Kibana, Fleet, APM Server) deployed from /home/<automation-user>/autoprovision/docker/elk.
-     ```
+If `elk-apm-server-1` keeps restarting with `policy not found` after Kibana is healthy, check:
+
+```bash
+docker logs elk-kibana-1 | tail -20
+docker logs elk-fleet-server-1 | tail -20
+```
 
 ---
 
-## 6. Default ELK credentials
+## 9. Default ELK credentials
 
-The `docker-elk` stack uses credentials defined in its `.env` file. By default (if you do not change `.env`):
+The `docker-elk` stack uses credentials defined in `docker/elk/.env`.
 
-- **Elasticsearch & Kibana user:** `elastic`
-- **Password:** `changeme`
+Defaults (do not use as-is in production):
 
-After Phase B3 completes and containers are healthy:
+| Service | Username | Password |
+|---|---|---|
+| Elasticsearch | `elastic` | `changeme` |
+| Kibana | `elastic` | `changeme` |
+| Logstash internal | `logstash_internal` | `changeme` |
 
-- Elasticsearch API:
+Access:
 
-  ```bash
-  curl -u elastic:changeme http://<docker-vm-ip>:9200
-  ```
+- Kibana UI: `http://<docker-vm-ip>:5601` → login: `elastic` / `changeme`
+- Elasticsearch API: `curl -u elastic:changeme http://<docker-vm-ip>:9200`
+- APM intake: `http://<docker-vm-ip>:8200`
+- Fleet Server: `http://<docker-vm-ip>:8220`
 
-- Kibana UI:
-
-  ```text
-  http://<docker-vm-ip>:5601
-  ```
-
-  Log in with `elastic` / `changeme` and then rotate passwords as required.
-
-Note: the Fleet-managed APM Server container (`elk-apm-server-1`) looks for an agent policy named `Agent Policy APM Server` in Fleet. Until that policy exists in Kibana/Fleet, the APM container may restart with a "policy not found" error. This does not affect the core ELK stack (Elasticsearch, Logstash, Kibana, Fleet Server).
+**To change passwords:** edit `docker/elk/.env` before running B3. Run `docker compose up setup` again after changing passwords.
 
 ---
 
-## 7. Health checks and troubleshooting
+## 10. Health checks and quick troubleshooting
 
-- Platform stack:
+### Platform stack (B2)
 
-  ```bash
-  docker ps
-  # Expect: pg-platform, traefik, dockhand running
-  ```
+```bash
+docker ps | grep -E 'pg-platform|traefik|dockhand'
+```
 
-- ELK core services:
+Expected: all `Up` and `pg-platform` shows `(healthy)`.
 
-  ```bash
-  docker ps
-  # Expect: elk-elasticsearch-1, elk-logstash-1, elk-kibana-1, elk-fleet-server-1
-  ```
+### ELK stack (B3)
 
-- APM Server:
+```bash
+# All containers
+docker ps
 
-  ```bash
-  docker logs elk-apm-server-1
-  # If you see "policy not found" for "Agent Policy APM Server", create that policy in Kibana Fleet before relying on APM.
-  ```
+# Elasticsearch
+curl -u elastic:changeme http://localhost:9200/_cluster/health
 
-For more in-depth observability and Kubernetes deployment steps, see `installation-steps.md` and `updated-mvp.md`.
+# Kibana
+curl http://localhost:5601/api/status | python3 -m json.tool | grep overall
+
+# Fleet Server
+curl http://localhost:8220/api/status
+
+# APM
+curl http://localhost:8200/
+```
+
+### Common issues
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `open .../docker-compose.platform.yml: no such file or directory` | Repo not cloned or stale on Docker VM | Re-run Phase B1 |
+| `pull access denied for dockhand/dockhand` | Wrong image name | Fixed in repo: image is `fnsys/dockhand:latest` |
+| Postgres health check never passes | Container crash or slow start | Run `docker logs pg-platform`; check `.env` passwords |
+| `Unable to initialize Fleet` / `encrypted saved object api key` | Missing `xpack.encryptedSavedObjects.encryptionKey` in `kibana.yml` | Set a 32+ char key in `docker/elk/kibana/config/kibana.yml` and restart Kibana |
+| APM restarts: `policy not found` | Fleet has no `Agent Policy APM Server` policy | Verify `kibana.yml` has `xpack.fleet.agentPolicies` block; restart Kibana and Fleet |
+| `Kibana server is not ready yet` | Kibana still initializing | Wait 60-90s; check `docker logs elk-kibana-1` |
+
+---
+
+For Kubernetes phases (D1, D2), WSO2 deployment (E), and migration jobs (F), see `installation-steps.md` and `updated-mvp.md`.
