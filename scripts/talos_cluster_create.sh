@@ -9,6 +9,7 @@ INSTALL_DISK="${TALOS_INSTALL_DISK:-sda}"
 
 BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK_DIR="$BASE_DIR/data/k8s/$CLUSTER_NAME"
+SECRETS_FILE="$WORK_DIR/secrets.yaml"
 
 require_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -40,31 +41,40 @@ apply_talos_config() {
   local base_file="$2"
   local patch_file="${3:-}"
 
+  if talosctl --insecure --nodes "$node" version >/dev/null 2>&1; then
+    if [ -n "$patch_file" ]; then
+      talosctl apply-config --insecure --nodes "$node" --file "$base_file" --config-patch @"$patch_file"
+    else
+      talosctl apply-config --insecure --nodes "$node" --file "$base_file"
+    fi
+    return
+  fi
+
   # If secure API is already up, use talosconfig + endpoints.
-  if talosctl --talosconfig "$WORK_DIR/talosconfig" --endpoints "$FIRST_CP" --nodes "$node" version >/dev/null 2>&1; then
+  if talosctl --talosconfig "$WORK_DIR/talosconfig" --endpoints "$node" --nodes "$node" version >/dev/null 2>&1; then
     if [ -n "$patch_file" ]; then
       talosctl apply-config \
         --talosconfig "$WORK_DIR/talosconfig" \
-        --endpoints "$FIRST_CP" \
+        --endpoints "$node" \
         --nodes "$node" \
         --file "$base_file" \
         --config-patch @"$patch_file"
     else
       talosctl apply-config \
         --talosconfig "$WORK_DIR/talosconfig" \
-        --endpoints "$FIRST_CP" \
+        --endpoints "$node" \
         --nodes "$node" \
         --file "$base_file"
     fi
     return
   fi
 
-  # Otherwise fall back to insecure maintenance mode.
-  if [ -n "$patch_file" ]; then
-    talosctl apply-config --insecure --nodes "$node" --file "$base_file" --config-patch @"$patch_file"
-  else
-    talosctl apply-config --insecure --nodes "$node" --file "$base_file"
-  fi
+  echo "[ERROR] Node $node is reachable but neither insecure nor current talosconfig auth works."
+  echo "[ERROR] This is usually a PKI mismatch from regenerated configs on an already-configured Talos node."
+  echo "[HINT] Recovery options:"
+  echo "  1) Reset the Talos node(s) back to maintenance mode and rerun Create Talos Cluster."
+  echo "  2) Restore the original talosconfig/secrets used for the existing node configuration."
+  exit 1
 }
 
 CONTROL_PLANE_IPS_RAW="$(trim_csv "$CONTROL_PLANE_IPS_RAW")"
@@ -104,7 +114,15 @@ cluster:
     disabled: true
 YAML
 
+if [ ! -f "$SECRETS_FILE" ]; then
+  echo "[INFO] Generating persistent Talos secrets at $SECRETS_FILE"
+  talosctl gen secrets -o "$SECRETS_FILE"
+else
+  echo "[INFO] Reusing existing Talos secrets from $SECRETS_FILE"
+fi
+
 talosctl gen config "$CLUSTER_NAME" "https://$FIRST_CP:6443" \
+  --with-secrets "$SECRETS_FILE" \
   --force \
   --install-disk "/dev/$INSTALL_DISK" \
   --config-patch @cluster-patch.yaml
