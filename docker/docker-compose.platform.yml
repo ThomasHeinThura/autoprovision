@@ -51,7 +51,7 @@ services:
 
   # ── Dockhand (Docker management and monitoring UI) ───────────────────────
   dockhand:
-    image: dockhand/dockhand:v0.29.4
+    image: fnsys/dockhand:latest
     container_name: dockhand
     restart: unless-stopped
     ports:
