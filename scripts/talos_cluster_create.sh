@@ -105,10 +105,29 @@ if [ "${#WORKER_IPS[@]}" -gt 0 ] && [ -n "${WORKER_IPS[0]:-}" ]; then
 fi
 
 echo "[INFO] Bootstrapping etcd on first control-plane node: $FIRST_CP"
-talosctl bootstrap --nodes "$FIRST_CP" --talosconfig "$WORK_DIR/talosconfig"
+# Wait until Talos API on control-plane is ready before bootstrap.
+for i in $(seq 1 30); do
+  if talosctl --talosconfig "$WORK_DIR/talosconfig" --endpoints "$FIRST_CP" --nodes "$FIRST_CP" version >/dev/null 2>&1; then
+    echo "[INFO] Talos API is reachable on $FIRST_CP"
+    break
+  fi
+  if [ "$i" -eq 30 ]; then
+    echo "[ERROR] Talos API not reachable on $FIRST_CP after waiting."
+    exit 1
+  fi
+  sleep 5
+done
+
+talosctl bootstrap \
+  --endpoints "$FIRST_CP" \
+  --nodes "$FIRST_CP" \
+  --talosconfig "$WORK_DIR/talosconfig"
 
 echo "[INFO] Fetching kubeconfig"
-talosctl kubeconfig "$WORK_DIR/kubeconfig" --nodes "$FIRST_CP" --talosconfig "$WORK_DIR/talosconfig"
+talosctl kubeconfig "$WORK_DIR/kubeconfig" \
+  --endpoints "$FIRST_CP" \
+  --nodes "$FIRST_CP" \
+  --talosconfig "$WORK_DIR/talosconfig"
 
 export KUBECONFIG="$WORK_DIR/kubeconfig"
 
