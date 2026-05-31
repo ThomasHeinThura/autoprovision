@@ -1,5 +1,5 @@
-from fastapi import FastAPI, Request, Form
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse, JSONResponse
 import asyncio
 import os
 
@@ -7,7 +7,7 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ANSIBLE_DIR = os.path.join(BASE_DIR, "ansible")
 INVENTORY_FILE = os.path.join(ANSIBLE_DIR, "inventory")
 
-app = FastAPI(title="Autoprovision Control Plane", version="0.4.0")
+app = FastAPI(title="Autoprovision Control Plane", version="0.5.0")
 
 # ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -73,6 +73,7 @@ async def healthz():
 async def index():
     log_base = _read_log("docker-base.log")
     log_platform = _read_log("docker-platform.log")
+    log_elk = _read_log("elk.log")
     return f"""<!DOCTYPE html>
 <html lang="en">
   <head>
@@ -100,11 +101,11 @@ async def index():
     </style>
   </head>
   <body>
-    <h1>Autoprovision Control Plane <span style="font-size:.9rem;color:#6b7280;">v0.4.0</span></h1>
+    <h1>Autoprovision Control Plane <span style="font-size:.9rem;color:#6b7280;">v0.5.0</span></h1>
     <p><small>Jump host is ready. Use the forms below to provision Docker VM and Kubernetes cluster.</small></p>
 
     <div class="grid">
-      <!-- LEFT: env + SSH form -->
+      <!-- LEFT: env + SSH form + domains -->
       <div class="col">
         <div class="card">
           <h2>&#9881; Environment &amp; SSH</h2>
@@ -125,6 +126,16 @@ async def index():
             </label>
             <label>SSH password (leave empty to use key)
               <input id="f-ssh-pass" name="ssh_pass" type="password" placeholder="••••••••" />
+            </label>
+            <hr/>
+            <label>Dockhand domain
+              <input id="f-dockhand-domain" name="dockhand_domain" placeholder="dockhand.example.com" />
+            </label>
+            <label>Kibana domain
+              <input id="f-kibana-domain" name="kibana_domain" placeholder="kibana.example.com" />
+            </label>
+            <label>GitLab domain (reserved)
+              <input id="f-gitlab-domain" name="gitlab_domain" placeholder="gitlab.example.com" />
             </label>
           </form>
         </div>
@@ -153,11 +164,20 @@ async def index():
 
         <div class="card">
           <h2>&#128679; Phase B2 — Start platform stack (Postgres + Traefik + Dockhand)</h2>
-          <p><small>Runs <code>docker compose -f docker-compose.platform.yml up -d</code> in the Docker VM repo's <code>docker/</code> directory.</small></p>
+          <p><small>Step 1: Pull images and start Postgres, Traefik, Dockhand. Step 2: Wait for Postgres healthcheck to report <code>healthy</code>. Logs below show each step.</small></p>
           <button onclick="submitAction('/actions/platform-up', 'log-platform')">&#9654; Run Phase B2: Start platform stack</button>
           <hr/>
           <small>Last run output:</small>
           <div class="log" id="log-platform">{log_platform}</div>
+        </div>
+
+        <div class="card">
+          <h2>&#128202; ELK stack (docker-elk)</h2>
+          <p><small>Clones <code>deviantony/docker-elk</code>, runs <code>docker compose up setup</code>, then starts core ELK + Fleet, APM, Logstash. Uses the Kibana domain above for routing later.</small></p>
+          <button onclick="submitAction('/actions/elk-up', 'log-elk')">&#9654; Phase B3: Deploy ELK stack</button>
+          <hr/>
+          <small>Last run output:</small>
+          <div class="log" id="log-elk">{log_elk}</div>
         </div>
       </div>
     </div>
@@ -165,10 +185,13 @@ async def index():
     <script>
     function formData() {{
       return {{
-        env:       document.getElementById('f-env').value,
-        docker_ip: document.getElementById('f-docker-ip').value,
-        ssh_user:  document.getElementById('f-ssh-user').value,
-        ssh_pass:  document.getElementById('f-ssh-pass').value,
+        env:             document.getElementById('f-env').value,
+        docker_ip:       document.getElementById('f-docker-ip').value,
+        ssh_user:        document.getElementById('f-ssh-user').value,
+        ssh_pass:        document.getElementById('f-ssh-pass').value,
+        dockhand_domain: document.getElementById('f-dockhand-domain').value,
+        kibana_domain:   document.getElementById('f-kibana-domain').value,
+        gitlab_domain:   document.getElementById('f-gitlab-domain').value,
       }};
     }}
     function submitAction(endpoint, logId) {{
@@ -215,11 +238,36 @@ async def action_platform_up(request: Request):
     docker_ip = body.get("docker_ip", "")
     ssh_user  = body.get("ssh_user", "ubuntu")
     ssh_pass  = body.get("ssh_pass", "")
+    dockhand_domain = body.get("dockhand_domain", "dockhand.local")
     if not docker_ip:
         return JSONResponse({"error": "docker_ip required"}, status_code=400)
     _write_inventory(env, docker_ip, ssh_user, ssh_pass)
-    rc = await _run_playbook("ansible/docker_platform_up.yml", "docker-platform.log")
+    rc = await _run_playbook(
+        "ansible/docker_platform_up.yml",
+        "docker-platform.log",
+        extra_vars={"dockhand_domain": dockhand_domain},
+    )
     log = _read_log("docker-platform.log")
+    return JSONResponse({"rc": rc, "log": log})
+
+
+@app.post("/actions/elk-up")
+async def action_elk_up(request: Request):
+    body = await request.json()
+    env      = body.get("env", "lab")
+    docker_ip = body.get("docker_ip", "")
+    ssh_user  = body.get("ssh_user", "ubuntu")
+    ssh_pass  = body.get("ssh_pass", "")
+    kibana_domain = body.get("kibana_domain", "kibana.local")
+    if not docker_ip:
+        return JSONResponse({"error": "docker_ip required"}, status_code=400)
+    _write_inventory(env, docker_ip, ssh_user, ssh_pass)
+    rc = await _run_playbook(
+        "ansible/elk_stack.yml",
+        "elk.log",
+        extra_vars={"kibana_domain": kibana_domain},
+    )
+    log = _read_log("elk.log")
     return JSONResponse({"rc": rc, "log": log})
 
 
