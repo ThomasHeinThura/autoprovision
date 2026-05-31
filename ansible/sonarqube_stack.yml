@@ -2,10 +2,36 @@
   hosts: docker_vm
   become: true
   vars:
+    repo_url: "https://github.com/ThomasHeinThura/autoprovision.git"
     repo_root: "/home/{{ ansible_user }}/autoprovision"
     compose_dir: "{{ repo_root }}/docker"
     sonarqube_domain_safe: "{{ sonarqube_domain | default('sonarqube.local') }}"
   tasks:
+    - name: Check whether repo root is a git checkout
+      stat:
+        path: "{{ repo_root }}/.git"
+      register: repo_git_stat
+
+    - name: Check whether repo root path exists
+      stat:
+        path: "{{ repo_root }}"
+      register: repo_root_stat
+
+    - name: Remove invalid repo root if it exists but is not a git checkout
+      file:
+        path: "{{ repo_root }}"
+        state: absent
+      when: repo_root_stat.stat.exists and not repo_git_stat.stat.exists
+
+    - name: Ensure autoprovision repo is present and up to date
+      become_user: "{{ ansible_user }}"
+      git:
+        repo: "{{ repo_url }}"
+        dest: "{{ repo_root }}"
+        version: main
+        update: yes
+        force: yes
+
     - name: Show compose directory
       debug:
         msg: "Using compose_dir={{ compose_dir }}"
