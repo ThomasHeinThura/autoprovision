@@ -65,6 +65,13 @@
               shm_size = 0
               network_mtu = 0
 
+    - name: Ensure runner URL follows selected GitLab domain
+      lineinfile:
+        path: "{{ runner_config_dir }}/config.toml"
+        regexp: '^\s*url\s*=\s*".*"\s*$'
+        line: '  url = "https://{{ gitlab_domain_safe }}"'
+        backrefs: false
+
     - name: Ensure GitLab database exists in pg-platform
       shell: |
         set -e
