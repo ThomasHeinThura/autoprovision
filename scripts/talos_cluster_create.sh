@@ -81,44 +81,25 @@ export TALOSCONFIG="$WORK_DIR/talosconfig"
 # Apply control-plane configs.
 for idx in "${!CONTROL_PLANE_IPS[@]}"; do
   ip="${CONTROL_PLANE_IPS[$idx]}"
-  cp_num="$((idx + 1))"
-  patch_file="controlplane-$cp_num-patch.yaml"
-
   if [ "$idx" -eq 0 ]; then
-    cat > "$patch_file" <<YAML
-machine:
-  network:
-    hostname: ${CLUSTER_NAME}-cp-${cp_num}
+    patch_file="controlplane-allow-scheduling-patch.yaml"
+    cat > "$patch_file" <<'YAML'
 cluster:
   allowSchedulingOnControlPlanes: true
 YAML
+    echo "[INFO] Applying control-plane config to $ip (with allowSchedulingOnControlPlanes)"
+    talosctl apply-config --insecure --nodes "$ip" --file controlplane.yaml --config-patch @"$patch_file"
   else
-    cat > "$patch_file" <<YAML
-machine:
-  network:
-    hostname: ${CLUSTER_NAME}-cp-${cp_num}
-YAML
+    echo "[INFO] Applying control-plane config to $ip"
+    talosctl apply-config --insecure --nodes "$ip" --file controlplane.yaml
   fi
-
-  echo "[INFO] Applying control-plane config to $ip"
-  talosctl apply-config --insecure --nodes "$ip" --file controlplane.yaml --config-patch @"$patch_file"
 done
 
 # Apply worker configs if provided.
 if [ "${#WORKER_IPS[@]}" -gt 0 ] && [ -n "${WORKER_IPS[0]:-}" ]; then
-  for idx in "${!WORKER_IPS[@]}"; do
-    ip="${WORKER_IPS[$idx]}"
-    w_num="$((idx + 1))"
-    patch_file="worker-$w_num-patch.yaml"
-
-    cat > "$patch_file" <<YAML
-machine:
-  network:
-    hostname: ${CLUSTER_NAME}-worker-${w_num}
-YAML
-
+  for ip in "${WORKER_IPS[@]}"; do
     echo "[INFO] Applying worker config to $ip"
-    talosctl apply-config --insecure --nodes "$ip" --file worker.yaml --config-patch @"$patch_file"
+    talosctl apply-config --insecure --nodes "$ip" --file worker.yaml
   done
 fi
 

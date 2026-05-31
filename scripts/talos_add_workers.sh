@@ -38,17 +38,8 @@ export KUBECONFIG="$WORK_DIR/kubeconfig"
 
 for idx in "${!WORKER_IPS[@]}"; do
   ip="${WORKER_IPS[$idx]}"
-  n="$((idx + 1))"
-  patch_file="$WORK_DIR/worker-add-$n-patch.yaml"
-
-  cat > "$patch_file" <<YAML
-machine:
-  network:
-    hostname: ${CLUSTER_NAME}-worker-${n}
-YAML
-
   echo "[INFO] Applying worker config to $ip"
-  talosctl apply-config --insecure --nodes "$ip" --file "$WORK_DIR/worker.yaml" --config-patch @"$patch_file"
+  talosctl apply-config --insecure --nodes "$ip" --file "$WORK_DIR/worker.yaml"
 done
 
 kubectl get nodes -o wide
