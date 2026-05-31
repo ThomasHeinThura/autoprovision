@@ -3,6 +3,25 @@
 Last update: 2026-05-31
 Scope: consolidated from all workspace Markdown files.
 
+## Finished and Tested (current lab state)
+
+- Docker VM base bootstrap (Phase B1): PASSED
+	- Latest result: `ok=10 changed=5 unreachable=0 failed=0`.
+- Platform stack (Phase B2: Postgres + Traefik + Dockhand): PASSED
+	- Latest result: `ok=13 changed=6 unreachable=0 failed=0`.
+	- Postgres health check: `healthy`.
+- ELK stack (Phase B3): PASSED
+	- Latest result: `ok=9 changed=2 unreachable=0 failed=0`.
+- GitLab stack: PASSED
+	- Latest result: `ok=18 changed=5 unreachable=0 failed=0`.
+	- GitLab readiness check passed.
+	- Runner verify message: `rc=0` (registered and reachable).
+- SonarQube stack: PASSED
+	- Latest result: `ok=10 changed=4 unreachable=0 failed=0`.
+- Web access checks: PASSED
+	- Dockhand, GitLab, and SonarQube are HTTP 200 and browser-accessible.
+- Jump host to Docker VM deployment flow: PASSED
+
 ## Done (documented in Markdown)
 
 - Docker VM base bootstrap (Phase B1): DONE
@@ -16,11 +35,7 @@ Scope: consolidated from all workspace Markdown files.
 
 ## In Progress / Investigating
 
-- Dockhand via Traefik (https://dockhand.example.com/): SUCCESS (HTTP 200, browser confirmed)
-- GitLab via Traefik (https://gitlab.example.com/): SUCCESS (HTTP 200, browser confirmed)
-- SonarQube via Traefik (https://sonar.example.com/): SUCCESS (HTTP 200, browser confirmed)
-- Deploy from jump host VM to Docker VM: SUCCESS (confirmed easy path)
-- GitLab Runner registration/config stability: INVESTIGATING (remaining task)
+- No active Docker-platform blockers reported in the latest run.
 
 ## Not Marked Done in Markdown (planned or target state)
 
@@ -41,9 +56,9 @@ Scope: consolidated from all workspace Markdown files.
 
 ## Next Run Order
 
-1. Run GitLab Stack from UI with `gitlab_runner_token` set.
-2. Confirm runner with `docker exec gitlab-runner gitlab-runner verify`.
-3. Run a sample pipeline job to validate Docker executor.
+1. Start Kubernetes setup (Talos cluster creation flow).
+2. Install Kubernetes platform services (cert-manager, Envoy Gateway, ArgoCD, Headlamp, OTel).
+3. Deploy WSO2 via ArgoCD.
 
 ## Verify Commands
 

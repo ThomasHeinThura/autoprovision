@@ -11,6 +11,7 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ANSIBLE_DIR = os.path.join(BASE_DIR, "ansible")
 INVENTORY_FILE = os.path.join(ANSIBLE_DIR, "inventory")
 STATE_DB = os.path.join(BASE_DIR, "data", "state.db")
+SCRIPTS_DIR = os.path.join(BASE_DIR, "scripts")
 TRAEFIK_CERTS_DIR = os.path.join(BASE_DIR, "docker", "traefik", "certs")
 TRAEFIK_CERT_FILE = os.path.join(TRAEFIK_CERTS_DIR, "local-dev-tls.crt")
 TRAEFIK_KEY_FILE = os.path.join(TRAEFIK_CERTS_DIR, "local-dev-tls.key")
@@ -41,6 +42,10 @@ def _ensure_state_db() -> None:
                 gitlab_domain TEXT NOT NULL DEFAULT '',
                 gitlab_registry_domain TEXT NOT NULL DEFAULT '',
                 sonarqube_domain TEXT NOT NULL DEFAULT '',
+                talos_cluster_name TEXT NOT NULL DEFAULT '',
+                talos_control_plane_ips TEXT NOT NULL DEFAULT '',
+                talos_worker_ips TEXT NOT NULL DEFAULT '',
+                talos_install_disk TEXT NOT NULL DEFAULT 'sda',
                 updated_at TEXT NOT NULL
             )
             """
@@ -55,15 +60,26 @@ def _ensure_state_db() -> None:
             conn.execute("ALTER TABLE ui_state ADD COLUMN gitlab_registry_domain TEXT NOT NULL DEFAULT ''")
         if "sonarqube_domain" not in cols:
             conn.execute("ALTER TABLE ui_state ADD COLUMN sonarqube_domain TEXT NOT NULL DEFAULT ''")
+        if "talos_cluster_name" not in cols:
+            conn.execute("ALTER TABLE ui_state ADD COLUMN talos_cluster_name TEXT NOT NULL DEFAULT ''")
+        if "talos_control_plane_ips" not in cols:
+            conn.execute("ALTER TABLE ui_state ADD COLUMN talos_control_plane_ips TEXT NOT NULL DEFAULT ''")
+        if "talos_worker_ips" not in cols:
+            conn.execute("ALTER TABLE ui_state ADD COLUMN talos_worker_ips TEXT NOT NULL DEFAULT ''")
+        if "talos_install_disk" not in cols:
+            conn.execute("ALTER TABLE ui_state ADD COLUMN talos_install_disk TEXT NOT NULL DEFAULT 'sda'")
         conn.execute(
             """
             INSERT INTO ui_state (
                 id, env, docker_ip, ssh_user, dockhand_domain, kibana_domain,
-                gitlab_domain, gitlab_registry_domain, sonarqube_domain, updated_at
+                gitlab_domain, gitlab_registry_domain, sonarqube_domain,
+                talos_cluster_name, talos_control_plane_ips, talos_worker_ips, talos_install_disk,
+                updated_at
             )
             SELECT 1, 'lab', '', 'autoprovision',
                    'dockhand.example.com', 'kibana.example.com',
                    'gitlab.example.com', 'registry.example.com', 'sonar.example.com',
+                   'lab-cluster', '', '', 'sda',
                    ?
             WHERE NOT EXISTS (SELECT 1 FROM ui_state WHERE id = 1)
             """,
@@ -87,7 +103,9 @@ def _read_ui_state() -> dict:
             """
             SELECT
                 env, docker_ip, ssh_user, dockhand_domain, kibana_domain,
-                gitlab_domain, gitlab_registry_domain, sonarqube_domain, updated_at
+                gitlab_domain, gitlab_registry_domain, sonarqube_domain,
+                talos_cluster_name, talos_control_plane_ips, talos_worker_ips, talos_install_disk,
+                updated_at
             FROM ui_state
             WHERE id = 1
             """
@@ -105,6 +123,10 @@ def _read_ui_state() -> dict:
             "gitlab_domain": "gitlab.example.com",
             "gitlab_registry_domain": "registry.example.com",
             "sonarqube_domain": "sonar.example.com",
+            "talos_cluster_name": "lab-cluster",
+            "talos_control_plane_ips": "",
+            "talos_worker_ips": "",
+            "talos_install_disk": "sda",
             "updated_at": None,
         }
     return dict(row)
@@ -123,6 +145,10 @@ def _save_ui_state(data: dict) -> dict:
     gitlab_domain = (data.get("gitlab_domain") or "gitlab.example.com").strip()
     gitlab_registry_domain = (data.get("gitlab_registry_domain") or "registry.example.com").strip()
     sonarqube_domain = (data.get("sonarqube_domain") or "sonar.example.com").strip()
+    talos_cluster_name = (data.get("talos_cluster_name") or "lab-cluster").strip() or "lab-cluster"
+    talos_control_plane_ips = (data.get("talos_control_plane_ips") or "").strip()
+    talos_worker_ips = (data.get("talos_worker_ips") or "").strip()
+    talos_install_disk = (data.get("talos_install_disk") or "sda").strip() or "sda"
     updated_at = _utc_now()
 
     conn = sqlite3.connect(STATE_DB)
@@ -131,7 +157,9 @@ def _save_ui_state(data: dict) -> dict:
             """
             UPDATE ui_state
             SET env = ?, docker_ip = ?, ssh_user = ?, dockhand_domain = ?, kibana_domain = ?,
-                gitlab_domain = ?, gitlab_registry_domain = ?, sonarqube_domain = ?, updated_at = ?
+                gitlab_domain = ?, gitlab_registry_domain = ?, sonarqube_domain = ?,
+                talos_cluster_name = ?, talos_control_plane_ips = ?, talos_worker_ips = ?, talos_install_disk = ?,
+                updated_at = ?
             WHERE id = 1
             """,
             (
@@ -143,6 +171,10 @@ def _save_ui_state(data: dict) -> dict:
                 gitlab_domain,
                 gitlab_registry_domain,
                 sonarqube_domain,
+                talos_cluster_name,
+                talos_control_plane_ips,
+                talos_worker_ips,
+                talos_install_disk,
                 updated_at,
             ),
         )
@@ -159,6 +191,10 @@ def _save_ui_state(data: dict) -> dict:
         "gitlab_domain": gitlab_domain,
         "gitlab_registry_domain": gitlab_registry_domain,
         "sonarqube_domain": sonarqube_domain,
+        "talos_cluster_name": talos_cluster_name,
+        "talos_control_plane_ips": talos_control_plane_ips,
+        "talos_worker_ips": talos_worker_ips,
+        "talos_install_disk": talos_install_disk,
         "updated_at": updated_at,
     }
 
@@ -245,6 +281,28 @@ async def _run_playbook(playbook_rel: str, log_name: str, extra_vars: dict = Non
     return proc.returncode
 
 
+async def _run_script(script_rel: str, log_name: str, env_vars: dict = None) -> int:
+    log_path = os.path.join(BASE_DIR, "data", "logs", log_name)
+    os.makedirs(os.path.dirname(log_path), exist_ok=True)
+    cmd = ["bash", os.path.join(BASE_DIR, script_rel)]
+    run_env = os.environ.copy()
+    if env_vars:
+        for k, v in env_vars.items():
+            run_env[k] = "" if v is None else str(v)
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        cwd=BASE_DIR,
+        env=run_env,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+    )
+    with open(log_path, "w", encoding="utf-8") as lf:
+        async for chunk in proc.stdout:
+            lf.write(chunk.decode("utf-8", errors="replace"))
+    await proc.wait()
+    return proc.returncode
+
+
 def _read_log(name: str) -> str:
     p = os.path.join(BASE_DIR, "data", "logs", name)
     if not os.path.exists(p):
@@ -263,24 +321,28 @@ def _read_log_tail(name: str, max_chars: int = 60000) -> str:
 def _action_plan(action: str, body: dict) -> dict:
     if action == "bootstrap-docker":
         return {
+            "runner": "playbook",
             "playbook": "ansible/docker_vm_base.yml",
             "log_name": "docker-base.log",
             "extra_vars": None,
         }
     if action == "platform-up":
         return {
+            "runner": "playbook",
             "playbook": "ansible/docker_platform_up.yml",
             "log_name": "docker-platform.log",
             "extra_vars": {"dockhand_domain": body.get("dockhand_domain", "dockhand.example.com")},
         }
     if action == "elk-up":
         return {
+            "runner": "playbook",
             "playbook": "ansible/elk_stack.yml",
             "log_name": "elk.log",
             "extra_vars": {"kibana_domain": body.get("kibana_domain", "kibana.example.com")},
         }
     if action == "gitlab-up":
         return {
+            "runner": "playbook",
             "playbook": "ansible/gitlab_stack.yml",
             "log_name": "gitlab.log",
             "extra_vars": {
@@ -291,9 +353,44 @@ def _action_plan(action: str, body: dict) -> dict:
         }
     if action == "sonarqube-up":
         return {
+            "runner": "playbook",
             "playbook": "ansible/sonarqube_stack.yml",
             "log_name": "sonarqube.log",
             "extra_vars": {"sonarqube_domain": body.get("sonarqube_domain", "sonar.example.com")},
+        }
+    if action == "create-talos-cluster":
+        return {
+            "runner": "script",
+            "script": "scripts/talos_cluster_create.sh",
+            "log_name": "k8s-talos-create.log",
+            "extra_vars": {
+                "TALOS_CLUSTER_NAME": body.get("talos_cluster_name", "lab-cluster"),
+                "TALOS_CONTROL_PLANE_IPS": body.get("talos_control_plane_ips", ""),
+                "TALOS_WORKER_IPS": body.get("talos_worker_ips", ""),
+                "TALOS_INSTALL_DISK": body.get("talos_install_disk", "sda"),
+            },
+            "preview": "Create Talos configs, apply control-plane and worker config, bootstrap cluster, fetch kubeconfig, and install Cilium.",
+        }
+    if action == "add-talos-workers":
+        return {
+            "runner": "script",
+            "script": "scripts/talos_add_workers.sh",
+            "log_name": "k8s-talos-workers.log",
+            "extra_vars": {
+                "TALOS_CLUSTER_NAME": body.get("talos_cluster_name", "lab-cluster"),
+                "TALOS_WORKER_IPS": body.get("talos_worker_ips", ""),
+            },
+            "preview": "Apply Talos worker config to listed worker nodes and verify cluster node list.",
+        }
+    if action == "install-k8s-platform":
+        return {
+            "runner": "script",
+            "script": "scripts/k8s_platform_install.sh",
+            "log_name": "k8s-platform.log",
+            "extra_vars": {
+                "TALOS_CLUSTER_NAME": body.get("talos_cluster_name", "lab-cluster"),
+            },
+            "preview": "Install cert-manager, Envoy Gateway, ArgoCD, and Headlamp via Helm.",
         }
     raise ValueError(f"unsupported action: {action}")
 
@@ -316,19 +413,23 @@ def _get_playbook_task_list(playbook_rel: str) -> str:
 
 async def _run_action_job(job_id: str, action: str, body: dict):
     try:
-        env = body.get("env", "lab")
-        docker_ip = body.get("docker_ip", "")
-        ssh_user = body.get("ssh_user", "autoprovision")
-        ssh_pass = body.get("ssh_pass", "")
-        if not docker_ip:
-            raise ValueError("docker_ip required")
-
-        _save_ui_state(body)
-        _write_inventory(env, docker_ip, ssh_user, ssh_pass)
         plan = _action_plan(action, body)
+        _save_ui_state(body)
         JOBS[job_id]["status"] = "running"
         JOBS[job_id]["log_name"] = plan["log_name"]
-        rc = await _run_playbook(plan["playbook"], plan["log_name"], extra_vars=plan["extra_vars"])
+
+        if plan.get("runner") == "playbook":
+            env = body.get("env", "lab")
+            docker_ip = body.get("docker_ip", "")
+            ssh_user = body.get("ssh_user", "autoprovision")
+            ssh_pass = body.get("ssh_pass", "")
+            if not docker_ip:
+                raise ValueError("docker_ip required")
+            _write_inventory(env, docker_ip, ssh_user, ssh_pass)
+            rc = await _run_playbook(plan["playbook"], plan["log_name"], extra_vars=plan["extra_vars"])
+        else:
+            rc = await _run_script(plan["script"], plan["log_name"], env_vars=plan.get("extra_vars"))
+
         JOBS[job_id]["rc"] = rc
         JOBS[job_id]["status"] = "completed" if rc == 0 else "failed"
     except Exception as e:
@@ -470,7 +571,10 @@ async def action_preview(request: Request):
         return JSONResponse({"error": str(e)}, status_code=400)
 
     _save_ui_state(payload)
-    plan_text = _get_playbook_task_list(plan["playbook"])
+    if plan.get("runner") == "playbook":
+        plan_text = _get_playbook_task_list(plan["playbook"])
+    else:
+        plan_text = plan.get("preview", "Script-based action")
     return JSONResponse(
         {
             "action": action,
@@ -525,7 +629,21 @@ async def get_action_job(job_id: str):
 
 @app.get("/", response_class=HTMLResponse)
 async def index():
-    ui_file = os.path.join(BASE_DIR, "app", "ui_preview.html")
+    ui_file = os.path.join(BASE_DIR, "app", "ui_docker.html")
+    with open(ui_file, "r", encoding="utf-8") as f:
+        return f.read()
+
+
+@app.get("/docker", response_class=HTMLResponse)
+async def docker_page():
+    ui_file = os.path.join(BASE_DIR, "app", "ui_docker.html")
+    with open(ui_file, "r", encoding="utf-8") as f:
+        return f.read()
+
+
+@app.get("/k8s", response_class=HTMLResponse)
+async def k8s_page():
+    ui_file = os.path.join(BASE_DIR, "app", "ui_k8s.html")
     with open(ui_file, "r", encoding="utf-8") as f:
         return f.read()
 
@@ -637,13 +755,52 @@ async def action_sonarqube_up(request: Request):
 
 
 @app.post("/actions/create-talos-cluster")
-async def action_create_talos():
-    return JSONResponse({"action": "create-talos-cluster", "status": "not_implemented"})
+async def action_create_talos(request: Request):
+    body = await request.json()
+    _save_ui_state(body)
+    rc = await _run_script(
+        "scripts/talos_cluster_create.sh",
+        "k8s-talos-create.log",
+        env_vars={
+            "TALOS_CLUSTER_NAME": body.get("talos_cluster_name", "lab-cluster"),
+            "TALOS_CONTROL_PLANE_IPS": body.get("talos_control_plane_ips", ""),
+            "TALOS_WORKER_IPS": body.get("talos_worker_ips", ""),
+            "TALOS_INSTALL_DISK": body.get("talos_install_disk", "sda"),
+        },
+    )
+    log = _read_log("k8s-talos-create.log")
+    return JSONResponse({"rc": rc, "log": log})
 
 
 @app.post("/actions/install-k8s-platform")
-async def action_k8s_platform():
-    return JSONResponse({"action": "install-k8s-platform", "status": "not_implemented"})
+async def action_k8s_platform(request: Request):
+    body = await request.json()
+    _save_ui_state(body)
+    rc = await _run_script(
+        "scripts/k8s_platform_install.sh",
+        "k8s-platform.log",
+        env_vars={
+            "TALOS_CLUSTER_NAME": body.get("talos_cluster_name", "lab-cluster"),
+        },
+    )
+    log = _read_log("k8s-platform.log")
+    return JSONResponse({"rc": rc, "log": log})
+
+
+@app.post("/actions/add-talos-workers")
+async def action_add_talos_workers(request: Request):
+    body = await request.json()
+    _save_ui_state(body)
+    rc = await _run_script(
+        "scripts/talos_add_workers.sh",
+        "k8s-talos-workers.log",
+        env_vars={
+            "TALOS_CLUSTER_NAME": body.get("talos_cluster_name", "lab-cluster"),
+            "TALOS_WORKER_IPS": body.get("talos_worker_ips", ""),
+        },
+    )
+    log = _read_log("k8s-talos-workers.log")
+    return JSONResponse({"rc": rc, "log": log})
 
 
 @app.post("/actions/deploy-wso2")

@@ -50,7 +50,7 @@ chmod +x bootstrap-jumphost.sh
 
 What this script does:
 
-- Installs system dependencies (git, curl, Python 3, venv, pip, Ansible, sshpass, talosctl).
+- Installs system dependencies (git, curl, Python 3, venv, pip, Ansible, sshpass, talosctl, kubectl, helm, cilium CLI).
 - Creates a Python virtualenv in `.venv/`.
 - Installs Python dependencies from `requirements.txt` (FastAPI, Uvicorn, Ansible).
 - Creates `data/` directories for state, logs, inventory, generated env files.
@@ -118,6 +118,11 @@ http://<jump-host-ip>:3000/
 ```
 
 Fill the **"Environment & SSH"** form:
+
+Two one-screen pages are now available:
+
+- Docker page: `http://<jump-host-ip>:3000/docker`
+- Kubernetes page: `http://<jump-host-ip>:3000/k8s`
 
 | Field | Example |
 |---|---|
@@ -300,7 +305,71 @@ docker logs elk-fleet-server-1 | tail -20
 
 ---
 
-## 9. Default ELK credentials
+## 9. GitLab first login and Runner registration (required once)
+
+After GitLab stack is up, complete this one-time setup.
+
+### 9a. Get the initial GitLab root password
+
+On the Docker VM:
+
+```bash
+docker exec gitlab cat /etc/gitlab/initial_root_password
+```
+
+Use that password to log in as user `root` at:
+
+- `https://<your-gitlab-domain>/`
+
+### 9b. Create a Runner token in GitLab UI
+
+In GitLab UI, go to:
+
+1. Admin
+2. CI/CD
+3. Runners
+4. New instance runner
+
+Copy the generated runner token.
+
+### 9c. Register runner through Autoprovision
+
+1. In Autoprovision UI, open **GitLab Stack**.
+2. Paste the token into **GitLab Runner Token (optional, not saved)**.
+3. Click Deploy.
+
+The playbook will register the runner and verify it.
+
+### 9d. Manual registration fallback (optional)
+
+If you need manual fallback:
+
+```bash
+docker exec -it gitlab-runner gitlab-runner register \
+   --non-interactive \
+   --url "https://gitlab.example.com" \
+   --token "<RUNNER_TOKEN_FROM_GITLAB_UI>" \
+   --executor "docker" \
+   --docker-image "alpine:latest" \
+   --description "local-docker-runner" \
+   --docker-privileged \
+   --docker-volumes "/var/run/docker.sock:/var/run/docker.sock" \
+   --docker-volumes "/cache" \
+   --docker-volumes "/etc/gitlab-runner/certs/gitlab.example.com.crt:/usr/local/share/ca-certificates/local-dev-ca.crt:ro" \
+   --docker-pull-policy "if-not-present" \
+   --docker-extra-hosts "gitlab.example.com:host-gateway" \
+   --docker-extra-hosts "registry.example.com:host-gateway"
+```
+
+Verify:
+
+```bash
+docker exec gitlab-runner gitlab-runner verify
+```
+
+---
+
+## 10. Default ELK credentials
 
 The `docker-elk` stack uses credentials defined in `docker/elk/.env`.
 
@@ -323,7 +392,7 @@ Access:
 
 ---
 
-## 10. Health checks and quick troubleshooting
+## 11. Health checks and quick troubleshooting
 
 ### Platform stack (B2)
 
@@ -362,6 +431,7 @@ curl http://localhost:8200/
 | `Unable to initialize Fleet` / `encrypted saved object api key` | Missing `xpack.encryptedSavedObjects.encryptionKey` in `kibana.yml` | Set a 32+ char key in `docker/elk/kibana/config/kibana.yml` and restart Kibana |
 | APM restarts: `policy not found` | Fleet has no `Agent Policy APM Server` policy | Verify `kibana.yml` has `xpack.fleet.agentPolicies` block; restart Kibana and Fleet |
 | `Kibana server is not ready yet` | Kibana still initializing | Wait 60-90s; check `docker logs elk-kibana-1` |
+| GitLab Runner gets `404 Not Found` or `403 Forbidden` on `/api/v4/jobs/request` | Runner uses placeholder/invalid token or wrong token type | Create a new instance runner token in GitLab UI, paste into Autoprovision GitLab Runner Token field, and re-run GitLab Stack |
 
 ---
 

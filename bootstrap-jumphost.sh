@@ -3,7 +3,7 @@ set -euo pipefail
 
 # bootstrap-jumphost.sh
 # Idempotent bootstrap for the autoprovision jump host.
-# - Installs system dependencies (git, Python, Ansible, talosctl)
+# - Installs system dependencies (git, Python, Ansible, talosctl, kubectl, helm, cilium)
 # - Creates Python virtualenv
 # - Installs Python dependencies for the web UI
 # - Prepares data directories
@@ -73,6 +73,49 @@ install_talosctl() {
   sudo mv "$TMP_BIN" /usr/local/bin/talosctl
 }
 
+install_kubectl() {
+  if command -v kubectl >/dev/null 2>&1; then
+    info "kubectl already installed. Skipping."
+    return
+  fi
+
+  info "Installing kubectl..."
+  KUBECTL_VER="$(curl -L -s https://dl.k8s.io/release/stable.txt)"
+  curl -fsSL "https://dl.k8s.io/release/${KUBECTL_VER}/bin/linux/amd64/kubectl" -o /tmp/kubectl
+  chmod +x /tmp/kubectl
+  sudo mv /tmp/kubectl /usr/local/bin/kubectl
+}
+
+install_helm() {
+  if command -v helm >/dev/null 2>&1; then
+    info "helm already installed. Skipping."
+    return
+  fi
+
+  info "Installing helm..."
+  curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+}
+
+install_cilium_cli() {
+  if command -v cilium >/dev/null 2>&1; then
+    info "cilium CLI already installed. Skipping."
+    return
+  fi
+
+  info "Installing cilium CLI..."
+  CILIUM_VERSION=$(curl -s https://raw.githubusercontent.com/cilium/cilium-cli/main/stable.txt)
+  CLI_ARCH=amd64
+  if [ "$(uname -m)" = "aarch64" ]; then
+    CLI_ARCH=arm64
+  fi
+  curl -L --fail --remote-name-all \
+    "https://github.com/cilium/cilium-cli/releases/download/${CILIUM_VERSION}/cilium-linux-${CLI_ARCH}.tar.gz" \
+    "https://github.com/cilium/cilium-cli/releases/download/${CILIUM_VERSION}/cilium-linux-${CLI_ARCH}.tar.gz.sha256sum"
+  sha256sum --check "cilium-linux-${CLI_ARCH}.tar.gz.sha256sum"
+  sudo tar xzvf "cilium-linux-${CLI_ARCH}.tar.gz" -C /usr/local/bin
+  rm -f "cilium-linux-${CLI_ARCH}.tar.gz" "cilium-linux-${CLI_ARCH}.tar.gz.sha256sum"
+}
+
 create_venv() {
   if [ ! -d "$VENV_DIR" ]; then
     info "Creating Python virtual environment in $VENV_DIR..."
@@ -140,6 +183,9 @@ main() {
 
   install_packages
   install_talosctl
+  install_kubectl
+  install_helm
+  install_cilium_cli
   create_venv
   install_python_deps
   prepare_data_dirs
