@@ -23,7 +23,7 @@ providers:
 certificatesResolvers:
   le:
     acme:
-      email: ${ACME_EMAIL:-admin@example.com}
+      email: admin@example.com
       storage: /etc/traefik/acme.json
       httpChallenge:
         entryPoint: web
