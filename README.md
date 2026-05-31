@@ -86,7 +86,61 @@ Then restart with:
 
 ---
 
-## 4. Verify the web UI
+## 4. Prepare the Docker VM user (one-time)
+
+The Docker VM (where GitLab/ELK/SonarQube will run) must have a user that:
+
+- Can SSH in with a username and password.
+- Can `sudo` to root without a password (NOPASSWD).
+
+Example (Docker VM):
+
+```bash
+# SSH into the Docker VM once
+ssh bimdevops@192.168.79.131
+
+# Check that sudo works without a password
+sudo -l
+sudo id
+```
+
+Expected output:
+
+```text
+User bimdevops may run the following commands on docker:
+    (ALL : ALL) ALL
+
+bimdevops ALL=(ALL) NOPASSWD:ALL
+
+uid=0(root) gid=0(root) groups=0(root)
+```
+
+If this is not yet configured, add a sudoers snippet on the Docker VM:
+
+```bash
+sudo visudo -f /etc/sudoers.d/autoprovision
+```
+
+Add:
+
+```text
+bimdevops ALL=(ALL) NOPASSWD:ALL
+```
+
+replace `bimdevops` with whatever automation user you decide to use.
+
+This is a **one-time** requirement per environment image. Once the Docker VM (or template) has this user set up, all future runs from the jump host will work without manual SSH.
+
+In the web UI, you will then use:
+
+- SSH username: the automation user (for example, `bimdevops`).
+- SSH password: the same login password.
+
+Ansible will log in as this user and use `sudo` (become) without prompting for a password.
+
+---
+
+## 5. Verify the web UI
 
 From your browser, open the URL printed by the script, for example:
 
@@ -119,7 +173,7 @@ This confirms that:
 
 ---
 
-## 5. Next steps (not implemented yet)
+## 6. Next steps (not implemented yet)
 
 The current UI is only a placeholder. The next steps are:
 
