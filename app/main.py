@@ -286,6 +286,7 @@ def _action_plan(action: str, body: dict) -> dict:
             "extra_vars": {
                 "gitlab_domain": body.get("gitlab_domain", "gitlab.example.com"),
                 "gitlab_registry_domain": body.get("gitlab_registry_domain", "registry.example.com"),
+                "gitlab_runner_token": body.get("gitlab_runner_token", ""),
             },
         }
     if action == "sonarqube-up":
@@ -596,6 +597,7 @@ async def action_gitlab_up(request: Request):
     ssh_pass = body.get("ssh_pass", "")
     gitlab_domain = body.get("gitlab_domain", "gitlab.example.com")
     gitlab_registry_domain = body.get("gitlab_registry_domain", "registry.example.com")
+    gitlab_runner_token = body.get("gitlab_runner_token", "")
     _save_ui_state(body)
     if not docker_ip:
         return JSONResponse({"error": "docker_ip required"}, status_code=400)
@@ -606,6 +608,7 @@ async def action_gitlab_up(request: Request):
         extra_vars={
             "gitlab_domain": gitlab_domain,
             "gitlab_registry_domain": gitlab_registry_domain,
+            "gitlab_runner_token": gitlab_runner_token,
         },
     )
     log = _read_log("gitlab.log")

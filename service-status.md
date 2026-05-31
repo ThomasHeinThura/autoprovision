@@ -16,10 +16,11 @@ Scope: consolidated from all workspace Markdown files.
 
 ## In Progress / Investigating
 
-- Dockhand via Traefik (https://dockhand.example.com/): INVESTIGATING (HTTP 502)
-- GitLab via Traefik (https://gitlab.example.com/): INVESTIGATING (HTTP 404)
-- SonarQube via Traefik (https://sonar.example.com/): INVESTIGATING (HTTP 404)
-- GitLab Runner registration/config stability: INVESTIGATING
+- Dockhand via Traefik (https://dockhand.example.com/): SUCCESS (HTTP 200, browser confirmed)
+- GitLab via Traefik (https://gitlab.example.com/): SUCCESS (HTTP 200, browser confirmed)
+- SonarQube via Traefik (https://sonar.example.com/): SUCCESS (HTTP 200, browser confirmed)
+- Deploy from jump host VM to Docker VM: SUCCESS (confirmed easy path)
+- GitLab Runner registration/config stability: INVESTIGATING (remaining task)
 
 ## Not Marked Done in Markdown (planned or target state)
 
@@ -40,10 +41,9 @@ Scope: consolidated from all workspace Markdown files.
 
 ## Next Run Order
 
-1. Run Platform Stack from UI.
-2. Run ELK Stack from UI.
-3. Run GitLab Stack from UI.
-4. Run SonarQube Stack from UI.
+1. Run GitLab Stack from UI with `gitlab_runner_token` set.
+2. Confirm runner with `docker exec gitlab-runner gitlab-runner verify`.
+3. Run a sample pipeline job to validate Docker executor.
 
 ## Verify Commands
 

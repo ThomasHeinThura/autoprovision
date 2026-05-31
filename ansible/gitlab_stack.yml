@@ -8,6 +8,7 @@
     runner_config_dir: "{{ compose_dir }}/runner-config"
     gitlab_domain_safe: "{{ gitlab_domain | default('gitlab.example.com') }}"
     gitlab_registry_domain_safe: "{{ gitlab_registry_domain | default('registry.example.com') }}"
+    gitlab_runner_token_safe: "{{ gitlab_runner_token | default('') }}"
   tasks:
     - name: Check whether repo root is a git checkout
       stat:
@@ -122,6 +123,48 @@
         docker compose -f docker-compose.gitlab.yml up -d --force-recreate gitlab gitlab-runner
       args:
         chdir: "{{ compose_dir }}"
+
+    - name: Wait for GitLab internal readiness endpoint
+      shell: |
+        docker exec gitlab bash -lc "curl -sS http://127.0.0.1/-/readiness | grep -q 'ok'"
+      register: gitlab_readiness
+      retries: 40
+      delay: 15
+      until: gitlab_readiness.rc == 0
+      changed_when: false
+
+    - name: Register GitLab runner when token is provided
+      shell: |
+        docker exec gitlab-runner gitlab-runner register \
+          --non-interactive \
+          --url "https://{{ gitlab_domain_safe }}" \
+          --token "{{ gitlab_runner_token_safe }}" \
+          --name "local-docker-runner" \
+          --executor "docker" \
+          --docker-image "alpine:latest" \
+          --docker-privileged \
+          --docker-volumes "/var/run/docker.sock:/var/run/docker.sock" \
+          --docker-volumes "/cache" \
+          --docker-extra-hosts "{{ gitlab_domain_safe }}:host-gateway" \
+          --docker-extra-hosts "{{ gitlab_registry_domain_safe }}:host-gateway"
+      when: gitlab_runner_token_safe | length > 0
+      register: runner_register
+
+    - name: Ensure runner service is restarted after registration
+      shell: docker restart gitlab-runner
+      when: gitlab_runner_token_safe | length > 0
+
+    - name: Verify runner process is healthy
+      shell: docker exec gitlab-runner gitlab-runner verify
+      register: runner_verify
+      changed_when: false
+      failed_when: false
+
+    - name: Report runner verification result
+      debug:
+        msg: >-
+          GitLab runner verify rc={{ runner_verify.rc }}.
+          {{ 'Runner is registered and reachable.' if runner_verify.rc == 0 else 'Runner is running but not verified yet. Provide gitlab_runner_token to auto-register.' }}
 
     - name: Report GitLab deployment complete
       debug:

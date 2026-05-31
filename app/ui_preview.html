@@ -339,6 +339,10 @@
               <input id="gitlab-registry-domain" value="registry.example.com" placeholder="registry.example.com" />
             </div>
             <div class="field">
+              <label for="gitlab-runner-token">GitLab Runner Token (optional, not saved)</label>
+              <input id="gitlab-runner-token" type="password" placeholder="glrt-..." />
+            </div>
+            <div class="field">
               <label for="sonarqube-domain">SonarQube Domain</label>
               <input id="sonarqube-domain" value="sonar.example.com" placeholder="sonar.example.com" />
             </div>
@@ -458,6 +462,7 @@
           kibana_domain: document.getElementById('kibana-domain').value.trim(),
           gitlab_domain: document.getElementById('gitlab-domain').value.trim(),
           gitlab_registry_domain: document.getElementById('gitlab-registry-domain').value.trim(),
+          gitlab_runner_token: document.getElementById('gitlab-runner-token').value,
           sonarqube_domain: document.getElementById('sonarqube-domain').value.trim(),
         };
       }
