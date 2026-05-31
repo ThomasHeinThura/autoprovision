@@ -22,10 +22,10 @@ Install basic tools first:
 
 ```bash
 sudo apt update
-sudo apt install -y git curl wget
+sudo apt install -y git curl wget sshpass
 ```
 
-(If you run a different distro, install `git`, `curl`, `wget` with the equivalent package manager.)
+(If you run a different distro, install `git`, `curl`, `wget`, and `sshpass` with the equivalent package manager.)
 
 ---
 
@@ -52,7 +52,7 @@ chmod +x bootstrap-jumphost.sh
 
 What this script does:
 
-- Installs system dependencies (git, curl, Python 3, venv, pip, Ansible, ansible-runner, talosctl).
+- Installs system dependencies (git, curl, Python 3, venv, pip, Ansible, ansible-runner, sshpass, talosctl).
 - Creates a Python virtualenv in `.venv/`.
 - Installs Python dependencies from `requirements.txt` (FastAPI, Uvicorn, Ansible, ansible-runner).
 - Creates `data/` directories for state, logs, inventory, generated env files.
@@ -70,6 +70,18 @@ Example output:
 
 [INFO]  Bootstrap complete.
 Open: http://192.168.139.64:3000/
+```
+
+To stop the web UI later:
+
+```bash
+pkill -f "uvicorn app.main:app"
+```
+
+Then restart with:
+
+```bash
+./bootstrap-jumphost.sh
 ```
 
 ---
