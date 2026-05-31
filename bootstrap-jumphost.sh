@@ -28,6 +28,14 @@ require_cmd() {
   fi
 }
 
+linux_arch() {
+  case "$(uname -m)" in
+    x86_64) echo "amd64" ;;
+    aarch64|arm64) echo "arm64" ;;
+    *) error "Unsupported architecture: $(uname -m)" ;;
+  esac
+}
+
 install_packages() {
   info "Installing system packages (git, Python, Ansible, talosctl prerequisites)..."
 
@@ -61,27 +69,34 @@ install_packages() {
 
 install_talosctl() {
   if command -v talosctl >/dev/null 2>&1; then
-    info "talosctl already installed. Skipping."
-    return
+    if talosctl version >/dev/null 2>&1; then
+      info "talosctl already installed and healthy. Skipping."
+      return
+    fi
+    warn "Existing talosctl found but not executable. Reinstalling."
   fi
 
   info "Installing talosctl..."
-  # Install latest talosctl (Linux amd64) into /usr/local/bin
+  ARCH="$(linux_arch)"
   TMP_BIN="/tmp/talosctl"
-  curl -fsSL https://github.com/siderolabs/talos/releases/latest/download/talosctl-linux-amd64 -o "$TMP_BIN"
+  curl -fsSL "https://github.com/siderolabs/talos/releases/latest/download/talosctl-linux-${ARCH}" -o "$TMP_BIN"
   chmod +x "$TMP_BIN"
   sudo mv "$TMP_BIN" /usr/local/bin/talosctl
 }
 
 install_kubectl() {
   if command -v kubectl >/dev/null 2>&1; then
-    info "kubectl already installed. Skipping."
-    return
+    if kubectl version --client >/dev/null 2>&1; then
+      info "kubectl already installed and healthy. Skipping."
+      return
+    fi
+    warn "Existing kubectl found but not executable. Reinstalling."
   fi
 
   info "Installing kubectl..."
+  ARCH="$(linux_arch)"
   KUBECTL_VER="$(curl -L -s https://dl.k8s.io/release/stable.txt)"
-  curl -fsSL "https://dl.k8s.io/release/${KUBECTL_VER}/bin/linux/amd64/kubectl" -o /tmp/kubectl
+  curl -fsSL "https://dl.k8s.io/release/${KUBECTL_VER}/bin/linux/${ARCH}/kubectl" -o /tmp/kubectl
   chmod +x /tmp/kubectl
   sudo mv /tmp/kubectl /usr/local/bin/kubectl
 }
