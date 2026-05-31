@@ -30,16 +30,12 @@
       args:
         chdir: "{{ elk_dir }}"
 
-    - name: Start core ELK + Fleet
-      shell: docker compose -f docker-compose.yml -f extensions/fleet/fleet-compose.yml up -d
-      args:
-        chdir: "{{ elk_dir }}"
-
-    - name: Start APM + Logstash agents
-      shell: docker compose -f extensions/fleet/agent-apmserver-compose.yml -f extensions/logstash/logstash-compose.yml up -d
+    - name: Start ELK + Fleet + APM Server
+      shell: >
+        docker compose -f docker-compose.yml -f extensions/fleet/fleet-compose.yml -f extensions/fleet/agent-apmserver-compose.yml up -d
       args:
         chdir: "{{ elk_dir }}"
 
     - name: Report ELK deployment complete
       debug:
-        msg: "ELK stack deployed from {{ elk_dir }}."
+        msg: "ELK stack (Elasticsearch, Logstash, Kibana, Fleet, APM Server) deployed from {{ elk_dir }}."
