@@ -6,6 +6,8 @@ This repository contains:
 
 - `bootstrap-jumphost.sh` – one-shot script to prepare a fresh jump host.
 - `installation-steps.md` – detailed operator flow and planning document.
+- `talos-installation.md` – lab Talos/Kubernetes install guide for 1 control plane and 2 workers.
+- `production-talos-installation.md` – production Talos/Kubernetes install guide for 3 control planes and 5 workers.
 - `updated-mvp.md` – MVP scope and environment model.
 - `vm-requirements.md` – VM sizing for Lab, UAT, and Production.
 - `version.md` – version matrix (Talos, Cilium, Elastic, GitLab, WSO2, etc.).

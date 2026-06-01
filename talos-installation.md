@@ -4,6 +4,8 @@
 > **Environment:** UTM VMs (ARM64), `vda` disk, 1 control plane + 2 workers  
 > **Talos:** v1.13.3 | **Cilium:** v1.19.4 | **Kubernetes:** v1.32+
 
+> **Lab only:** this guide keeps the single-control-plane rehearsal flow. For production with 3 control planes and 5 workers, use [production-talos-installation.md](production-talos-installation.md).
+
 ---
 
 ## Table of Contents
@@ -213,29 +215,6 @@ kubectl get nodes -o wide
 
 ---
 
-## 8. Phase 6 — Install Gateway API CRDs
-
-Install both standard and experimental CRDs — Envoy Gateway requires TLS/TCP route CRDs:
-
-```bash
-# Standard CRDs
-kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/gateway-api/v1.2.0/config/crd/standard/gateway.networking.k8s.io_gatewayclasses.yaml
-kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/gateway-api/v1.2.0/config/crd/standard/gateway.networking.k8s.io_gateways.yaml
-kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/gateway-api/v1.2.0/config/crd/standard/gateway.networking.k8s.io_httproutes.yaml
-kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/gateway-api/v1.2.0/config/crd/standard/gateway.networking.k8s.io_referencegrants.yaml
-kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/gateway-api/v1.2.0/config/crd/standard/gateway.networking.k8s.io_grpcroutes.yaml
-
-# Experimental CRDs (required for Envoy TLS/TCP routes)
-kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/gateway-api/v1.2.0/config/crd/experimental/gateway.networking.k8s.io_tlsroutes.yaml
-kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/gateway-api/v1.2.0/config/crd/experimental/gateway.networking.k8s.io_tcproutes.yaml
-kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/gateway-api/v1.2.0/config/crd/experimental/gateway.networking.k8s.io_backendtlspolicies.yaml
-
-# Verify
-kubectl get crd | grep gateway
-```
-
----
-
 ## 9. Phase 7 — Install Cilium
 
 > **Important:** `gatewayAPI.enabled=false` here because Envoy Gateway manages the GatewayClass, not Cilium. Enabling both causes GatewayClass conflicts.
@@ -307,11 +286,6 @@ kubectl get ciliuml2announcementpolicy
 ## 11. Phase 9 — Install Envoy Gateway
 
 ```bash
-kubectl delete namespace envoy-gateway-system --ignore-not-found
-kubectl get crd | grep -E "gateway|envoy" | awk '{print $1}' | xargs kubectl delete crd --ignore-not-found
-
-kubectl create namespace envoy-gateway-system
-
 helm install eg oci://docker.io/envoyproxy/gateway-helm --version v1.8.0 -n envoy-gateway-system --create-namespace --set config.envoyGateway.extensionApis.enableBackend=true --set deployment.replicas=2
 
 kubectl rollout status deployment/envoy-gateway -n envoy-gateway-system

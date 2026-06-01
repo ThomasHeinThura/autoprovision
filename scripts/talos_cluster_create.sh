@@ -132,7 +132,7 @@ export TALOSCONFIG="$WORK_DIR/talosconfig"
 # Apply control-plane configs.
 for idx in "${!CONTROL_PLANE_IPS[@]}"; do
   ip="${CONTROL_PLANE_IPS[$idx]}"
-  if [ "$idx" -eq 0 ]; then
+  if [ "${#CONTROL_PLANE_IPS[@]}" -eq 1 ] && [ "$idx" -eq 0 ]; then
     patch_file="controlplane-allow-scheduling-patch.yaml"
     cat > "$patch_file" <<'YAML'
 cluster:
@@ -141,7 +141,11 @@ YAML
     echo "[INFO] Applying control-plane config to $ip (with allowSchedulingOnControlPlanes)"
     apply_talos_config "$ip" "controlplane.yaml" "$patch_file"
   else
-    echo "[INFO] Applying control-plane config to $ip"
+    if [ "$idx" -eq 0 ]; then
+      echo "[INFO] Applying control-plane config to $ip (production-safe: no workload scheduling on control plane)"
+    else
+      echo "[INFO] Applying control-plane config to $ip"
+    fi
     apply_talos_config "$ip" "controlplane.yaml"
   fi
 done
@@ -205,7 +209,7 @@ else
     --helm-set=cgroup.hostRoot=/sys/fs/cgroup \
     --helm-set=l2announcements.enabled=true \
     --helm-set=externalIPs.enabled=true \
-    --set gatewayAPI.enabled=true \
+    --helm-set=gatewayAPI.enabled=false \
     --helm-set=devices=e+ \
     --helm-set=operator.replicas=1
 fi
