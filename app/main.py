@@ -358,40 +358,6 @@ def _action_plan(action: str, body: dict) -> dict:
             "log_name": "sonarqube.log",
             "extra_vars": {"sonarqube_domain": body.get("sonarqube_domain", "sonar.example.com")},
         }
-    if action == "create-talos-cluster":
-        return {
-            "runner": "script",
-            "script": "scripts/talos_cluster_create.sh",
-            "log_name": "k8s-talos-create.log",
-            "extra_vars": {
-                "TALOS_CLUSTER_NAME": body.get("talos_cluster_name", "lab-cluster"),
-                "TALOS_CONTROL_PLANE_IPS": body.get("talos_control_plane_ips", ""),
-                "TALOS_WORKER_IPS": body.get("talos_worker_ips", ""),
-                "TALOS_INSTALL_DISK": body.get("talos_install_disk", "sda"),
-            },
-            "preview": "Create Talos configs, apply control-plane and worker config, bootstrap cluster, fetch kubeconfig, and install Cilium.",
-        }
-    if action == "add-talos-workers":
-        return {
-            "runner": "script",
-            "script": "scripts/talos_add_workers.sh",
-            "log_name": "k8s-talos-workers.log",
-            "extra_vars": {
-                "TALOS_CLUSTER_NAME": body.get("talos_cluster_name", "lab-cluster"),
-                "TALOS_WORKER_IPS": body.get("talos_worker_ips", ""),
-            },
-            "preview": "Apply Talos worker config to listed worker nodes and verify cluster node list.",
-        }
-    if action == "install-k8s-platform":
-        return {
-            "runner": "script",
-            "script": "scripts/k8s_platform_install.sh",
-            "log_name": "k8s-platform.log",
-            "extra_vars": {
-                "TALOS_CLUSTER_NAME": body.get("talos_cluster_name", "lab-cluster"),
-            },
-            "preview": "Install cert-manager, Envoy Gateway, ArgoCD, and Headlamp via Helm.",
-        }
     raise ValueError(f"unsupported action: {action}")
 
 
@@ -641,13 +607,6 @@ async def docker_page():
         return f.read()
 
 
-@app.get("/k8s", response_class=HTMLResponse)
-async def k8s_page():
-    ui_file = os.path.join(BASE_DIR, "app", "ui_k8s.html")
-    with open(ui_file, "r", encoding="utf-8") as f:
-        return f.read()
-
-
 @app.post("/actions/bootstrap-docker")
 async def action_bootstrap_docker(request: Request):
     body = await request.json()
@@ -751,55 +710,6 @@ async def action_sonarqube_up(request: Request):
         extra_vars={"sonarqube_domain": sonarqube_domain},
     )
     log = _read_log("sonarqube.log")
-    return JSONResponse({"rc": rc, "log": log})
-
-
-@app.post("/actions/create-talos-cluster")
-async def action_create_talos(request: Request):
-    body = await request.json()
-    _save_ui_state(body)
-    rc = await _run_script(
-        "scripts/talos_cluster_create.sh",
-        "k8s-talos-create.log",
-        env_vars={
-            "TALOS_CLUSTER_NAME": body.get("talos_cluster_name", "lab-cluster"),
-            "TALOS_CONTROL_PLANE_IPS": body.get("talos_control_plane_ips", ""),
-            "TALOS_WORKER_IPS": body.get("talos_worker_ips", ""),
-            "TALOS_INSTALL_DISK": body.get("talos_install_disk", "sda"),
-        },
-    )
-    log = _read_log("k8s-talos-create.log")
-    return JSONResponse({"rc": rc, "log": log})
-
-
-@app.post("/actions/install-k8s-platform")
-async def action_k8s_platform(request: Request):
-    body = await request.json()
-    _save_ui_state(body)
-    rc = await _run_script(
-        "scripts/k8s_platform_install.sh",
-        "k8s-platform.log",
-        env_vars={
-            "TALOS_CLUSTER_NAME": body.get("talos_cluster_name", "lab-cluster"),
-        },
-    )
-    log = _read_log("k8s-platform.log")
-    return JSONResponse({"rc": rc, "log": log})
-
-
-@app.post("/actions/add-talos-workers")
-async def action_add_talos_workers(request: Request):
-    body = await request.json()
-    _save_ui_state(body)
-    rc = await _run_script(
-        "scripts/talos_add_workers.sh",
-        "k8s-talos-workers.log",
-        env_vars={
-            "TALOS_CLUSTER_NAME": body.get("talos_cluster_name", "lab-cluster"),
-            "TALOS_WORKER_IPS": body.get("talos_worker_ips", ""),
-        },
-    )
-    log = _read_log("k8s-talos-workers.log")
     return JSONResponse({"rc": rc, "log": log})
 
 
