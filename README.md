@@ -124,7 +124,6 @@ Fill the **"Environment & SSH"** form:
 Two one-screen pages are now available:
 
 - Docker page: `http://<jump-host-ip>:3000/docker`
-- Kubernetes page: `http://<jump-host-ip>:3000/k8s`
 
 | Field | Example |
 |---|---|
