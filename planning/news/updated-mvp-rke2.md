@@ -71,8 +71,10 @@ installs `kubectl`, `helm`, and `istioctl` (instead of `talosctl`).
 ### Phase B — Docker platform (per Docker VM, via Ansible)
 For GitLab VM and each ELK VM, in fixed order where applicable:
 1. Docker CE + base packages.
-2. (GitLab VM) PostgreSQL, Traefik, Dockhand, GitLab CE + Runner + Registry, SonarQube.
-3. (ELK VMs) ELK stack (Elasticsearch, Logstash, Kibana, Fleet/APM), ElastAlert2.
+2. **Traefik** — installed on every Docker VM right after the base; owns the shared `platform`
+   network. Each service is exposed over HTTPS at its domain via Traefik.
+3. (GitLab VM) Platform = **PostgreSQL + Dockhand only**, then GitLab CE + Runner + Registry, then SonarQube.
+4. (ELK VMs) ELK stack (Elasticsearch, Logstash, Kibana via Traefik, Fleet/APM), ElastAlert2.
 
 Prod ELK, UAT ELK, and GitLab run as three parallel tracks.
 

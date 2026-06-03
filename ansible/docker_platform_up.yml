@@ -1,12 +1,12 @@
-- name: Bring up Docker platform stack (Postgres + Traefik + Dockhand)
+- name: Bring up Docker platform stack (PostgreSQL + Dockhand)
   hosts: docker_vm
   become: true
+  # Traefik is installed first by ansible/traefik_stack.yml and owns the shared
+  # `platform` network this stack attaches to. Run Traefik before this play.
   vars:
     repo_url: "https://github.com/ThomasHeinThura/autoprovision.git"
     repo_root: "/home/{{ ansible_user }}/autoprovision"
     compose_dir: "{{ repo_root }}/docker"
-    traefik_dir: "{{ compose_dir }}/traefik"
-    traefik_certs_dir: "{{ traefik_dir }}/certs"
     dockhand_domain_safe: "{{ dockhand_domain | default('dockhand.local') }}"
   tasks:
     - name: Check whether repo root is a git checkout
@@ -44,32 +44,14 @@
         state: directory
         mode: "0755"
 
-    - name: Ensure Traefik directory exists
-      file:
-        path: "{{ traefik_dir }}"
-        state: directory
-        mode: "0755"
-
-    - name: Ensure Traefik certs directory exists
-      file:
-        path: "{{ traefik_certs_dir }}"
-        state: directory
-        mode: "0755"
-
-    - name: Ensure Traefik acme file exists with strict permissions
-      file:
-        path: "{{ traefik_dir }}/acme.json"
-        state: touch
-        mode: "0600"
-
-    - name: Pull latest platform images (Postgres, Traefik, Dockhand)
+    - name: Pull latest platform images (Postgres, Dockhand)
       shell: |
         export DOCKHAND_DOMAIN='{{ dockhand_domain_safe }}'
         docker compose -f docker-compose.platform.yml pull
       args:
         chdir: "{{ compose_dir }}"
 
-    - name: Bring up platform stack (Postgres + Traefik + Dockhand)
+    - name: Bring up platform stack (PostgreSQL + Dockhand)
       shell: |
         export DOCKHAND_DOMAIN='{{ dockhand_domain_safe }}'
         docker compose -f docker-compose.platform.yml up -d --force-recreate --remove-orphans

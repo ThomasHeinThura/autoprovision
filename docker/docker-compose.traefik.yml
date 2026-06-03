@@ -1,0 +1,40 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Traefik edge proxy — installed on EVERY Docker VM (GitLab, Prod ELK, UAT ELK)
+# right after Docker base, BEFORE any service stack.
+#
+# This stack OWNS the shared `platform` Docker network. Service stacks on the same
+# VM (platform/dockhand+postgres, gitlab, elk/kibana) attach to `platform` as an
+# external network and publish themselves to Traefik via container labels.
+#
+# Project name is pinned (`name: traefik`) so `--remove-orphans` on other stacks
+# never touches the Traefik container, and vice-versa.
+#
+# Traefik v3.7.1 (version.md). HTTPS on :443, HTTP:80 redirects to HTTPS.
+# ─────────────────────────────────────────────────────────────────────────────
+name: traefik
+
+services:
+
+  traefik:
+    image: traefik:v3.7.1
+    container_name: traefik
+    restart: unless-stopped
+    command:
+      - "--configFile=/etc/traefik/traefik.yml"
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./traefik/dynamic:/etc/traefik/dynamic:ro
+      - ./traefik/certs:/etc/traefik/certs:ro
+      - ./traefik/acme.json:/etc/traefik/acme.json
+    networks:
+      - platform
+
+networks:
+  # Created and owned here; every other stack joins it as `external: true`.
+  platform:
+    name: platform
+    driver: bridge

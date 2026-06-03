@@ -1,13 +1,17 @@
-version: '3.8'
-
 # ─────────────────────────────────────────────────────────────────────────────
-# Core platform network + base services
-# Versions from version.md (May 2026)
+# Platform base services for the GitLab VM: PostgreSQL + Dockhand ONLY.
+#
+# Traefik is no longer part of this stack — it is installed first as its own
+# stack (docker-compose.traefik.yml) on every Docker VM, and OWNS the `platform`
+# network this stack attaches to. Bring Traefik up before this stack.
+#
+# Versions from version.md (May 2026): PostgreSQL 17.10, Dockhand v0.29.4.
 # ─────────────────────────────────────────────────────────────────────────────
+name: platform
 
 services:
 
-  # ── Shared PostgreSQL ────────────────────────────────────────────────────
+  # ── Shared PostgreSQL (GitLab, SonarQube, platform state) ─────────────────
   postgres:
     image: postgres:17.10
     container_name: pg-platform
@@ -26,32 +30,11 @@ services:
     networks:
       - platform
 
-  # ── Traefik (HTTPS ingress on :443) ───────────────────────────────────────
-  traefik:
-    image: traefik:v3.7.1
-    container_name: traefik
-    restart: unless-stopped
-    command:
-      - "--configFile=/etc/traefik/traefik.yml"
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
-      - ./traefik/dynamic:/etc/traefik/dynamic:ro
-      - ./traefik/certs:/etc/traefik/certs:ro
-      - ./traefik/acme.json:/etc/traefik/acme.json
-    networks:
-      - platform
-
   # ── Dockhand (Docker management and monitoring UI) ───────────────────────
   dockhand:
     image: fnsys/dockhand:latest
     container_name: dockhand
     restart: unless-stopped
-    ports:
-      - "3000:3000"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     networks:
@@ -70,6 +53,7 @@ volumes:
   pg_data:
 
 networks:
+  # Owned by the Traefik stack (docker-compose.traefik.yml) — must already exist.
   platform:
+    external: true
     name: platform
-    driver: bridge

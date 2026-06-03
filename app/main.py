@@ -328,6 +328,13 @@ def _action_plan(action: str, body: dict) -> dict:
             "log_name": "docker-base.log",
             "extra_vars": None,
         }
+    if action == "traefik-up":
+        return {
+            "runner": "playbook",
+            "playbook": "ansible/traefik_stack.yml",
+            "log_name": "traefik.log",
+            "extra_vars": None,
+        }
     if action == "platform-up":
         return {
             "runner": "playbook",
@@ -558,9 +565,10 @@ def _track_plan(action: str, body: dict) -> dict:
             "inventory": {"docker_vm": [ip]},
             "steps": [
                 {"playbook": "ansible/docker_vm_base.yml", "extra_vars": None, "label": "Docker base"},
+                {"playbook": "ansible/traefik_stack.yml", "extra_vars": None, "label": "Traefik edge proxy"},
                 {"playbook": "ansible/elk_stack.yml",
                  "extra_vars": {"kibana_domain": body.get("kibana_domain") or "kibana.example.com"},
-                 "label": "ELK stack"},
+                 "label": "ELK stack (Kibana via Traefik)"},
             ],
         }
 
@@ -572,9 +580,10 @@ def _track_plan(action: str, body: dict) -> dict:
             "inventory": {"docker_vm": [ip]},
             "steps": [
                 {"playbook": "ansible/docker_vm_base.yml", "extra_vars": None, "label": "Docker base"},
+                {"playbook": "ansible/traefik_stack.yml", "extra_vars": None, "label": "Traefik edge proxy"},
                 {"playbook": "ansible/docker_platform_up.yml",
                  "extra_vars": {"dockhand_domain": body.get("dockhand_domain") or "dockhand.example.com"},
-                 "label": "Platform (Postgres/Traefik/Dockhand)"},
+                 "label": "Platform (PostgreSQL + Dockhand)"},
                 {"playbook": "ansible/gitlab_stack.yml",
                  "extra_vars": {
                      "gitlab_domain": body.get("gitlab_domain") or "gitlab.example.com",

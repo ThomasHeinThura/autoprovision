@@ -127,13 +127,20 @@ Click **Run All Configured** to launch every card that has its target filled in.
 
 | Card | What it installs | Key inputs |
 | ---- | ---------------- | ---------- |
-| **GitLab (shared)** | Docker base → Postgres/Traefik/Dockhand → GitLab CE+Runner+Registry → SonarQube | GitLab VM IP, domains, runner token (optional) |
+| **GitLab (shared)** | Docker base → **Traefik** → Platform (PostgreSQL + Dockhand) → GitLab CE+Runner+Registry → SonarQube | GitLab VM IP, domains, runner token (optional) |
 | **Prod RKE2 Cluster** | RKE2 v1.36.1 on 3 servers + 5 agents, Canal CNI, kubeconfig pulled to jump host | cluster name, 3 CP IPs, 5 worker IPs, registration address, RKE2 token |
 | **UAT RKE2 Cluster** | RKE2 on 1 server + 2 agents | cluster name, 1 CP IP, 2 worker IPs, RKE2 token |
-| **Prod ELK** | Docker base → Elasticsearch/Logstash/Kibana/Fleet/APM | ELK VM IP, Kibana domain |
+| **Prod ELK** | Docker base → **Traefik** → Elasticsearch/Logstash/Kibana/Fleet/APM (Kibana via Traefik) | ELK VM IP, Kibana domain |
 | **UAT ELK** | same, UAT ELK VM | ELK VM IP, Kibana domain |
 | **Prod MSSQL AG** | SQL Server 2022 on 3 nodes + read-scale Always On AG (first IP = primary) | 3 node IPs, SA password, AG name |
 | **UAT MSSQL** | SQL Server 2022 single instance | VM IP, SA password |
+
+> **Every Docker VM runs Traefik.** Traefik is installed as its own stack right after Docker base
+> and **owns the shared `platform` network** that the service stacks attach to. Each service is
+> reachable over HTTPS at its domain (GitLab/registry/Dockhand/SonarQube on the GitLab VM; Kibana
+> on each ELK VM) — no raw service ports. The GitLab VM's platform stack is **PostgreSQL + Dockhand
+> only** (Traefik is separate). This Traefik (v3.7.1) is the Docker-platform ingress and is
+> unrelated to Istio (Kubernetes ingress).
 
 > **Order tip:** start **GitLab** first (it hosts manifests/registry), then fire everything else.
 > All tracks are independent and run together.
@@ -152,8 +159,10 @@ ansible-playbook -i <inv> ansible/rke2_cluster.yml \
 ansible-playbook -i <inv> ansible/mssql_ag.yml     --extra-vars '{"sa_password":"<pw>","ag_name":"ag1"}'
 ansible-playbook -i <inv> ansible/mssql_single.yml --extra-vars '{"sa_password":"<pw>"}'
 
-# Docker stacks (existing playbooks)
+# Docker stacks — install Traefik right after the base, before any service stack
 ansible-playbook -i <inv> ansible/docker_vm_base.yml
+ansible-playbook -i <inv> ansible/traefik_stack.yml                  # every Docker VM; creates the shared `platform` network
+ansible-playbook -i <inv> ansible/docker_platform_up.yml --extra-vars '{"dockhand_domain":"dockhand.example.com"}'  # GitLab VM: PostgreSQL + Dockhand
 ansible-playbook -i <inv> ansible/elk_stack.yml      --extra-vars '{"kibana_domain":"kibana.example.com"}'
 ansible-playbook -i <inv> ansible/gitlab_stack.yml   --extra-vars '{"gitlab_domain":"gitlab.example.com"}'
 ```
@@ -271,7 +280,8 @@ curl -u elastic:changeme http://<elk-vm>:9200/_cluster/health
 | `app/` | FastAPI control plane — `ui_parallel.html` (`/`, multi-track) + legacy `ui_docker.html` (`/docker`) |
 | `ansible/rke2_cluster.yml` | RKE2 servers + agents install (Canal, bundled ingress disabled) |
 | `ansible/mssql_single.yml`, `ansible/mssql_ag.yml` | SQL Server 2022 single / read-scale AG |
-| `ansible/docker_*.yml`, `elk_stack.yml`, `gitlab_stack.yml`, `sonarqube_stack.yml` | Docker platform stacks |
+| `ansible/traefik_stack.yml` | Traefik edge proxy — every Docker VM, right after base; owns the `platform` network |
+| `ansible/docker_*.yml`, `elk_stack.yml`, `gitlab_stack.yml`, `sonarqube_stack.yml` | Docker platform stacks (platform = PostgreSQL + Dockhand only) |
 | `rke2-cluster/` | RKE2 cluster + Istio/ArgoCD/Headlamp/WSO2 runbooks (prod, uat, shared) |
 | `WSO2_APIM_KUBE_ISTIO/` | Team's WSO2 + Istio deployment repo (authoritative for WSO2) |
 | `planning/news/` | New-requirement docs (RKE2/Istio/MSSQL/parallel) |

@@ -13,11 +13,16 @@ concurrently; one slow track never blocks another.
 | --------- | ----- | -------- | ------------ |
 | `prod_k8s` | Prod RKE2 cluster | `ansible/rke2_cluster.yml` | 3 servers + 5 agents |
 | `uat_k8s`  | UAT RKE2 cluster | `ansible/rke2_cluster.yml` | 1 server + 2 agents |
-| `prod_elk` | Prod ELK | `ansible/elk_stack.yml` (+ base) | Prod ELK VM |
-| `uat_elk`  | UAT ELK | `ansible/elk_stack.yml` (+ base) | UAT ELK VM |
-| `gitlab`   | GitLab platform | `ansible/docker_vm_base.yml` → `docker_platform_up.yml` → `gitlab_stack.yml` → `sonarqube_stack.yml` | GitLab VM |
+| `prod_elk` | Prod ELK | `docker_vm_base.yml` → `traefik_stack.yml` → `elk_stack.yml` | Prod ELK VM |
+| `uat_elk`  | UAT ELK | `docker_vm_base.yml` → `traefik_stack.yml` → `elk_stack.yml` | UAT ELK VM |
+| `gitlab`   | GitLab platform | `docker_vm_base.yml` → `traefik_stack.yml` → `docker_platform_up.yml` → `gitlab_stack.yml` → `sonarqube_stack.yml` | GitLab VM |
 | `prod_sql` | Prod MSSQL AG | `ansible/mssql_ag.yml` | 3 MSSQL VMs |
 | `uat_sql`  | UAT MSSQL | `ansible/mssql_single.yml` | UAT MSSQL VM |
+
+> **Traefik runs on every Docker VM**, installed right after the Docker base and before any
+> service stack. It owns the shared `platform` Docker network; the platform (PostgreSQL +
+> Dockhand), GitLab, and ELK/Kibana stacks attach to it and publish themselves via Traefik labels
+> + their domain. The GitLab VM's platform stack is PostgreSQL + Dockhand only.
 
 ## Why parallel runs are safe
 

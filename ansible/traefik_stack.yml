@@ -1,0 +1,86 @@
+# Install the Traefik edge proxy on a Docker VM (GitLab or either ELK VM).
+#
+# Runs right after docker_vm_base.yml and BEFORE any service stack, because it
+# creates and owns the shared `platform` Docker network that the platform, GitLab,
+# and ELK stacks attach to as an external network.
+#
+# Target inventory group: docker_vm (the web UI writes a per-job inventory file).
+
+- name: Bring up Traefik edge proxy (owns the shared platform network)
+  hosts: docker_vm
+  become: true
+  vars:
+    repo_url: "https://github.com/ThomasHeinThura/autoprovision.git"
+    repo_root: "/home/{{ ansible_user }}/autoprovision"
+    compose_dir: "{{ repo_root }}/docker"
+    traefik_dir: "{{ compose_dir }}/traefik"
+    traefik_certs_dir: "{{ traefik_dir }}/certs"
+  tasks:
+    - name: Check whether repo root is a git checkout
+      stat:
+        path: "{{ repo_root }}/.git"
+      register: repo_git_stat
+
+    - name: Check whether repo root path exists
+      stat:
+        path: "{{ repo_root }}"
+      register: repo_root_stat
+
+    - name: Remove invalid repo root if it exists but is not a git checkout
+      file:
+        path: "{{ repo_root }}"
+        state: absent
+      when: repo_root_stat.stat.exists and not repo_git_stat.stat.exists
+
+    - name: Ensure autoprovision repo is present and up to date
+      become_user: "{{ ansible_user }}"
+      git:
+        repo: "{{ repo_url }}"
+        dest: "{{ repo_root }}"
+        version: main
+        update: yes
+        force: yes
+
+    - name: Ensure Traefik directory exists
+      file:
+        path: "{{ traefik_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Ensure Traefik certs directory exists
+      file:
+        path: "{{ traefik_certs_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Ensure Traefik acme file exists with strict permissions
+      file:
+        path: "{{ traefik_dir }}/acme.json"
+        state: touch
+        mode: "0600"
+
+    - name: Pull Traefik image
+      shell: docker compose -f docker-compose.traefik.yml pull
+      args:
+        chdir: "{{ compose_dir }}"
+
+    - name: Bring up Traefik (creates the shared platform network)
+      shell: docker compose -f docker-compose.traefik.yml up -d --force-recreate --remove-orphans
+      args:
+        chdir: "{{ compose_dir }}"
+
+    - name: Wait for Traefik to be running
+      shell: docker inspect --format='{{"{{"}}.State.Running{{"}}"}}' traefik
+      register: traefik_running
+      until: traefik_running.stdout == "true"
+      retries: 12
+      delay: 5
+      changed_when: false
+
+    - name: Confirm the shared platform network exists
+      shell: docker network inspect platform >/dev/null 2>&1
+      changed_when: false
+
+    - name: Report Traefik status
+      debug:
+        msg: "Traefik is running on {{ inventory_hostname }} (HTTP:80 → HTTPS:443). Shared 'platform' network is ready for service stacks."

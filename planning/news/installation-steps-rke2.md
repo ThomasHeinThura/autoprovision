@@ -71,8 +71,12 @@ Inputs persist per track in SQLite.
 
 ### 4a. Docker platform tracks
 
-- **GitLab** — runs base → platform (Postgres/Traefik/Dockhand) → GitLab → SonarQube.
-- **Prod ELK** and **UAT ELK** — run base → ELK stack on each ELK VM.
+- **GitLab** — runs base → **Traefik** → platform (PostgreSQL + Dockhand) → GitLab → SonarQube.
+- **Prod ELK** and **UAT ELK** — run base → **Traefik** → ELK stack on each ELK VM (Kibana via Traefik).
+
+Traefik is installed on **every** Docker VM right after the Docker base and owns the shared
+`platform` network; each service is exposed over HTTPS at its domain through Traefik. The GitLab
+VM's platform stack is **PostgreSQL + Dockhand only**.
 
 These three run concurrently. GitLab should be started first since ArgoCD will later pull
 WSO2 manifests from it.
