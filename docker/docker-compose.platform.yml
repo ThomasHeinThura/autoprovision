@@ -7,7 +7,6 @@
 #
 # Versions from version.md (May 2026): PostgreSQL 17.10, Dockhand v0.29.4.
 # ─────────────────────────────────────────────────────────────────────────────
-name: platform
 
 services:
 
@@ -53,7 +52,7 @@ volumes:
   pg_data:
 
 networks:
-  # Owned by the Traefik stack (docker-compose.traefik.yml) — must already exist.
+  # External — created by ansible/traefik_stack.yml (run before this stack).
   platform:
     external: true
     name: platform

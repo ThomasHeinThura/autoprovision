@@ -59,13 +59,27 @@
         state: touch
         mode: "0600"
 
+    - name: Ensure the shared platform Docker network exists (external, owned by no stack)
+      shell: docker network create platform
+      register: net_create
+      changed_when: net_create.rc == 0
+      failed_when: net_create.rc != 0 and 'already exists' not in (net_create.stderr | default(''))
+
     - name: Pull Traefik image
       shell: docker compose -f docker-compose.traefik.yml pull
       args:
         chdir: "{{ compose_dir }}"
 
-    - name: Bring up Traefik (creates the shared platform network)
-      shell: docker compose -f docker-compose.traefik.yml up -d --force-recreate --remove-orphans
+    # Removes a stale `traefik` container left by an earlier/other compose project so the
+    # bring-up never hits a name conflict. Safe: certs, acme.json and config are host-mounted.
+    - name: Remove any pre-existing traefik container (stateless; recreated below)
+      shell: docker rm -f traefik
+      register: rm_traefik
+      changed_when: rm_traefik.rc == 0
+      failed_when: false
+
+    - name: Bring up Traefik
+      shell: docker compose -f docker-compose.traefik.yml up -d --force-recreate
       args:
         chdir: "{{ compose_dir }}"
 

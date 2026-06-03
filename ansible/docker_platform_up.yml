@@ -54,7 +54,7 @@
     - name: Bring up platform stack (PostgreSQL + Dockhand)
       shell: |
         export DOCKHAND_DOMAIN='{{ dockhand_domain_safe }}'
-        docker compose -f docker-compose.platform.yml up -d --force-recreate --remove-orphans
+        docker compose -f docker-compose.platform.yml up -d --force-recreate
       args:
         chdir: "{{ compose_dir }}"
 
