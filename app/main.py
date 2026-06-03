@@ -420,7 +420,8 @@ async def _run_action_job(job_id: str, action: str, body: dict):
 # colliding on a shared inventory or log file.
 
 ALL_TRACKS = [
-    "docker_traefik", "dockhand", "gitlab",
+    "docker_traefik_gitlab", "docker_traefik_elk_uat", "docker_traefik_elk_prod",
+    "dockhand", "gitlab",
     "elk_uat", "elk_prod",
     "rke2_uat", "rke2_prod",
     "mssql_uat", "mssql_prod",

@@ -123,10 +123,18 @@
     <script>
       // ── workload (tab) definitions ──────────────────────────────────────────
       const GROUPS = [
+        { label: "Docker + Traefik (per VM — run first)", tabs: [
+          { track:"docker_traefik_gitlab", action:"docker-traefik-up", title:"Docker + Traefik — GitLab VM",
+            desc:"Install Docker CE + Traefik edge proxy on the GitLab VM (owns the shared platform network). Run before Dockhand/GitLab.",
+            fields:[ {k:"docker_ip", l:"GitLab VM IP", ph:"192.168.x.x"} ] },
+          { track:"docker_traefik_elk_uat", action:"docker-traefik-up", title:"Docker + Traefik — ELK UAT",
+            desc:"Install Docker CE + Traefik edge proxy on the UAT ELK VM. Run before ELK — UAT.",
+            fields:[ {k:"docker_ip", l:"UAT ELK VM IP", ph:"192.168.x.x"} ] },
+          { track:"docker_traefik_elk_prod", action:"docker-traefik-up", title:"Docker + Traefik — ELK Prod",
+            desc:"Install Docker CE + Traefik edge proxy on the Prod ELK VM. Run before ELK — Prod.",
+            fields:[ {k:"docker_ip", l:"Prod ELK VM IP", ph:"192.168.x.x"} ] },
+        ]},
         { label: "Docker Platform", tabs: [
-          { track:"docker_traefik", action:"docker-traefik-up", title:"Docker + Traefik",
-            desc:"Install Docker CE and the Traefik edge proxy (owns the shared platform network). Run first on each Docker VM.",
-            fields:[ {k:"docker_ip", l:"Docker VM IP", ph:"192.168.x.x"} ] },
           { track:"dockhand", action:"dockhand-up", title:"Dockhand + PostgreSQL",
             desc:"PostgreSQL (shared) + Dockhand UI on the GitLab VM, exposed via Traefik.",
             fields:[ {k:"docker_ip", l:"GitLab VM IP", ph:"192.168.x.x"}, {k:"dockhand_domain", l:"Dockhand Domain", v:"dockhand.example.com"} ] },
