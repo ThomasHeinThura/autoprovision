@@ -1,6 +1,72 @@
+# ─── Docker VMs (new topology: 3 separate Docker hosts) ─────────────────────────
+# All Docker playbooks (docker_vm_base.yml, docker_platform_up.yml, elk_stack.yml,
+# gitlab_stack.yml, sonarqube_stack.yml) target the group `docker_vm`.
+#
+# In the new requirement there are THREE distinct Docker VMs, each its own track:
+#   docker_gitlab   — shared GitLab VM (Postgres/Traefik/Dockhand/GitLab/SonarQube)
+#   docker_prod_elk — production ELK stack VM
+#   docker_uat_elk  — UAT ELK stack VM
+#
+# For a MANUAL single-VM run, run the matching playbook against ONE of these groups, e.g.:
+#   ansible-playbook ansible/elk_stack.yml -l docker_prod_elk
+#   ansible-playbook ansible/gitlab_stack.yml -l docker_gitlab
+# The `-l` limit narrows the `docker_vm` parent (below) to that one host.
+#
+# The Python web UI does NOT use this file for real runs — each parallel track writes its
+# own data/inventory/<job_id>.ini with a single host in group `docker_vm`. These static
+# groups are for manual runs and --syntax-check / --list-tasks only.
+
+[docker_gitlab]
+# 192.168.66.10 ansible_user=autoprovision
+
+[docker_prod_elk]
+# 192.168.64.40 ansible_user=autoprovision
+
+[docker_uat_elk]
+# 192.168.65.40 ansible_user=autoprovision
+
+# Parent group the Docker playbooks bind to. Use `-l <group>` to target one VM at a time.
+[docker_vm:children]
+docker_gitlab
+docker_prod_elk
+docker_uat_elk
+
+# Legacy env groups (old lab/uat/prod model — kept for the /docker single-page flow).
 [docker_lab]
 
 [docker_uat]
 
 [docker_prod]
+
+# ─── RKE2 clusters + MSSQL VMs ──────────────────────────────────────────────────
+# Same convention: the web UI writes per-job inventory; these are examples for manual runs.
+# The first host in an rke2_servers group is the bootstrap (etcd-initializing) server.
+# The first host in an mssql_ag group is the AG primary.
+
+[rke2_prod_servers]
+# 192.168.64.11
+# 192.168.64.12
+# 192.168.64.13
+
+[rke2_prod_agents]
+# 192.168.64.21
+# 192.168.64.22
+# 192.168.64.23
+# 192.168.64.24
+# 192.168.64.25
+
+[rke2_uat_servers]
+# 192.168.65.11
+
+[rke2_uat_agents]
+# 192.168.65.21
+# 192.168.65.22
+
+[mssql_prod_ag]
+# 192.168.64.31
+# 192.168.64.32
+# 192.168.64.33
+
+[mssql_uat]
+# 192.168.65.31
 

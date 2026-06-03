@@ -1,439 +1,279 @@
-# Autoprovision
+# Autoprovision — RKE2 + Istio Control Plane
 
-Control plane and automation for bootstrapping the jump host, Docker platform, and Talos/Kubernetes stack.
+End-to-end automation for the production + UAT rollout: one jump host runs a Python control plane
+that installs **RKE2 Kubernetes clusters, Docker platform stacks (GitLab + ELK), and SQL Server**
+— all in **parallel** — then per-cluster add-ons (Istio, cert-manager, ArgoCD, Headlamp) and
+**WSO2** are deployed from the team's repo.
 
-This repository contains:
-
-- `bootstrap-jumphost.sh` – one-shot script to prepare a fresh jump host.
-- `installation-steps.md` – detailed operator flow and planning document.
-- `talos-installation.md` – lab Talos/Kubernetes install guide for 1 control plane and 2 workers.
-- `production-talos-installation.md` – production Talos/Kubernetes install guide for 3 control planes and 5 workers.
-- `updated-mvp.md` – MVP scope and environment model.
-- `vm-requirements.md` – VM sizing for Lab, UAT, and Production.
-- `version.md` – version matrix (Talos, Cilium, Elastic, GitLab, WSO2, etc.).
-- `wso2_apim.md` – WSO2 APIM design and migration notes.
-- `app/` – Python FastAPI web UI (control plane).
-- `ansible/` – Ansible playbooks for all phases.
-- `docker/` – Docker compose files for the platform stack and ELK.
+> **What changed from the original design:** the Kubernetes layer moved from
+> **Talos + Cilium + Envoy Gateway** to **RKE2 + default CNI (Canal) + Istio**. SQL Server now
+> runs on dedicated VMs installed by Ansible. The control plane now runs multiple stacks at once.
+> Old docs are preserved under [`planning/old/`](planning/old/) and [`talos-cluster/`](talos-cluster/);
+> the new requirement docs are under [`planning/news/`](planning/news/). Start with
+> [planning/news/00-old-vs-new.md](planning/news/00-old-vs-new.md).
 
 ---
 
-## 1. Prerequisites on the jump host
+## Versions (pinned)
 
-Use a clean Ubuntu/Debian-style VM for the jump host.
+| Layer | Pin |
+| ----- | --- |
+| RKE2 | **v1.36.1+rke2r2** (Kubernetes v1.36.1) |
+| CNI | **Canal** (default, bundled with RKE2) — kube-proxy kept |
+| K8s ingress | **Istio 1.30** (istioctl default profile, gateway in `istio-system`) |
+| SQL Server | **2022** — Prod read-scale AG (3 nodes), UAT single instance |
+| WSO2 | APIM 4.7.0 / IS 7.3.0 via [`WSO2_APIM_KUBE_ISTIO/`](WSO2_APIM_KUBE_ISTIO/README.md) |
+| Docker platform | GitLab CE 19.0.1, ELK 9.1.4, PostgreSQL 17.10, Traefik v3.7.1, SonarQube, ElastAlert2 |
 
-Install basic tools first:
+Full matrix: [planning/news/version-rke2.md](planning/news/version-rke2.md).
+
+> **RKE2 v1.36 note:** the RKE2-bundled ingress is now Traefik (ingress-nginx retired upstream).
+> Because **Istio** owns Kubernetes ingress, the RKE2 server config disables the bundled ingress
+> (`disable: [rke2-ingress-nginx, rke2-traefik]`) — handled automatically by `rke2_cluster.yml`.
+> This is unrelated to the Docker-platform Traefik on the GitLab/ELK VMs.
+
+---
+
+## Topology (19 VMs)
+
+| Env | VMs |
+| --- | --- |
+| **Production (12)** | 3 RKE2 control plane + 5 RKE2 workers · 1 ELK · 3 MSSQL (read-scale AG) |
+| **UAT (5)** | 1 RKE2 control plane + 2 RKE2 workers · 1 MSSQL (single) · 1 ELK |
+| **Shared (2)** | 1 GitLab (Docker) · 1 jump host |
+
+Sizing: [planning/news/vm-requirements-rke2.md](planning/news/vm-requirements-rke2.md).
+
+## What is automated vs documented
+
+| Step | How |
+| ---- | --- |
+| Docker base + GitLab + SonarQube + ELK | **Ansible** (web UI tracks) |
+| SQL Server (single + read-scale AG) | **Ansible** (web UI tracks) |
+| RKE2 cluster install (servers + agents) | **Ansible** (web UI tracks) |
+| Istio, cert-manager, ArgoCD, Headlamp, OTel | **Runbook** ([rke2-cluster/](rke2-cluster/)) |
+| WSO2 APIM + IS | **Team repo** [WSO2_APIM_KUBE_ISTIO](WSO2_APIM_KUBE_ISTIO/README.md) |
+
+---
+
+# Operator flow (start to finish)
+
+## Step 0 — Prepare each target VM (one-time)
+
+On **every** target VM (RKE2 nodes, ELK VMs, GitLab VM, MSSQL VMs), create the automation user
+Ansible logs in as:
 
 ```bash
-sudo apt update
-sudo apt install -y git curl wget sshpass
+ssh <existing-admin>@<vm-ip>
+sudo adduser autoprovision
+sudo usermod -aG sudo autoprovision
+echo 'autoprovision ALL=(ALL) NOPASSWD:ALL' | sudo tee /etc/sudoers.d/autoprovision
 ```
 
----
+Customer prerequisites (manual): DNS records, firewall rules, NFS/NAS export, the RKE2
+registration address / VIP, and TLS cert handover if not self-signing.
 
-## 2. Clone the repository
-
-On the jump host:
+## Step 1 — SSH into the jump host and bootstrap
 
 ```bash
+ssh <username>@<jump-host-ip>
+
+# Base tooling
+sudo apt update
+sudo apt install -y git curl wget sshpass
+
+# Get the repo and run the one-shot bootstrap
 cd ~
 git clone https://github.com/ThomasHeinThura/autoprovision.git
 cd autoprovision
-```
-
----
-
-## 3. Run the bootstrap script (once)
-
-```bash
 chmod +x bootstrap-jumphost.sh
 ./bootstrap-jumphost.sh
 ```
 
-What this script does:
-
-- Installs system dependencies (git, curl, Python 3, venv, pip, Ansible, sshpass, talosctl, kubectl, helm, cilium CLI).
-- Creates a Python virtualenv in `.venv/`.
-- Installs Python dependencies from `requirements.txt` (FastAPI, Uvicorn, Ansible).
-- Creates `data/` directories for state, logs, inventory, generated env files.
-- Starts the FastAPI web UI on port `3000` using `uvicorn app.main:app`.
-- Prints the URL to open at the end.
-
-Example output:
+`bootstrap-jumphost.sh` installs Python + venv, Ansible + ansible-runner, **kubectl, helm,
+istioctl**, creates `data/` (state, logs, per-job inventory), and starts the FastAPI web UI on
+port **3000**. It prints:
 
 ```text
 [INFO]  Bootstrap complete.
 Open: http://<jump-host-ip>:3000/
 ```
 
-To stop the web UI:
+Stop / restart the UI:
 
 ```bash
-pkill -f "uvicorn app.main:app"
+pkill -f "uvicorn app.main:app"     # stop
+./bootstrap-jumphost.sh             # restart
 ```
 
-To restart:
-
-```bash
-./bootstrap-jumphost.sh
-```
-
----
-
-## 4. Prepare the Docker VM automation user (one-time)
-
-On the Docker VM, create a dedicated automation user:
-
-```bash
-ssh existing-admin@<docker-vm-ip>
-
-sudo adduser autoprovision
-sudo usermod -aG sudo autoprovision
-sudo visudo -f /etc/sudoers.d/autoprovision
-```
-
-Add:
-
-```text
-autoprovision ALL=(ALL) NOPASSWD:ALL
-```
-
-Verify:
-
-```bash
-su - autoprovision
-sudo id
-# Expected: uid=0(root) ... without password prompt
-```
-
-In the web UI, enter:
-
-- SSH username: `autoprovision`
-- SSH password: the password set with `adduser`
-
----
-
-## 5. Open the web UI and fill the form
+## Step 2 — Open the parallel control plane
 
 ```text
 http://<jump-host-ip>:3000/
 ```
 
-Fill the **"Environment & SSH"** form:
+The home page is the **multi-track dashboard**. Each track is a card you run independently and
+**concurrently** — every job gets its own inventory file (`data/inventory/<job_id>.ini`) and its
+own log (`data/logs/<job_id>.log`), so parallel runs never collide.
 
-Two one-screen pages are now available:
+- Set the **Default SSH User/Password** at the top and click **Apply Defaults To Cards** to
+  prefill all cards (default user `autoprovision`).
+- Legacy single-Docker page is still at `http://<jump-host-ip>:3000/docker`.
 
-- Docker page: `http://<jump-host-ip>:3000/docker`
+## Step 3 — Run the tracks in parallel
 
-| Field | Example |
-|---|---|
-| Environment | `lab` / `uat` / `prod` |
-| Docker VM IP | `192.168.79.131` |
-| SSH username | `autoprovision` |
-| SSH password | your password |
-| Dockhand domain | `dockhand.example.com` |
-| Kibana domain | `kibana.example.com` |
-| GitLab domain | `gitlab.example.com` |
+Fill each card and click **Run** (or **Preview** to see the inventory + playbook steps first).
+Click **Run All Configured** to launch every card that has its target filled in.
+
+| Card | What it installs | Key inputs |
+| ---- | ---------------- | ---------- |
+| **GitLab (shared)** | Docker base → Postgres/Traefik/Dockhand → GitLab CE+Runner+Registry → SonarQube | GitLab VM IP, domains, runner token (optional) |
+| **Prod RKE2 Cluster** | RKE2 v1.36.1 on 3 servers + 5 agents, Canal CNI, kubeconfig pulled to jump host | cluster name, 3 CP IPs, 5 worker IPs, registration address, RKE2 token |
+| **UAT RKE2 Cluster** | RKE2 on 1 server + 2 agents | cluster name, 1 CP IP, 2 worker IPs, RKE2 token |
+| **Prod ELK** | Docker base → Elasticsearch/Logstash/Kibana/Fleet/APM | ELK VM IP, Kibana domain |
+| **UAT ELK** | same, UAT ELK VM | ELK VM IP, Kibana domain |
+| **Prod MSSQL AG** | SQL Server 2022 on 3 nodes + read-scale Always On AG (first IP = primary) | 3 node IPs, SA password, AG name |
+| **UAT MSSQL** | SQL Server 2022 single instance | VM IP, SA password |
+
+> **Order tip:** start **GitLab** first (it hosts manifests/registry), then fire everything else.
+> All tracks are independent and run together.
+
+### CLI equivalent (optional)
+
+The same playbooks can run directly from the jump host with a hand-written inventory
+(see [ansible/inventory](ansible/inventory) for example groups):
+
+```bash
+# RKE2 cluster (first host in rke2_servers bootstraps; default CNI = Canal)
+ansible-playbook -i <inv> ansible/rke2_cluster.yml \
+  --extra-vars '{"cluster_name":"prod-cluster","rke2_token":"<token>","registration_address":"rke2-prod.example.local"}'
+
+# SQL Server — read-scale AG (3 nodes) / single (UAT)
+ansible-playbook -i <inv> ansible/mssql_ag.yml     --extra-vars '{"sa_password":"<pw>","ag_name":"ag1"}'
+ansible-playbook -i <inv> ansible/mssql_single.yml --extra-vars '{"sa_password":"<pw>"}'
+
+# Docker stacks (existing playbooks)
+ansible-playbook -i <inv> ansible/docker_vm_base.yml
+ansible-playbook -i <inv> ansible/elk_stack.yml      --extra-vars '{"kibana_domain":"kibana.example.com"}'
+ansible-playbook -i <inv> ansible/gitlab_stack.yml   --extra-vars '{"gitlab_domain":"gitlab.example.com"}'
+```
+
+After the RKE2 track completes, the cluster kubeconfig is on the jump host at
+`data/k8s/<cluster_name>/kubeconfig`:
+
+```bash
+export KUBECONFIG="$HOME/autoprovision/data/k8s/prod-cluster/kubeconfig"
+kubectl get nodes -o wide      # all nodes Ready, CNI = Canal
+```
+
+## Step 4 — Per-cluster add-ons (runbook)
+
+For **each** cluster, follow the runbook. Production:
+[rke2-cluster/prod-rke2-installation.md](rke2-cluster/prod-rke2-installation.md) · UAT:
+[rke2-cluster/uat-rke2-installation.md](rke2-cluster/uat-rke2-installation.md) · shared detail:
+[rke2-cluster/rke2-addons-istio-argocd-headlamp.md](rke2-cluster/rke2-addons-istio-argocd-headlamp.md).
+
+Order (per cluster, `KUBECONFIG` pointed at it):
+
+```bash
+# 1. Istio 1.30 — istioctl default profile (ingressgateway lands in istio-system, as WSO2 expects)
+curl -L https://istio.io/downloadIstio | ISTIO_VERSION=1.30.0 TARGET_ARCH=x86_64 sh -
+export PATH=$PWD/istio-1.30.0/bin:$PATH
+istioctl install --set profile=default -y
+
+# 2. cert-manager  3. ArgoCD  4. Headlamp  5. OpenTelemetry Collector
+#    (Helm commands in rke2-addons-istio-argocd-headlamp.md; ArgoCD/Headlamp exposed via Istio)
+```
+
+## Step 5 — WSO2 (team's repo — her steps)
+
+WSO2 APIM (Control Plane + Internal/External Gateways) and Identity Server are deployed from
+[`WSO2_APIM_KUBE_ISTIO/`](WSO2_APIM_KUBE_ISTIO/README.md). With `KUBECONFIG` set to the cluster
+and Istio already installed:
+
+```bash
+cd WSO2_APIM_KUBE_ISTIO
+
+# namespaces + sidecar injection
+kubectl create ns wso2-cp; kubectl create ns wso2-is
+kubectl create ns wso2-internal-gw; kubectl create ns wso2-external-gw
+for ns in wso2-cp wso2-is wso2-internal-gw wso2-external-gw; do kubectl label ns $ns istio-injection=enabled --overwrite; done
+
+# certs + Istio ingress TLS secret in istio-system, then restart the gateway
+./scripts/generate-local-certificates.sh
+kubectl -n istio-system create secret tls wso2-ingress-cert \
+  --cert=certificates/server.crt --key=certificates/server.key --dry-run=client -o yaml | kubectl apply -f -
+kubectl -n istio-system rollout restart deploy/istio-ingressgateway
+
+# (optional) build images with MSSQL JDBC baked in: ./scripts/build-apim-images.sh
+kubectl apply -f istio-gateway.yaml
+kubectl apply -f control-plane/ -f internal-gw/ -f external-gw/ -f wso2-is/
+```
+
+**Database wiring (read-scale AG):** load `mssql/shared_mssql.sql` and `mssql/apim_mssql.sql`,
+then point WSO2 JDBC at the **AG primary node** in Production (no listener with `CLUSTER_TYPE=NONE`)
+or the **single instance** in UAT. Details: [planning/news/wso2-rke2.md](planning/news/wso2-rke2.md).
+
+WSO2 ingress hosts (from the repo's `istio-gateway.yaml`, all TLS on 443 →
+secret `wso2-ingress-cert` in `istio-system`): `apim.example.com`, `internal-gw.example.com`,
+`external-gw.example.com`, `wso2is.example.com`. Point DNS / `/etc/hosts` at the Istio ingress
+gateway external IP.
+
+## Step 6 — Observability, migration, validation
+
+Per ELK stack: configure Elasticsearch ILM/retention, archive paths to NFS/NAS, run the 8.14 →
+9.1.4 snapshot/restore migration, the WSO2 APIM credential migration job, and the base
+ElastAlert2 rules. See [planning/news/installation-steps-rke2.md](planning/news/installation-steps-rke2.md).
 
 ---
 
-## 6. Phase B1 — Docker VM base setup
-
-Click **"Run Phase B1: Bootstrap Docker base"**.
-
-What it does on the Docker VM:
-
-- Updates apt cache.
-- Installs base packages: `git`, `curl`, `wget`, `ca-certificates`, `gnupg`, `lsb-release`.
-- Installs Docker CE using the official convenience script.
-- Ensures the `docker` service is enabled and started.
-- Adds the automation user to the `docker` group.
-- Clones this repo into `/home/<automation-user>/autoprovision`.
-
-Expected final log line:
-
-```text
-ok=8  changed=1  unreachable=0  failed=0
-```
-
-Verify on Docker VM:
+## Health checks
 
 ```bash
-docker --version
-ls ~/autoprovision
+# Kubernetes (per cluster)
+kubectl get nodes -o wide                                   # Ready, CNI = Canal
+kubectl get pods -A
+kubectl get svc -n istio-system istio-ingressgateway        # EXTERNAL-IP populated
+kubectl get gateway,virtualservice -A
+kubectl get pods -n wso2-cp; kubectl get pods -n wso2-is
+
+# SQL Server read-scale AG (on the primary)
+/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P '<pw>' -C \
+  -Q "SELECT ag.name, ar.replica_server_name, rs.role_desc, rs.synchronization_health_desc
+      FROM sys.availability_groups ag
+      JOIN sys.availability_replicas ar ON ag.group_id=ar.group_id
+      JOIN sys.dm_hadr_availability_replica_states rs ON ar.replica_id=rs.replica_id;"
+
+# Docker stacks
+docker ps | grep -E 'pg-platform|traefik|dockhand|gitlab|elk-'
+curl -u elastic:changeme http://<elk-vm>:9200/_cluster/health
 ```
+
+## Troubleshooting (common)
+
+| Symptom | Fix |
+| ------- | --- |
+| RKE2 node `NotReady` | Check `rke2-server`/`rke2-agent` service + token; Canal pods in `kube-system`. |
+| Two ingress controllers fighting for 80/443 | Confirm the RKE2 bundled ingress was disabled (`disable:` in `/etc/rancher/rke2/config.yaml`). |
+| Istio gateway has no EXTERNAL-IP | RKE2 ServiceLB or MetalLB must back the `LoadBalancer`; production uses a VIP. |
+| WSO2 TLS errors | Secret `wso2-ingress-cert` must be in **`istio-system`** and the gateway restarted. |
+| AG replica not HEALTHY | Re-check cert exchange + `Hadr_endpoint` on all nodes (see `mssql_ag.yml` checklist). |
+| GitLab Runner `404/403` on job request | Create a new instance runner token in GitLab UI, paste into the GitLab card, re-run. |
+| Kibana Fleet `encrypted saved object api key` | Set a 32+ char `xpack.encryptedSavedObjects.encryptionKey` in `docker/elk/kibana/config/kibana.yml`. |
 
 ---
 
-## 7. Phase B2 — Start platform stack (Postgres + Traefik + Dockhand)
-
-Click **"Run Phase B2: Start platform stack"**.
-
-What it does on the Docker VM:
-
-- Uses `/home/<automation-user>/autoprovision/docker` as the compose directory.
-- Pulls Postgres 17, Traefik v3, and Dockhand images.
-- Runs `docker compose -f docker-compose.platform.yml up -d`.
-- Waits for the `pg-platform` Postgres container healthcheck to report `healthy` (retries up to 20 times, 5s delay).
-
-Expected log output:
-
-```text
-TASK [Show compose directory]
-ok: "Using compose_dir=/home/autoprovision/autoprovision/docker"
-
-TASK [Pull latest platform images (Postgres, Traefik, Dockhand)]
-changed: ...
-
-TASK [Bring up platform stack (Postgres + Traefik + Dockhand)]
-changed: ...
-
-TASK [Wait for Postgres to be healthy]
-ok: ...
-
-TASK [Report Postgres health status]
-ok: "Postgres health: healthy"
-
-ok=7  changed=2  unreachable=0  failed=0
-```
-
-Verify on Docker VM:
-
-```bash
-docker ps
-# Expect: pg-platform (healthy), traefik, dockhand
-```
-
----
-
-## 8. Phase B3 — ELK stack (Elasticsearch + Logstash + Kibana + Fleet + APM)
-
-### 8a. Before running B3: verify kibana.yml has encryption keys
-
-The ELK stack is committed to `docker/elk/` inside this repo.  
-Kibana requires encryption keys for Fleet to work. Without them you will see:
-
-```text
-Unable to initialize Fleet
-Agent binary source needs encrypted saved object api key to be set
-```
-
-The `kibana/config/kibana.yml` inside `docker/elk/` already includes:
-
-```yaml
-xpack.encryptedSavedObjects.encryptionKey: "Add-more-than-32-characters-for-the-key-value"
-xpack.fleet.agents.tlsCheckDisabled: true
-```
-
-**Before your first deployment**, replace the placeholder with a real 32+ character key:
-
-```bash
-# Generate a key (run once, keep the output)
-openssl rand -hex 32
-```
-
-Edit `docker/elk/kibana/config/kibana.yml` and replace the placeholder value, then commit to the repo so B3 picks it up automatically.
-
-The file also pre-declares the `Agent Policy APM Server` policy (and Fleet Server Policy) under `xpack.fleet.agentPolicies`, which means the APM agent will find its policy on first boot without manual Kibana UI steps.
-
-### 8b. Run B3
-
-Click **"Phase B3: Deploy ELK stack"**.
-
-What it does on the Docker VM:
-
-1. Confirms the ELK directory exists at `/home/<automation-user>/autoprovision/docker/elk`.
-2. Runs initial user setup (one-time per stack):
-
-   ```bash
-   docker compose up setup
-   ```
-
-   This creates built-in users (`elastic`, `logstash_internal`, `kibana_system`, etc.) with passwords from the `.env` file.
-
-3. Starts all services:
-
-   ```bash
-   docker compose \
-     -f docker-compose.yml \
-     -f extensions/fleet/fleet-compose.yml \
-     -f extensions/fleet/agent-apmserver-compose.yml \
-     up -d
-   ```
-
-   Services started:
-
-   | Container | Role | Port |
-   |---|---|---|
-   | `elk-elasticsearch-1` | Elasticsearch | 9200, 9300 |
-   | `elk-logstash-1` | Logstash | 5044, 50000, 9600 |
-   | `elk-kibana-1` | Kibana UI | 5601 |
-   | `elk-fleet-server-1` | Fleet Server | 8220 |
-   | `elk-apm-server-1` | APM Agent | 8200 |
-
-Expected final log line:
-
-```text
-ELK stack (Elasticsearch, Logstash, Kibana, Fleet, APM Server) deployed from /home/.../docker/elk.
-```
-
-Verify on Docker VM:
-
-```bash
-docker ps
-# Expect all 5 ELK containers running
-
-curl -u elastic:changeme http://localhost:9200
-# Expect JSON with cluster_name: docker-cluster
-```
-
-### 8c. APM Server startup sequence
-
-The APM container (`elk-apm-server-1`) connects to Fleet and looks for `Agent Policy APM Server`.
-
-Normal sequence on first boot:
-
-1. Early restarts with `connect: connection refused` — **normal**, Kibana is still starting.
-2. `Kibana server is not ready yet` — **normal**, Kibana is initializing.
-3. Fleet starts, policy `Agent Policy APM Server` is found (pre-declared in `kibana.yml`), agent enrolls and stays `Up`.
-
-If `elk-apm-server-1` keeps restarting with `policy not found` after Kibana is healthy, check:
-
-```bash
-docker logs elk-kibana-1 | tail -20
-docker logs elk-fleet-server-1 | tail -20
-```
-
----
-
-## 9. GitLab first login and Runner registration (required once)
-
-After GitLab stack is up, complete this one-time setup.
-
-### 9a. Get the initial GitLab root password
-
-On the Docker VM:
-
-```bash
-docker exec gitlab cat /etc/gitlab/initial_root_password
-```
-
-Use that password to log in as user `root` at:
-
-- `https://<your-gitlab-domain>/`
-
-### 9b. Create a Runner token in GitLab UI
-
-In GitLab UI, go to:
-
-1. Admin
-2. CI/CD
-3. Runners
-4. New instance runner
-
-Copy the generated runner token.
-
-### 9c. Register runner through Autoprovision
-
-1. In Autoprovision UI, open **GitLab Stack**.
-2. Paste the token into **GitLab Runner Token (optional, not saved)**.
-3. Click Deploy.
-
-The playbook will register the runner and verify it.
-
-### 9d. Manual registration fallback (optional)
-
-If you need manual fallback:
-
-```bash
-docker exec -it gitlab-runner gitlab-runner register \
-   --non-interactive \
-   --url "https://gitlab.example.com" \
-   --token "<RUNNER_TOKEN_FROM_GITLAB_UI>" \
-   --executor "docker" \
-   --docker-image "alpine:latest" \
-   --description "local-docker-runner" \
-   --docker-privileged \
-   --docker-volumes "/var/run/docker.sock:/var/run/docker.sock" \
-   --docker-volumes "/cache" \
-   --docker-volumes "/etc/gitlab-runner/certs/gitlab.example.com.crt:/usr/local/share/ca-certificates/local-dev-ca.crt:ro" \
-   --docker-pull-policy "if-not-present" \
-   --docker-extra-hosts "gitlab.example.com:host-gateway" \
-   --docker-extra-hosts "registry.example.com:host-gateway"
-```
-
-Verify:
-
-```bash
-docker exec gitlab-runner gitlab-runner verify
-```
-
----
-
-## 10. Default ELK credentials
-
-The `docker-elk` stack uses credentials defined in `docker/elk/.env`.
-
-Defaults (do not use as-is in production):
-
-| Service | Username | Password |
-|---|---|---|
-| Elasticsearch | `elastic` | `changeme` |
-| Kibana | `elastic` | `changeme` |
-| Logstash internal | `logstash_internal` | `changeme` |
-
-Access:
-
-- Kibana UI: `http://<docker-vm-ip>:5601` → login: `elastic` / `changeme`
-- Elasticsearch API: `curl -u elastic:changeme http://<docker-vm-ip>:9200`
-- APM intake: `http://<docker-vm-ip>:8200`
-- Fleet Server: `http://<docker-vm-ip>:8220`
-
-**To change passwords:** edit `docker/elk/.env` before running B3. Run `docker compose up setup` again after changing passwords.
-
----
-
-## 11. Health checks and quick troubleshooting
-
-### Platform stack (B2)
-
-```bash
-docker ps | grep -E 'pg-platform|traefik|dockhand'
-```
-
-Expected: all `Up` and `pg-platform` shows `(healthy)`.
-
-### ELK stack (B3)
-
-```bash
-# All containers
-docker ps
-
-# Elasticsearch
-curl -u elastic:changeme http://localhost:9200/_cluster/health
-
-# Kibana
-curl http://localhost:5601/api/status | python3 -m json.tool | grep overall
-
-# Fleet Server
-curl http://localhost:8220/api/status
-
-# APM
-curl http://localhost:8200/
-```
-
-### Common issues
-
-| Symptom | Cause | Fix |
-|---|---|---|
-| `open .../docker-compose.platform.yml: no such file or directory` | Repo not cloned or stale on Docker VM | Re-run Phase B1 |
-| `pull access denied for dockhand/dockhand` | Wrong image name | Fixed in repo: image is `fnsys/dockhand:latest` |
-| Postgres health check never passes | Container crash or slow start | Run `docker logs pg-platform`; check `.env` passwords |
-| `Unable to initialize Fleet` / `encrypted saved object api key` | Missing `xpack.encryptedSavedObjects.encryptionKey` in `kibana.yml` | Set a 32+ char key in `docker/elk/kibana/config/kibana.yml` and restart Kibana |
-| APM restarts: `policy not found` | Fleet has no `Agent Policy APM Server` policy | Verify `kibana.yml` has `xpack.fleet.agentPolicies` block; restart Kibana and Fleet |
-| `Kibana server is not ready yet` | Kibana still initializing | Wait 60-90s; check `docker logs elk-kibana-1` |
-| GitLab Runner gets `404 Not Found` or `403 Forbidden` on `/api/v4/jobs/request` | Runner uses placeholder/invalid token or wrong token type | Create a new instance runner token in GitLab UI, paste into Autoprovision GitLab Runner Token field, and re-run GitLab Stack |
-
----
-
-For Kubernetes phases (D1, D2), WSO2 deployment (E), and migration jobs (F), see `installation-steps.md` and `updated-mvp.md`.
+## Repository map
+
+| Path | Purpose |
+| ---- | ------- |
+| `bootstrap-jumphost.sh` | One-shot jump host prep + start the web UI |
+| `app/` | FastAPI control plane — `ui_parallel.html` (`/`, multi-track) + legacy `ui_docker.html` (`/docker`) |
+| `ansible/rke2_cluster.yml` | RKE2 servers + agents install (Canal, bundled ingress disabled) |
+| `ansible/mssql_single.yml`, `ansible/mssql_ag.yml` | SQL Server 2022 single / read-scale AG |
+| `ansible/docker_*.yml`, `elk_stack.yml`, `gitlab_stack.yml`, `sonarqube_stack.yml` | Docker platform stacks |
+| `rke2-cluster/` | RKE2 cluster + Istio/ArgoCD/Headlamp/WSO2 runbooks (prod, uat, shared) |
+| `WSO2_APIM_KUBE_ISTIO/` | Team's WSO2 + Istio deployment repo (authoritative for WSO2) |
+| `planning/news/` | New-requirement docs (RKE2/Istio/MSSQL/parallel) |
+| `planning/old/`, `talos-cluster/` | Original requirement docs (kept for reference) |
+| `docker/` | Docker compose for the platform + ELK |

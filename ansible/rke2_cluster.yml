@@ -1,0 +1,203 @@
+# Install an RKE2 cluster across servers (control plane) and agents (workers).
+#
+# RKE2 ships the DEFAULT CNI (Canal) and kube-proxy — we do NOT set `cni: none`.
+# This is the new-requirement replacement for the Talos + Cilium flow.
+#
+# Expected inventory groups (the web UI writes a per-job inventory file):
+#   [rke2_servers]   one or more control-plane nodes; the FIRST one bootstraps the cluster
+#   [rke2_agents]    zero or more worker nodes
+#
+# Key variables (pass via --extra-vars from the web UI):
+#   cluster_name           e.g. "prod-cluster"
+#   rke2_version           e.g. "v1.36.1+rke2r2"  (Kubernetes v1.36.1, Canal CNI)
+#   rke2_token             shared cluster join token (REQUIRED for multi-node; defaults derived)
+#   registration_address   VIP / LB / first-server address used by joiners and kubeconfig
+#
+# Result: kubeconfig copied to the jump host at
+#   {{ playbook_dir }}/../data/k8s/{{ cluster_name }}/kubeconfig
+
+- name: RKE2 — bootstrap the first server
+  hosts: rke2_servers[0]
+  become: true
+  gather_facts: true
+  vars:
+    rke2_version: "{{ rke2_version | default('v1.36.1+rke2r2') }}"
+    cluster_name: "{{ cluster_name | default('rke2-cluster') }}"
+    rke2_token: "{{ rke2_token | default(cluster_name ~ '-rke2-token') }}"
+    registration_address: "{{ registration_address | default(hostvars[groups['rke2_servers'][0]]['inventory_hostname']) }}"
+    # RKE2 v1.36 bundles Traefik as the default ingress (ingress-nginx retired upstream).
+    # We use Istio for Kubernetes ingress, so disable the bundled ingress to avoid contending
+    # for node ports 80/443 (RKE2 ServiceLB). Set to false to keep the bundled ingress.
+    rke2_disable_bundled_ingress: "{{ rke2_disable_bundled_ingress | default(true) }}"
+  tasks:
+    - name: Ensure RKE2 config directory exists
+      file:
+        path: /etc/rancher/rke2
+        state: directory
+        mode: "0755"
+
+    - name: Write first-server RKE2 config (default CNI / Canal kept)
+      copy:
+        dest: /etc/rancher/rke2/config.yaml
+        mode: "0600"
+        content: |
+          token: {{ rke2_token }}
+          tls-san:
+          {% for h in groups['rke2_servers'] %}
+            - {{ h }}
+          {% endfor %}
+            - {{ registration_address }}
+          # Default CNI (Canal) is used — do NOT set `cni: none`.
+          write-kubeconfig-mode: "0644"
+          {% if rke2_disable_bundled_ingress | bool %}
+          # Istio owns ingress — disable the RKE2-bundled ingress controller(s).
+          disable:
+            - rke2-ingress-nginx
+            - rke2-traefik
+          {% endif %}
+
+    - name: Install RKE2 server (idempotent via creates)
+      shell: |
+        curl -sfL https://get.rke2.io | INSTALL_RKE2_TYPE=server INSTALL_RKE2_VERSION={{ rke2_version }} sh -
+      args:
+        creates: /usr/local/bin/rke2
+
+    - name: Enable and start rke2-server
+      systemd:
+        name: rke2-server
+        state: started
+        enabled: true
+
+    - name: Wait for kubeconfig to be written
+      wait_for:
+        path: /etc/rancher/rke2/rke2.yaml
+        timeout: 300
+
+    - name: Wait for the first node to register
+      shell: >
+        /var/lib/rancher/rke2/bin/kubectl
+        --kubeconfig /etc/rancher/rke2/rke2.yaml get nodes
+      register: first_node
+      retries: 30
+      delay: 10
+      until: first_node.rc == 0
+      changed_when: false
+
+
+- name: RKE2 — join the remaining servers
+  hosts: rke2_servers[1:]
+  become: true
+  gather_facts: false
+  vars:
+    rke2_version: "{{ rke2_version | default('v1.36.1+rke2r2') }}"
+    cluster_name: "{{ cluster_name | default('rke2-cluster') }}"
+    rke2_token: "{{ rke2_token | default(cluster_name ~ '-rke2-token') }}"
+    registration_address: "{{ registration_address | default(hostvars[groups['rke2_servers'][0]]['inventory_hostname']) }}"
+  tasks:
+    - name: Ensure RKE2 config directory exists
+      file:
+        path: /etc/rancher/rke2
+        state: directory
+        mode: "0755"
+
+    - name: Write joining-server RKE2 config
+      copy:
+        dest: /etc/rancher/rke2/config.yaml
+        mode: "0600"
+        content: |
+          server: https://{{ registration_address }}:9345
+          token: {{ rke2_token }}
+          tls-san:
+            - {{ registration_address }}
+
+    - name: Install RKE2 server (idempotent via creates)
+      shell: |
+        curl -sfL https://get.rke2.io | INSTALL_RKE2_TYPE=server INSTALL_RKE2_VERSION={{ rke2_version }} sh -
+      args:
+        creates: /usr/local/bin/rke2
+
+    - name: Enable and start rke2-server
+      systemd:
+        name: rke2-server
+        state: started
+        enabled: true
+
+
+- name: RKE2 — join the agents (workers)
+  hosts: rke2_agents
+  become: true
+  gather_facts: false
+  vars:
+    rke2_version: "{{ rke2_version | default('v1.36.1+rke2r2') }}"
+    cluster_name: "{{ cluster_name | default('rke2-cluster') }}"
+    rke2_token: "{{ rke2_token | default(cluster_name ~ '-rke2-token') }}"
+    registration_address: "{{ registration_address | default(hostvars[groups['rke2_servers'][0]]['inventory_hostname']) }}"
+  tasks:
+    - name: Ensure RKE2 config directory exists
+      file:
+        path: /etc/rancher/rke2
+        state: directory
+        mode: "0755"
+
+    - name: Write agent RKE2 config
+      copy:
+        dest: /etc/rancher/rke2/config.yaml
+        mode: "0600"
+        content: |
+          server: https://{{ registration_address }}:9345
+          token: {{ rke2_token }}
+
+    - name: Install RKE2 agent (idempotent via creates)
+      shell: |
+        curl -sfL https://get.rke2.io | INSTALL_RKE2_TYPE=agent INSTALL_RKE2_VERSION={{ rke2_version }} sh -
+      args:
+        creates: /usr/local/bin/rke2
+
+    - name: Enable and start rke2-agent
+      systemd:
+        name: rke2-agent
+        state: started
+        enabled: true
+
+
+- name: RKE2 — fetch kubeconfig to the jump host
+  hosts: rke2_servers[0]
+  become: true
+  gather_facts: false
+  vars:
+    cluster_name: "{{ cluster_name | default('rke2-cluster') }}"
+    registration_address: "{{ registration_address | default(hostvars[groups['rke2_servers'][0]]['inventory_hostname']) }}"
+    kubeconfig_dest_dir: "{{ playbook_dir }}/../data/k8s/{{ cluster_name }}"
+  tasks:
+    - name: Read remote kubeconfig
+      slurp:
+        src: /etc/rancher/rke2/rke2.yaml
+      register: remote_kubeconfig
+
+    - name: Ensure local kubeconfig directory exists on the jump host
+      delegate_to: localhost
+      become: false
+      file:
+        path: "{{ kubeconfig_dest_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Write kubeconfig on the jump host with the registration address
+      delegate_to: localhost
+      become: false
+      copy:
+        dest: "{{ kubeconfig_dest_dir }}/kubeconfig"
+        mode: "0600"
+        content: "{{ remote_kubeconfig.content | b64decode | replace('127.0.0.1', registration_address) | replace('default', cluster_name) }}"
+
+    - name: Report kubeconfig location
+      delegate_to: localhost
+      become: false
+      debug:
+        msg: >-
+          RKE2 cluster '{{ cluster_name }}' installed.
+          kubeconfig: {{ kubeconfig_dest_dir }}/kubeconfig
+          (API server: https://{{ registration_address }}:6443). Run
+          `kubectl --kubeconfig {{ kubeconfig_dest_dir }}/kubeconfig get nodes` to confirm all
+          nodes are Ready (default CNI = Canal). Next: install Istio/ArgoCD/Headlamp via the
+          rke2-cluster runbook.

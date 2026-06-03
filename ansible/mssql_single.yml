@@ -1,0 +1,93 @@
+# Install a single SQL Server 2022 instance (UAT).
+#
+# Target inventory group: [mssql]  (the web UI writes a per-job inventory file)
+#
+# Required variable (pass via --extra-vars from the web UI):
+#   sa_password   strong SA password (>=8 chars, upper/lower/digit/symbol)
+# Optional:
+#   mssql_pid     edition: Developer (default) | Express | Standard | Enterprise | EnterpriseCore
+#   ubuntu_release  apt repo release, default "22.04"
+
+- name: Install SQL Server 2022 (single instance)
+  hosts: mssql
+  become: true
+  vars:
+    mssql_pid: "{{ mssql_pid | default('Developer') }}"
+    ubuntu_release: "{{ ubuntu_release | default('22.04') }}"
+    sa_password: "{{ sa_password | default('') }}"
+  tasks:
+    - name: Fail early if SA password is not provided
+      fail:
+        msg: "sa_password is required (strong password: >=8 chars, mix of upper/lower/digit/symbol)."
+      when: sa_password | length == 0
+
+    - name: Ensure prerequisites are present
+      apt:
+        name: [curl, gnupg, apt-transport-https, ca-certificates]
+        state: present
+        update_cache: yes
+
+    - name: Add Microsoft GPG key
+      get_url:
+        url: https://packages.microsoft.com/keys/microsoft.asc
+        dest: /etc/apt/trusted.gpg.d/microsoft.asc
+        mode: "0644"
+
+    - name: Add SQL Server 2022 apt repository
+      get_url:
+        url: "https://packages.microsoft.com/config/ubuntu/{{ ubuntu_release }}/mssql-server-2022.list"
+        dest: /etc/apt/sources.list.d/mssql-server-2022.list
+        mode: "0644"
+
+    - name: Add Microsoft prod (mssql-tools) apt repository
+      get_url:
+        url: "https://packages.microsoft.com/config/ubuntu/{{ ubuntu_release }}/prod.list"
+        dest: /etc/apt/sources.list.d/mssql-prod.list
+        mode: "0644"
+
+    - name: Install mssql-server
+      apt:
+        name: mssql-server
+        state: present
+        update_cache: yes
+
+    - name: Install mssql-tools and unixodbc-dev (sqlcmd)
+      apt:
+        name: [mssql-tools18, unixodbc-dev]
+        state: present
+      environment:
+        ACCEPT_EULA: "Y"
+
+    - name: Run mssql-conf setup (non-interactive)
+      shell: |
+        /opt/mssql/bin/mssql-conf -n setup accept-eula
+      environment:
+        ACCEPT_EULA: "Y"
+        MSSQL_SA_PASSWORD: "{{ sa_password }}"
+        MSSQL_PID: "{{ mssql_pid }}"
+      args:
+        creates: /var/opt/mssql/.system/instance_id
+
+    - name: Ensure mssql-server service is enabled and started
+      systemd:
+        name: mssql-server
+        state: started
+        enabled: true
+
+    - name: Wait for SQL Server to accept connections on 1433
+      wait_for:
+        port: 1433
+        host: 127.0.0.1
+        timeout: 120
+
+    - name: Verify connectivity with sqlcmd
+      shell: >
+        /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "{{ sa_password }}" -No
+        -Q "SELECT @@VERSION"
+      register: mssql_version
+      changed_when: false
+      failed_when: mssql_version.rc != 0
+
+    - name: Report SQL Server status
+      debug:
+        msg: "SQL Server 2022 single instance ready on {{ inventory_hostname }}:1433. {{ mssql_version.stdout_lines[0] | default('') }}"

@@ -1,6 +1,7 @@
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 import asyncio
+import json
 import os
 import sqlite3
 import subprocess
@@ -10,13 +11,14 @@ from datetime import datetime, timezone
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ANSIBLE_DIR = os.path.join(BASE_DIR, "ansible")
 INVENTORY_FILE = os.path.join(ANSIBLE_DIR, "inventory")
+JOB_INVENTORY_DIR = os.path.join(BASE_DIR, "data", "inventory")
 STATE_DB = os.path.join(BASE_DIR, "data", "state.db")
 SCRIPTS_DIR = os.path.join(BASE_DIR, "scripts")
 TRAEFIK_CERTS_DIR = os.path.join(BASE_DIR, "docker", "traefik", "certs")
 TRAEFIK_CERT_FILE = os.path.join(TRAEFIK_CERTS_DIR, "local-dev-tls.crt")
 TRAEFIK_KEY_FILE = os.path.join(TRAEFIK_CERTS_DIR, "local-dev-tls.key")
 
-app = FastAPI(title="Autoprovision Control Plane", version="0.7.0")
+app = FastAPI(title="Autoprovision Control Plane", version="0.8.0")
 JOBS: dict[str, dict] = {}
 
 # ─── helpers ──────────────────────────────────────────────────────────────────
@@ -403,6 +405,240 @@ async def _run_action_job(job_id: str, action: str, body: dict):
         JOBS[job_id]["error"] = str(e)
 
 
+# ─── parallel multi-track layer ─────────────────────────────────────────────────
+#
+# Each track runs as an independent job with its OWN inventory file
+# (data/inventory/<job_id>.ini) and its OWN log (data/logs/<job_id>.log) so that
+# multiple tracks (2 K8s clusters + 2 ELK + GitLab + MSSQL) run in parallel without
+# colliding on a shared inventory or log file.
+
+ALL_TRACKS = ["prod_k8s", "uat_k8s", "prod_elk", "uat_elk", "gitlab", "prod_sql", "uat_sql"]
+
+
+def _parse_ip_list(raw) -> list[str]:
+    """Accept comma / whitespace / newline separated IPs and return a clean list."""
+    if isinstance(raw, list):
+        items = raw
+    else:
+        items = (raw or "").replace(",", " ").split()
+    return [i.strip() for i in items if i and i.strip()]
+
+
+def _ensure_targets_db() -> None:
+    os.makedirs(os.path.dirname(STATE_DB), exist_ok=True)
+    conn = sqlite3.connect(STATE_DB)
+    try:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS targets (
+                track TEXT PRIMARY KEY,
+                data TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _read_targets() -> dict:
+    _ensure_targets_db()
+    conn = sqlite3.connect(STATE_DB)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute("SELECT track, data FROM targets").fetchall()
+    finally:
+        conn.close()
+    out = {}
+    for row in rows:
+        try:
+            out[row["track"]] = json.loads(row["data"])
+        except Exception:
+            out[row["track"]] = {}
+    return out
+
+
+def _save_target(track: str, data: dict) -> None:
+    if track not in ALL_TRACKS:
+        return
+    _ensure_targets_db()
+    # Never persist secrets to disk.
+    safe = {k: v for k, v in (data or {}).items() if k not in ("ssh_pass", "sa_password", "rke2_token", "gitlab_runner_token")}
+    conn = sqlite3.connect(STATE_DB)
+    try:
+        conn.execute(
+            """
+            INSERT INTO targets (track, data, updated_at) VALUES (?, ?, ?)
+            ON CONFLICT(track) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at
+            """,
+            (track, json.dumps(safe), _utc_now()),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _write_job_inventory(job_id: str, groups: dict[str, list[str]], ssh_user: str, ssh_pass: str) -> str:
+    """Write a per-job inventory file and return its path.
+
+    `groups` maps an Ansible group name to its list of host IPs. SSH credentials are
+    applied per host so the file is fully self-contained for this one job.
+    """
+    os.makedirs(JOB_INVENTORY_DIR, exist_ok=True)
+    path = os.path.join(JOB_INVENTORY_DIR, f"{job_id}.ini")
+    user = ssh_user or "autoprovision"
+    with open(path, "w", encoding="utf-8") as f:
+        for group, hosts in groups.items():
+            f.write(f"[{group}]\n")
+            for host in hosts:
+                line = f"{host} ansible_user={user}"
+                if ssh_pass:
+                    line += f" ansible_password={ssh_pass} ansible_become_password={ssh_pass}"
+                line += " ansible_become=true ansible_become_method=sudo\n"
+                f.write(line)
+            f.write("\n")
+    return path
+
+
+def _track_plan(action: str, body: dict) -> dict:
+    """Return {inventory: {group: [ips]}, steps: [{playbook, extra_vars, label}]} for a track."""
+    if action == "rke2-cluster-up":
+        cp = _parse_ip_list(body.get("control_plane_ips"))
+        workers = _parse_ip_list(body.get("worker_ips"))
+        if not cp:
+            raise ValueError("at least one control plane IP is required")
+        extra = {
+            "cluster_name": body.get("cluster_name") or "rke2-cluster",
+            "rke2_version": body.get("rke2_version") or "v1.36.1+rke2r2",
+            "rke2_token": body.get("rke2_token") or ((body.get("cluster_name") or "rke2-cluster") + "-rke2-token"),
+        }
+        if body.get("registration_address"):
+            extra["registration_address"] = body.get("registration_address")
+        return {
+            "inventory": {"rke2_servers": cp, "rke2_agents": workers},
+            "steps": [{"playbook": "ansible/rke2_cluster.yml", "extra_vars": extra, "label": "RKE2 cluster"}],
+        }
+
+    if action == "mssql-single-up":
+        ip = (body.get("mssql_ip") or "").strip()
+        if not ip:
+            raise ValueError("mssql_ip is required")
+        return {
+            "inventory": {"mssql": [ip]},
+            "steps": [{
+                "playbook": "ansible/mssql_single.yml",
+                "extra_vars": {"sa_password": body.get("sa_password", ""), "mssql_pid": body.get("mssql_pid") or "Developer"},
+                "label": "MSSQL single instance",
+            }],
+        }
+
+    if action == "mssql-ag-up":
+        ips = _parse_ip_list(body.get("mssql_ips"))
+        if len(ips) < 2:
+            raise ValueError("at least two MSSQL AG node IPs are required (first is primary)")
+        return {
+            "inventory": {"mssql_ag": ips},
+            "steps": [{
+                "playbook": "ansible/mssql_ag.yml",
+                "extra_vars": {
+                    "sa_password": body.get("sa_password", ""),
+                    "ag_name": body.get("ag_name") or "ag1",
+                    "mssql_pid": body.get("mssql_pid") or "Developer",
+                },
+                "label": "MSSQL Always On AG",
+            }],
+        }
+
+    if action == "elk-stack-up":
+        ip = (body.get("docker_ip") or "").strip()
+        if not ip:
+            raise ValueError("docker_ip (ELK VM IP) is required")
+        return {
+            "inventory": {"docker_vm": [ip]},
+            "steps": [
+                {"playbook": "ansible/docker_vm_base.yml", "extra_vars": None, "label": "Docker base"},
+                {"playbook": "ansible/elk_stack.yml",
+                 "extra_vars": {"kibana_domain": body.get("kibana_domain") or "kibana.example.com"},
+                 "label": "ELK stack"},
+            ],
+        }
+
+    if action == "gitlab-platform-up":
+        ip = (body.get("docker_ip") or "").strip()
+        if not ip:
+            raise ValueError("docker_ip (GitLab VM IP) is required")
+        return {
+            "inventory": {"docker_vm": [ip]},
+            "steps": [
+                {"playbook": "ansible/docker_vm_base.yml", "extra_vars": None, "label": "Docker base"},
+                {"playbook": "ansible/docker_platform_up.yml",
+                 "extra_vars": {"dockhand_domain": body.get("dockhand_domain") or "dockhand.example.com"},
+                 "label": "Platform (Postgres/Traefik/Dockhand)"},
+                {"playbook": "ansible/gitlab_stack.yml",
+                 "extra_vars": {
+                     "gitlab_domain": body.get("gitlab_domain") or "gitlab.example.com",
+                     "gitlab_registry_domain": body.get("gitlab_registry_domain") or "registry.example.com",
+                     "gitlab_runner_token": body.get("gitlab_runner_token", ""),
+                 },
+                 "label": "GitLab"},
+                {"playbook": "ansible/sonarqube_stack.yml",
+                 "extra_vars": {"sonarqube_domain": body.get("sonarqube_domain") or "sonar.example.com"},
+                 "label": "SonarQube"},
+            ],
+        }
+
+    raise ValueError(f"unsupported track action: {action}")
+
+
+async def _run_playbook_step(playbook_rel: str, inventory_path: str, log_path: str,
+                             extra_vars: dict = None, append: bool = False) -> int:
+    cmd = ["ansible-playbook", "-i", inventory_path, os.path.join(BASE_DIR, playbook_rel)]
+    if extra_vars:
+        cmd += ["--extra-vars", json.dumps(extra_vars)]
+    proc = await asyncio.create_subprocess_exec(
+        *cmd, cwd=BASE_DIR,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+    )
+    mode = "a" if append else "w"
+    with open(log_path, mode, encoding="utf-8") as lf:
+        lf.write(f"\n===== ansible-playbook {playbook_rel} =====\n")
+        lf.flush()
+        async for chunk in proc.stdout:
+            lf.write(chunk.decode("utf-8", errors="replace"))
+            lf.flush()
+    await proc.wait()
+    return proc.returncode
+
+
+async def _run_track_job(job_id: str, action: str, body: dict):
+    log_path = os.path.join(BASE_DIR, "data", "logs", f"{job_id}.log")
+    os.makedirs(os.path.dirname(log_path), exist_ok=True)
+    try:
+        plan = _track_plan(action, body)
+        JOBS[job_id]["status"] = "running"
+        ssh_user = body.get("ssh_user", "autoprovision")
+        ssh_pass = body.get("ssh_pass", "")
+        inv_path = _write_job_inventory(job_id, plan["inventory"], ssh_user, ssh_pass)
+        JOBS[job_id]["inventory"] = inv_path
+
+        rc = 0
+        for idx, step in enumerate(plan["steps"]):
+            JOBS[job_id]["step"] = step["label"]
+            rc = await _run_playbook_step(
+                step["playbook"], inv_path, log_path,
+                extra_vars=step.get("extra_vars"), append=(idx > 0),
+            )
+            if rc != 0:
+                break
+
+        JOBS[job_id]["rc"] = rc
+        JOBS[job_id]["status"] = "completed" if rc == 0 else "failed"
+    except Exception as e:
+        JOBS[job_id]["status"] = "failed"
+        JOBS[job_id]["error"] = str(e)
+
+
 def _ensure_traefik_certs_dir() -> None:
     os.makedirs(TRAEFIK_CERTS_DIR, exist_ok=True)
 
@@ -593,9 +829,97 @@ async def get_action_job(job_id: str):
     )
 
 
+# ─── parallel track endpoints ───────────────────────────────────────────────────
+
+@app.get("/state/targets")
+async def get_targets():
+    return JSONResponse(_read_targets())
+
+
+@app.post("/state/targets")
+async def save_target(request: Request):
+    body = await request.json()
+    track = (body.get("track") or "").strip()
+    data = body.get("data") or {}
+    _save_target(track, data)
+    return JSONResponse({"track": track, "saved": track in ALL_TRACKS})
+
+
+@app.post("/tracks/preview")
+async def track_preview(request: Request):
+    body = await request.json()
+    action = (body.get("action") or "").strip()
+    payload = body.get("payload") or {}
+    try:
+        plan = _track_plan(action, payload)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    steps_text = "\n".join(
+        f"  {i+1}. {s['label']}  ->  {s['playbook']}" for i, s in enumerate(plan["steps"])
+    )
+    inv_text = "\n".join(
+        f"  [{g}] {', '.join(h)}" for g, h in plan["inventory"].items()
+    )
+    return JSONResponse(
+        {
+            "action": action,
+            "plan": f"Inventory:\n{inv_text}\n\nSteps:\n{steps_text}",
+            "message": "Preview only. Click Run to start this track.",
+        }
+    )
+
+
+@app.post("/tracks/start")
+async def track_start(request: Request):
+    body = await request.json()
+    action = (body.get("action") or "").strip()
+    payload = body.get("payload") or {}
+    track = (payload.get("track") or "").strip()
+    try:
+        _track_plan(action, payload)  # validate inputs before queueing
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+
+    if track:
+        _save_target(track, payload)
+
+    job_id = str(uuid.uuid4())
+    JOBS[job_id] = {
+        "action": action,
+        "track": track,
+        "status": "queued",
+        "rc": None,
+        "error": None,
+        "step": None,
+        "started_at": _utc_now(),
+    }
+    JOBS[job_id]["task"] = asyncio.create_task(_run_track_job(job_id, action, payload))
+    return JSONResponse({"job_id": job_id, "status": "queued", "track": track})
+
+
+@app.get("/tracks/job/{job_id}")
+async def track_job(job_id: str):
+    job = JOBS.get(job_id)
+    if not job:
+        return JSONResponse({"error": "job_not_found"}, status_code=404)
+    log = _read_log_tail(f"{job_id}.log", 80000)
+    return JSONResponse(
+        {
+            "job_id": job_id,
+            "action": job.get("action"),
+            "track": job.get("track"),
+            "status": job.get("status"),
+            "step": job.get("step"),
+            "rc": job.get("rc"),
+            "error": job.get("error"),
+            "log": log,
+        }
+    )
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index():
-    ui_file = os.path.join(BASE_DIR, "app", "ui_docker.html")
+    ui_file = os.path.join(BASE_DIR, "app", "ui_parallel.html")
     with open(ui_file, "r", encoding="utf-8") as f:
         return f.read()
 

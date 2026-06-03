@@ -1,0 +1,305 @@
+# Install SQL Server 2022 on 3 nodes and bootstrap an Always On Availability Group (Production).
+#
+# Target inventory group: [mssql_ag]  (the web UI writes a per-job inventory file).
+#   The FIRST host in the group is treated as the AG PRIMARY.
+#
+# Required variable (pass via --extra-vars from the web UI):
+#   sa_password    strong SA password
+# Optional:
+#   ag_name        availability group name (default "ag1")
+#   cert_password  certificate backup password (default derived from ag_name)
+#   endpoint_port  Hadr endpoint port (default 5022)
+#   mssql_pid      edition (default Developer)
+#   ubuntu_release apt repo release (default "22.04")
+#
+# IMPORTANT — read the manual verification checklist at the end of this run.
+# This playbook creates a CLUSTER_TYPE=NONE (read-scale) Availability Group, which is fully
+# automatable. A production HA AG with automatic failover + a virtual listener additionally
+# requires a Pacemaker/Corosync cluster and a load balancer/VIP — that step is intentionally
+# left manual (see the checklist) because it is environment-specific and risky to fully automate.
+
+# ─── Play 1: install SQL Server + enable Always On on all 3 nodes ───────────────
+- name: Install SQL Server 2022 and enable Always On (all AG nodes)
+  hosts: mssql_ag
+  become: true
+  gather_facts: true
+  vars:
+    mssql_pid: "{{ mssql_pid | default('Developer') }}"
+    ubuntu_release: "{{ ubuntu_release | default('22.04') }}"
+    sa_password: "{{ sa_password | default('') }}"
+  tasks:
+    - name: Fail early if SA password is not provided
+      fail:
+        msg: "sa_password is required (strong password)."
+      when: sa_password | length == 0
+
+    - name: Ensure prerequisites are present
+      apt:
+        name: [curl, gnupg, apt-transport-https, ca-certificates]
+        state: present
+        update_cache: yes
+
+    - name: Add Microsoft GPG key
+      get_url:
+        url: https://packages.microsoft.com/keys/microsoft.asc
+        dest: /etc/apt/trusted.gpg.d/microsoft.asc
+        mode: "0644"
+
+    - name: Add SQL Server 2022 apt repository
+      get_url:
+        url: "https://packages.microsoft.com/config/ubuntu/{{ ubuntu_release }}/mssql-server-2022.list"
+        dest: /etc/apt/sources.list.d/mssql-server-2022.list
+        mode: "0644"
+
+    - name: Add Microsoft prod (mssql-tools) apt repository
+      get_url:
+        url: "https://packages.microsoft.com/config/ubuntu/{{ ubuntu_release }}/prod.list"
+        dest: /etc/apt/sources.list.d/mssql-prod.list
+        mode: "0644"
+
+    - name: Install mssql-server
+      apt:
+        name: mssql-server
+        state: present
+        update_cache: yes
+
+    - name: Install mssql-tools18 and unixodbc-dev (sqlcmd)
+      apt:
+        name: [mssql-tools18, unixodbc-dev]
+        state: present
+      environment:
+        ACCEPT_EULA: "Y"
+
+    - name: Run mssql-conf setup (non-interactive)
+      shell: |
+        /opt/mssql/bin/mssql-conf -n setup accept-eula
+      environment:
+        ACCEPT_EULA: "Y"
+        MSSQL_SA_PASSWORD: "{{ sa_password }}"
+        MSSQL_PID: "{{ mssql_pid }}"
+      args:
+        creates: /var/opt/mssql/.system/instance_id
+
+    - name: Enable the Always On Availability Groups feature (hadr)
+      shell: /opt/mssql/bin/mssql-conf set hadr.hadrenabled 1
+      register: hadr_set
+      changed_when: "'1' in hadr_set.stdout or hadr_set.rc == 0"
+
+    - name: Restart SQL Server to apply hadr
+      systemd:
+        name: mssql-server
+        state: restarted
+        enabled: true
+
+    - name: Wait for SQL Server to accept connections on 1433
+      wait_for:
+        port: 1433
+        host: 127.0.0.1
+        timeout: 120
+
+    - name: Enable AlwaysOn_health extended event session
+      shell: >
+        /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "{{ sa_password }}" -C
+        -Q "ALTER EVENT SESSION AlwaysOn_health ON SERVER WITH (STARTUP_STATE=ON);"
+      changed_when: false
+      failed_when: false
+
+
+# ─── Play 2: certificate exchange + endpoints + AG on the PRIMARY ───────────────
+- name: Configure AG certificate and endpoint on the primary
+  hosts: mssql_ag[0]
+  become: true
+  gather_facts: true
+  vars:
+    sa_password: "{{ sa_password | default('') }}"
+    ag_name: "{{ ag_name | default('ag1') }}"
+    cert_password: "{{ cert_password | default(ag_name ~ '-Cert-Pa55!') }}"
+    endpoint_port: "{{ endpoint_port | default(5022) }}"
+    sqlcmd: "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"{{ sa_password }}\" -C"
+    data_dir: /var/opt/mssql/data
+  tasks:
+    - name: Create master key and AG certificate on primary
+      shell: >
+        {{ sqlcmd }} -Q
+        "IF NOT EXISTS (SELECT 1 FROM sys.symmetric_keys WHERE name='##MS_DatabaseMasterKey##')
+           CREATE MASTER KEY ENCRYPTION BY PASSWORD = '{{ cert_password }}';
+         IF NOT EXISTS (SELECT 1 FROM sys.certificates WHERE name='dbm_certificate')
+           CREATE CERTIFICATE dbm_certificate WITH SUBJECT = 'dbm';"
+      changed_when: false
+
+    - name: Back up the AG certificate (with private key)
+      shell: >
+        {{ sqlcmd }} -Q
+        "BACKUP CERTIFICATE dbm_certificate TO FILE = '{{ data_dir }}/dbm_certificate.cer'
+         WITH PRIVATE KEY (FILE = '{{ data_dir }}/dbm_certificate.pvk',
+         ENCRYPTION BY PASSWORD = '{{ cert_password }}');"
+      args:
+        creates: "{{ data_dir }}/dbm_certificate.cer"
+
+    - name: Fetch certificate files to the jump host
+      fetch:
+        src: "{{ data_dir }}/{{ item }}"
+        dest: "/tmp/mssql-ag-{{ ag_name }}/{{ item }}"
+        flat: true
+      loop:
+        - dbm_certificate.cer
+        - dbm_certificate.pvk
+
+    - name: Create the database-mirroring endpoint on the primary
+      shell: >
+        {{ sqlcmd }} -Q
+        "IF NOT EXISTS (SELECT 1 FROM sys.endpoints WHERE name='Hadr_endpoint')
+         CREATE ENDPOINT [Hadr_endpoint] STATE = STARTED
+           AS TCP (LISTENER_PORT = {{ endpoint_port }}, LISTENER_IP = ALL)
+           FOR DATABASE_MIRRORING (ROLE = ALL,
+             AUTHENTICATION = CERTIFICATE dbm_certificate,
+             ENCRYPTION = REQUIRED ALGORITHM AES);"
+      changed_when: false
+
+
+# ─── Play 3: restore certificate + endpoints on the SECONDARIES ─────────────────
+- name: Configure AG certificate and endpoint on the secondaries
+  hosts: mssql_ag[1:]
+  become: true
+  gather_facts: true
+  vars:
+    sa_password: "{{ sa_password | default('') }}"
+    ag_name: "{{ ag_name | default('ag1') }}"
+    cert_password: "{{ cert_password | default(ag_name ~ '-Cert-Pa55!') }}"
+    endpoint_port: "{{ endpoint_port | default(5022) }}"
+    sqlcmd: "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"{{ sa_password }}\" -C"
+    data_dir: /var/opt/mssql/data
+  tasks:
+    - name: Copy certificate files from the jump host to the secondary
+      copy:
+        src: "/tmp/mssql-ag-{{ ag_name }}/{{ item }}"
+        dest: "{{ data_dir }}/{{ item }}"
+        owner: mssql
+        group: mssql
+        mode: "0660"
+      loop:
+        - dbm_certificate.cer
+        - dbm_certificate.pvk
+
+    - name: Create master key and restore AG certificate on the secondary
+      shell: >
+        {{ sqlcmd }} -Q
+        "IF NOT EXISTS (SELECT 1 FROM sys.symmetric_keys WHERE name='##MS_DatabaseMasterKey##')
+           CREATE MASTER KEY ENCRYPTION BY PASSWORD = '{{ cert_password }}';
+         IF NOT EXISTS (SELECT 1 FROM sys.certificates WHERE name='dbm_certificate')
+           CREATE CERTIFICATE dbm_certificate
+             FROM FILE = '{{ data_dir }}/dbm_certificate.cer'
+             WITH PRIVATE KEY (FILE = '{{ data_dir }}/dbm_certificate.pvk',
+               DECRYPTION BY PASSWORD = '{{ cert_password }}');"
+      changed_when: false
+
+    - name: Create the database-mirroring endpoint on the secondary
+      shell: >
+        {{ sqlcmd }} -Q
+        "IF NOT EXISTS (SELECT 1 FROM sys.endpoints WHERE name='Hadr_endpoint')
+         CREATE ENDPOINT [Hadr_endpoint] STATE = STARTED
+           AS TCP (LISTENER_PORT = {{ endpoint_port }}, LISTENER_IP = ALL)
+           FOR DATABASE_MIRRORING (ROLE = ALL,
+             AUTHENTICATION = CERTIFICATE dbm_certificate,
+             ENCRYPTION = REQUIRED ALGORITHM AES);"
+      changed_when: false
+
+
+# ─── Play 4: create the Availability Group on the primary and join secondaries ──
+- name: Create the Availability Group (CLUSTER_TYPE = NONE) on the primary
+  hosts: mssql_ag[0]
+  become: true
+  gather_facts: true
+  vars:
+    sa_password: "{{ sa_password | default('') }}"
+    ag_name: "{{ ag_name | default('ag1') }}"
+    endpoint_port: "{{ endpoint_port | default(5022) }}"
+    sqlcmd: "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"{{ sa_password }}\" -C"
+  tasks:
+    - name: Build the FOR REPLICA ON clause from all AG nodes
+      set_fact:
+        replica_clause: >-
+          {% for h in groups['mssql_ag'] %}
+          N'{{ hostvars[h].ansible_hostname }}' WITH (
+            ENDPOINT_URL = N'tcp://{{ h }}:{{ endpoint_port }}',
+            AVAILABILITY_MODE = SYNCHRONOUS_COMMIT,
+            FAILOVER_MODE = MANUAL,
+            SEEDING_MODE = AUTOMATIC,
+            SECONDARY_ROLE (ALLOW_CONNECTIONS = ALL)
+          ){{ "," if not loop.last else "" }}
+          {% endfor %}
+
+    - name: Create the Availability Group on the primary
+      shell: >
+        {{ sqlcmd }} -Q
+        "IF NOT EXISTS (SELECT 1 FROM sys.availability_groups WHERE name='{{ ag_name }}')
+         CREATE AVAILABILITY GROUP [{{ ag_name }}]
+           WITH (CLUSTER_TYPE = NONE)
+           FOR REPLICA ON {{ replica_clause }};"
+      register: create_ag
+      changed_when: false
+      failed_when: create_ag.rc != 0 and 'already exists' not in (create_ag.stderr | default(''))
+
+    - name: Grant create-any-database on the primary AG
+      shell: >
+        {{ sqlcmd }} -Q
+        "ALTER AVAILABILITY GROUP [{{ ag_name }}] GRANT CREATE ANY DATABASE;"
+      changed_when: false
+      failed_when: false
+
+
+- name: Join the secondaries to the Availability Group
+  hosts: mssql_ag[1:]
+  become: true
+  gather_facts: false
+  vars:
+    sa_password: "{{ sa_password | default('') }}"
+    ag_name: "{{ ag_name | default('ag1') }}"
+    sqlcmd: "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"{{ sa_password }}\" -C"
+  tasks:
+    - name: Join the AG and grant create-any-database
+      shell: >
+        {{ sqlcmd }} -Q
+        "ALTER AVAILABILITY GROUP [{{ ag_name }}] JOIN WITH (CLUSTER_TYPE = NONE);
+         ALTER AVAILABILITY GROUP [{{ ag_name }}] GRANT CREATE ANY DATABASE;"
+      register: join_ag
+      changed_when: false
+      failed_when: join_ag.rc != 0 and 'already' not in (join_ag.stderr | default('') | lower)
+
+
+# ─── Play 5: verification + manual checklist ────────────────────────────────────
+- name: Report AG status and manual checklist
+  hosts: mssql_ag[0]
+  become: true
+  gather_facts: false
+  vars:
+    sa_password: "{{ sa_password | default('') }}"
+    ag_name: "{{ ag_name | default('ag1') }}"
+    sqlcmd: "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"{{ sa_password }}\" -C"
+  tasks:
+    - name: Query AG replica states
+      shell: >
+        {{ sqlcmd }} -Q
+        "SELECT ag.name, ar.replica_server_name, rs.role_desc, rs.synchronization_health_desc
+         FROM sys.availability_groups ag
+         JOIN sys.availability_replicas ar ON ag.group_id = ar.group_id
+         JOIN sys.dm_hadr_availability_replica_states rs ON ar.replica_id = rs.replica_id;"
+      register: ag_status
+      changed_when: false
+      failed_when: false
+
+    - name: Show AG status
+      debug:
+        msg: "{{ ag_status.stdout_lines | default(['(could not query AG state)']) }}"
+
+    - name: Manual verification checklist
+      debug:
+        msg:
+          - "AG '{{ ag_name }}' bootstrapped as CLUSTER_TYPE = NONE (read-scale, manual failover)."
+          - "1. Confirm all 3 replicas show synchronization_health_desc = HEALTHY above."
+          - "2. Add user databases to the AG (each must be in FULL recovery and backed up once)."
+          - "3. WSO2 connects to the PRIMARY for writes. With CLUSTER_TYPE=NONE there is no virtual listener."
+          - "4. For automatic failover + a real listener: set up Pacemaker/Corosync, recreate the AG with"
+          - "   CLUSTER_TYPE = EXTERNAL, create the cluster resource, and add a listener VIP/LB. This step"
+          - "   is environment-specific and intentionally left manual."
+          - "5. Point WSO2 JDBC at the listener (once created) or the primary node for the MVP."
