@@ -11,15 +11,17 @@
 - name: Install SQL Server 2022 (single instance)
   hosts: mssql
   become: true
+  # Effective values use distinct *_eff names so play vars never reference themselves
+  # (Ansible 2.20 rejects self-referential vars as a recursive loop).
   vars:
-    mssql_pid: "{{ mssql_pid | default('Developer') }}"
-    ubuntu_release: "{{ ubuntu_release | default('22.04') }}"
-    sa_password: "{{ sa_password | default('') }}"
+    mssql_pid_eff: "{{ mssql_pid | default('Developer') }}"
+    ubuntu_release_eff: "{{ ubuntu_release | default('22.04') }}"
+    sa_password_eff: "{{ sa_password | default('') }}"
   tasks:
     - name: Fail early if SA password is not provided
       fail:
         msg: "sa_password is required (strong password: >=8 chars, mix of upper/lower/digit/symbol)."
-      when: sa_password | length == 0
+      when: sa_password_eff | length == 0
 
     - name: Ensure prerequisites are present
       apt:
@@ -35,13 +37,13 @@
 
     - name: Add SQL Server 2022 apt repository
       get_url:
-        url: "https://packages.microsoft.com/config/ubuntu/{{ ubuntu_release }}/mssql-server-2022.list"
+        url: "https://packages.microsoft.com/config/ubuntu/{{ ubuntu_release_eff }}/mssql-server-2022.list"
         dest: /etc/apt/sources.list.d/mssql-server-2022.list
         mode: "0644"
 
     - name: Add Microsoft prod (mssql-tools) apt repository
       get_url:
-        url: "https://packages.microsoft.com/config/ubuntu/{{ ubuntu_release }}/prod.list"
+        url: "https://packages.microsoft.com/config/ubuntu/{{ ubuntu_release_eff }}/prod.list"
         dest: /etc/apt/sources.list.d/mssql-prod.list
         mode: "0644"
 
@@ -63,8 +65,8 @@
         /opt/mssql/bin/mssql-conf -n setup accept-eula
       environment:
         ACCEPT_EULA: "Y"
-        MSSQL_SA_PASSWORD: "{{ sa_password }}"
-        MSSQL_PID: "{{ mssql_pid }}"
+        MSSQL_SA_PASSWORD: "{{ sa_password_eff }}"
+        MSSQL_PID: "{{ mssql_pid_eff }}"
       args:
         creates: /var/opt/mssql/.system/instance_id
 
@@ -82,7 +84,7 @@
 
     - name: Verify connectivity with sqlcmd
       shell: >
-        /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "{{ sa_password }}" -No
+        /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "{{ sa_password_eff }}" -No
         -Q "SELECT @@VERSION"
       register: mssql_version
       changed_when: false
