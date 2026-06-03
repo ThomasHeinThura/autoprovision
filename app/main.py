@@ -419,7 +419,12 @@ async def _run_action_job(job_id: str, action: str, body: dict):
 # multiple tracks (2 K8s clusters + 2 ELK + GitLab + MSSQL) run in parallel without
 # colliding on a shared inventory or log file.
 
-ALL_TRACKS = ["prod_k8s", "uat_k8s", "prod_elk", "uat_elk", "gitlab", "prod_sql", "uat_sql"]
+ALL_TRACKS = [
+    "docker_traefik", "dockhand", "gitlab",
+    "elk_uat", "elk_prod",
+    "rke2_uat", "rke2_prod",
+    "mssql_uat", "mssql_prod",
+]
 
 
 def _parse_ip_list(raw) -> list[str]:
@@ -522,6 +527,8 @@ def _track_plan(action: str, body: dict) -> dict:
         }
         if body.get("registration_address"):
             extra["registration_address"] = body.get("registration_address")
+        if body.get("rke2_images_local_dir"):
+            extra["rke2_images_local_dir"] = body.get("rke2_images_local_dir")
         return {
             "inventory": {"rke2_servers": cp, "rke2_agents": workers},
             "steps": [{"playbook": "ansible/rke2_cluster.yml", "extra_vars": extra, "label": "RKE2 cluster"}],
@@ -555,6 +562,33 @@ def _track_plan(action: str, body: dict) -> dict:
                 },
                 "label": "MSSQL Always On AG",
             }],
+        }
+
+    if action == "docker-traefik-up":
+        ip = (body.get("docker_ip") or "").strip()
+        if not ip:
+            raise ValueError("docker_ip is required")
+        return {
+            "inventory": {"docker_vm": [ip]},
+            "steps": [
+                {"playbook": "ansible/docker_vm_base.yml", "extra_vars": None, "label": "Docker base (Docker CE + repo)"},
+                {"playbook": "ansible/traefik_stack.yml", "extra_vars": None, "label": "Traefik edge proxy (owns platform network)"},
+            ],
+        }
+
+    if action == "dockhand-up":
+        ip = (body.get("docker_ip") or "").strip()
+        if not ip:
+            raise ValueError("docker_ip is required")
+        return {
+            "inventory": {"docker_vm": [ip]},
+            "steps": [
+                {"playbook": "ansible/docker_vm_base.yml", "extra_vars": None, "label": "Docker base"},
+                {"playbook": "ansible/traefik_stack.yml", "extra_vars": None, "label": "Traefik edge proxy"},
+                {"playbook": "ansible/docker_platform_up.yml",
+                 "extra_vars": {"dockhand_domain": body.get("dockhand_domain") or "dockhand.example.com"},
+                 "label": "Dockhand + PostgreSQL"},
+            ],
         }
 
     if action == "elk-stack-up":
@@ -620,8 +654,17 @@ async def _run_playbook_step(playbook_rel: str, inventory_path: str, log_path: s
     return proc.returncode
 
 
+def _track_log_name(track: str, job_id: str) -> str:
+    """Stable per-track log file so each tab keeps showing its previous run's log."""
+    safe = track if track in ALL_TRACKS else job_id
+    return f"track-{safe}.log"
+
+
 async def _run_track_job(job_id: str, action: str, body: dict):
-    log_path = os.path.join(BASE_DIR, "data", "logs", f"{job_id}.log")
+    track = JOBS[job_id].get("track") or (body.get("track") or "")
+    log_name = _track_log_name(track, job_id)
+    JOBS[job_id]["log_name"] = log_name
+    log_path = os.path.join(BASE_DIR, "data", "logs", log_name)
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
     try:
         plan = _track_plan(action, body)
@@ -911,7 +954,8 @@ async def track_job(job_id: str):
     job = JOBS.get(job_id)
     if not job:
         return JSONResponse({"error": "job_not_found"}, status_code=404)
-    log = _read_log_tail(f"{job_id}.log", 80000)
+    log_name = job.get("log_name") or _track_log_name(job.get("track") or "", job_id)
+    log = _read_log_tail(log_name, 200000)
     return JSONResponse(
         {
             "job_id": job_id,
@@ -924,6 +968,14 @@ async def track_job(job_id: str):
             "log": log,
         }
     )
+
+
+@app.get("/tracks/log/{track}")
+async def track_log(track: str):
+    """Return the last (previous or live) log for a track, so a tab shows prior output on open."""
+    if track not in ALL_TRACKS:
+        return JSONResponse({"error": "unknown track"}, status_code=400)
+    return JSONResponse({"track": track, "log": _read_log_tail(f"track-{track}.log", 200000)})
 
 
 @app.get("/", response_class=HTMLResponse)

@@ -140,6 +140,7 @@
         name: rke2-server
         state: started
         enabled: true
+        daemon_reload: true   # the install script just dropped the unit file; make systemd see it
 
     - name: Wait for kubeconfig to be written
       wait_for:
@@ -193,6 +194,7 @@
         name: rke2-server
         state: started
         enabled: true
+        daemon_reload: true   # the install script just dropped the unit file; make systemd see it
 
 
 - name: RKE2 — join the agents (workers)
@@ -229,6 +231,7 @@
         name: rke2-agent
         state: started
         enabled: true
+        daemon_reload: true   # the install script just dropped the unit file; make systemd see it
 
 
 - name: RKE2 — fetch kubeconfig to the jump host
