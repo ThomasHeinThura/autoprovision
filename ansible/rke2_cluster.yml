@@ -13,12 +13,84 @@
 #   rke2_token             shared cluster join token (REQUIRED for multi-node; defaults derived)
 #   registration_address   VIP / LB / first-server address used by joiners and kubeconfig
 #   rke2_disable_bundled_ingress  default true — disable RKE2's bundled ingress (Istio owns ingress)
+#   rke2_images_local_dir  optional — a directory ON THE JUMP HOST holding RKE2 image
+#                          tarballs (rke2-images*.tar.zst). When set, Ansible copies them into
+#                          each node's /var/lib/rancher/rke2/agent/images/ BEFORE RKE2 starts, so
+#                          nodes without registry egress don't need to pull. Leave empty to pull
+#                          normally from the registry.
 #
 # NOTE: effective values are computed into distinct *_eff names so the play vars never
 # reference themselves (Ansible 2.20 rejects self-referential vars as a recursive loop).
 #
 # Result: kubeconfig copied to the jump host at
 #   {{ playbook_dir }}/../data/k8s/{{ cluster_name }}/kubeconfig
+
+# ── Preflight: all RKE2 nodes must support the x86-64-v2 CPU microarchitecture ──
+# RKE2 v1.36 images are built against a newer glibc that requires x86-64-v2. On a
+# v1-only guest CPU (e.g. QEMU/Proxmox default `kvm64`), kube-proxy and Canal abort
+# with: "Fatal glibc error: CPU does not support x86-64-v2", leaving nodes NotReady.
+# Fail fast here with remediation instead of producing a broken cluster.
+- name: RKE2 — preflight (CPU microarchitecture)
+  hosts: rke2_servers:rke2_agents
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Read CPU flags
+      command: grep -m1 '^flags' /proc/cpuinfo
+      register: cpu_flags
+      changed_when: false
+
+    - name: Require x86-64-v2 CPU features (sse4_2 + popcnt)
+      assert:
+        that:
+          - "'sse4_2' in cpu_flags.stdout"
+          - "'popcnt' in cpu_flags.stdout"
+        fail_msg: |
+          This node's CPU does not expose x86-64-v2 features (sse4_2/popcnt).
+          RKE2 v1.36 images crash with "Fatal glibc error: CPU does not support x86-64-v2".
+          Fix the hypervisor guest CPU type, reboot the node, then re-run:
+            - Proxmox:      VM > Hardware > Processors > Type = host  (or x86-64-v2-AES)
+            - QEMU/libvirt: -cpu host   (or <cpu mode='host-passthrough'/>)
+            - VMware/ESXi:  raise EVC baseline to >= Sandy Bridge (Intel)
+        success_msg: "CPU supports x86-64-v2."
+
+
+# ── Optional: preload RKE2 images onto nodes that can't reach the registry ──────
+# Set rke2_images_local_dir to a directory ON THE JUMP HOST containing the RKE2
+# image tarball(s) for this version (e.g. rke2-images.linux-amd64.tar.zst). Ansible
+# copies them to each node's image dir BEFORE RKE2 starts, so containerd loads them
+# locally instead of pulling. No-op when the variable is empty.
+- name: RKE2 — preload images (optional; for nodes without registry egress)
+  hosts: rke2_servers:rke2_agents
+  become: true
+  gather_facts: false
+  vars:
+    rke2_images_local_dir_eff: "{{ rke2_images_local_dir | default('') }}"
+  tasks:
+    - name: Note when image preload is disabled
+      when: rke2_images_local_dir_eff | length == 0
+      debug:
+        msg: "rke2_images_local_dir not set — nodes will pull images from the registry."
+
+    - name: Preload images into the RKE2 containerd image directory
+      when: rke2_images_local_dir_eff | length > 0
+      block:
+        - name: Ensure the RKE2 agent images directory exists
+          file:
+            path: /var/lib/rancher/rke2/agent/images
+            state: directory
+            mode: "0755"
+
+        - name: Copy RKE2 image tarballs from the jump host to the node
+          copy:
+            src: "{{ item }}"
+            dest: /var/lib/rancher/rke2/agent/images/
+            mode: "0644"
+          with_fileglob:
+            - "{{ rke2_images_local_dir_eff }}/*.tar.zst"
+            - "{{ rke2_images_local_dir_eff }}/*.tar.gz"
+            - "{{ rke2_images_local_dir_eff }}/*.tar"
+
 
 - name: RKE2 — bootstrap the first server
   hosts: rke2_servers[0]
