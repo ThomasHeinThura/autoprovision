@@ -1,10 +1,14 @@
 # Service Status
 
-Last update: 2026-06-04
+Last update: 2026-06-05
 Scope: consolidated from all workspace Markdown files.
 
 ## Finished and Tested (current lab state)
 
+- MSSQL HA AG (SQL Server 2025, 3-node, Pacemaker): PASSED
+	- 3 replicas Online + quorate; `ag_cluster-clone` promotable; virtual IP 192.168.51.40 Started on primary; connectivity via the VIP confirmed.
+	- Corosync split-brain fixed (removed Ubuntu 127.0.1.1 mapping + pinned ring0_addr to LAN IP via `addr=`).
+	- AG listener: created manually in SSMS. KNOWN GAP — playbook Phase 5b ran without error but did not register the listener (`sys.availability_group_listeners` empty on EXTERNAL/Pacemaker); the Pacemaker VIP is the working endpoint regardless.
 - RKE2 Kubernetes cluster (3-node): PASSED
 	- 1 control-plane (cp) + 2 workers (wn1, wn2), all `Ready` on `v1.36.1+rke2r2`.
 	- Core system pods Running: canal, coredns (+autoscaler), metrics-server, snapshot-controller, kube-proxy on all nodes; helm-install jobs Completed.

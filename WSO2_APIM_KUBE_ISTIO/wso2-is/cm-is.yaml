@@ -26,37 +26,59 @@ data:
     [user_store]
     type = "database_unique_id"
 
+    # MSSQL on the AG (HA). <MSSQL_DB_URL> is substituted with the AG listener/VIP by k8s_wso2.yml.
+    # Identity-side tables live in WSO2_IS_IDENTITY_DB; registry + user-mgt in WSO2_IS_SHARED_DB.
+    # Requires the custom IS image (images/wso2is/Dockerfile) that bundles the MSSQL JDBC driver,
+    # and the IS 7.2.0 pack dbscripts loaded into those DBs (see mssql/is_mssql.sql header).
     [database.identity_db]
-    type = "h2"
-    url = "jdbc:h2:./repository/database/WSO2IDENTITY_DB;DB_CLOSE_ON_EXIT=FALSE;LOCK_TIMEOUT=60000"
+    type = "mssql"
+    url = "jdbc:sqlserver://<MSSQL_DB_URL>:1433;databaseName=WSO2_IS_IDENTITY_DB;encrypt=true;trustServerCertificate=true;"
     username = "wso2carbon"
     password = "wso2carbon"
-    driver = "org.h2.Driver"
+    driver = "com.microsoft.sqlserver.jdbc.SQLServerDriver"
+    validationQuery = "SELECT 1"
+
+    [database.identity_db.pool_options]
+    maxActive = "100"
+    maxWait = "60000"
+    minIdle = "5"
+    testOnBorrow = "true"
+    validationInterval = "30000"
 
     [database.shared_db]
-    type = "h2"
-    url = "jdbc:h2:./repository/database/WSO2SHARED_DB;DB_CLOSE_ON_EXIT=FALSE;LOCK_TIMEOUT=60000"
+    type = "mssql"
+    url = "jdbc:sqlserver://<MSSQL_DB_URL>:1433;databaseName=WSO2_IS_SHARED_DB;encrypt=true;trustServerCertificate=true;"
     username = "wso2carbon"
     password = "wso2carbon"
-    driver = "org.h2.Driver"
+    driver = "com.microsoft.sqlserver.jdbc.SQLServerDriver"
+    validationQuery = "SELECT 1"
+
+    [database.shared_db.pool_options]
+    maxActive = "100"
+    maxWait = "60000"
+    minIdle = "5"
+    testOnBorrow = "true"
+    validationInterval = "30000"
 
     [datasource.WSO2ConsentDS]
-    id="WSO2CONSENT_DB"
-    url = "jdbc:h2:./repository/database/WSO2IDENTITY_DB;DB_CLOSE_ON_EXIT=FALSE;LOCK_TIMEOUT=60000"
-    type = "h2"
+    id = "WSO2CONSENT_DB"
+    type = "mssql"
+    url = "jdbc:sqlserver://<MSSQL_DB_URL>:1433;databaseName=WSO2_IS_IDENTITY_DB;encrypt=true;trustServerCertificate=true;"
     username = "wso2carbon"
     password = "wso2carbon"
-    driver = "org.h2.Driver"
-    jmx_enable=false
+    driver = "com.microsoft.sqlserver.jdbc.SQLServerDriver"
+    validationQuery = "SELECT 1"
+    jmx_enable = false
 
     [datasource.AgentIdentity]
-    id ="AgentIdentity"
-    url = "jdbc:h2:./repository/database/WSO2AGENTIDENTITY_DB;DB_CLOSE_ON_EXIT=FALSE;LOCK_TIMEOUT=60000"
-    type = "h2"
+    id = "AgentIdentity"
+    type = "mssql"
+    url = "jdbc:sqlserver://<MSSQL_DB_URL>:1433;databaseName=WSO2_IS_IDENTITY_DB;encrypt=true;trustServerCertificate=true;"
     username = "wso2carbon"
     password = "wso2carbon"
-    driver = "org.h2.Driver"
-    jmx_enable=false
+    driver = "com.microsoft.sqlserver.jdbc.SQLServerDriver"
+    validationQuery = "SELECT 1"
+    jmx_enable = false
 
     [authentication.consent]
     data_source="jdbc/WSO2CONSENT_DB"
@@ -65,11 +87,12 @@ data:
     data_source = "WSO2USER_DB"
 
     [database.user]
-    type = "h2"
-    url = "jdbc:h2:./repository/database/WSO2SHARED_DB;DB_CLOSE_ON_EXIT=FALSE;LOCK_TIMEOUT=60000"
+    type = "mssql"
+    url = "jdbc:sqlserver://<MSSQL_DB_URL>:1433;databaseName=WSO2_IS_SHARED_DB;encrypt=true;trustServerCertificate=true;"
     username = "wso2carbon"
     password = "wso2carbon"
-    driver = "org.h2.Driver"
+    driver = "com.microsoft.sqlserver.jdbc.SQLServerDriver"
+    validationQuery = "SELECT 1"
 
     [keystore.tls]
     file_name =  "wso2carbon.p12"

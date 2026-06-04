@@ -51,8 +51,10 @@ spec:
           value: -Djdk.tls.ephemeralDHKeySize=2048 -Djdk.tls.rejectClientInitiatedRenegotiation=true
             -Dhttpclient.hostnameVerifier=Strict -Djdk.tls.client.protocols=TLSv1.2
             -Djava.util.prefs.systemRoot=/home/wso2carbon/.java -Djava.util.prefs.userRoot=/home/wso2carbon/.java/.userPrefs
-        image: wso2/wso2is:7.2.0
-        imagePullPolicy: Always
+        # Custom image: stock wso2/wso2is has no MSSQL JDBC driver. Built by
+        # scripts/build-apim-images.sh from images/wso2is/Dockerfile. Retag to your registry.
+        image: bimdevops/wso2-is-mssql:7.2.0
+        imagePullPolicy: IfNotPresent
         lifecycle:
           preStop:
             exec:

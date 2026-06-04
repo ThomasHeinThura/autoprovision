@@ -885,6 +885,8 @@ def _track_plan(action: str, body: dict) -> dict:
             "external_gw_host": body.get("external_gw_host") or "external-gw.example.com",
             "is_host": body.get("is_host") or "wso2is.example.com",
             "mssql_host": body.get("mssql_host") or "",
+            # Optional: docker ELK VM IP/host running Logstash on :5044 (gateway filebeat target).
+            "logstash_host": body.get("logstash_host") or "",
         }
         if action == "k8s-wso2-apim-up":
             if not wso2_vars["mssql_host"]:

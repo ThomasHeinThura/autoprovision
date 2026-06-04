@@ -7,11 +7,13 @@
 #           component (apim|is), and the hostnames + DB URL to inject:
 #   apim_host, internal_gw_host, external_gw_host, is_host, mssql_host
 #   tls_secret (default wso2-ingress-cert)
+#   logstash_host (optional — the docker ELK VM IP/host that runs Logstash on :5044; the gateway
+#     filebeat sidecars ship apim_metrics.log there. Substituted only when provided.)
 #
 # Token substitution (exact strings only — WSO2 config keys like apim.gateway are untouched):
 #   apim.example.com -> apim_host        internal-gw.example.com -> internal_gw_host
 #   external-gw.example.com -> external_gw_host   wso2is.example.com -> is_host
-#   <MSSQL_DB_URL> -> mssql_host
+#   <MSSQL_DB_URL> -> mssql_host          <LOGSTASH_URL> -> logstash_host (when set)
 
 - name: Deploy WSO2 {{ component | default('?') | upper }} (IAC)
   hosts: localhost
@@ -41,6 +43,14 @@
     - name: Substitute environment values into the rendered manifests (no manual CM edits)
       shell: >-
         find {{ render_dir }} -type f \( -name '*.yaml' -o -name '*.yml' \) -exec sed -i -e 's|apim\.example\.com|{{ apim_host }}|g' -e 's|internal-gw\.example\.com|{{ internal_gw_host }}|g' -e 's|external-gw\.example\.com|{{ external_gw_host }}|g' -e 's|wso2is\.example\.com|{{ is_host }}|g' -e 's|<MSSQL_DB_URL>|{{ mssql_host }}|g' {} +
+
+    # Only substitute the Logstash host when one is provided — otherwise leave the placeholder so a
+    # half-configured ELK target doesn't silently become hosts: [":5044"]. Filebeat is a sidecar,
+    # so a bad/missing target never blocks the gateway from starting.
+    - name: Point the gateway filebeat sidecars at Logstash (when logstash_host is set)
+      shell: >-
+        find {{ render_dir }} -type f \( -name '*.yaml' -o -name '*.yml' \) -exec sed -i -e 's|<LOGSTASH_URL>|{{ logstash_host }}|g' {} +
+      when: (logstash_host | default('')) | length > 0
 
     - name: Ensure WSO2 namespaces exist with Istio sidecar injection
       shell: |

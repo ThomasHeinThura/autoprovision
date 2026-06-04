@@ -129,6 +129,7 @@ data:
     [apim.devportal]
     url = "https://apim.example.com/devportal"
     mode = "HYBRID"
+    enable_anonymous_mode=false
 
     [apim.event_hub]
     enable = true

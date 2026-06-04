@@ -27,6 +27,14 @@ metadata:
 spec:
   host: apim-wso2am-acp-service
   trafficPolicy:
+    # Sticky sessions: apim-wso2am-acp-service fronts BOTH control-plane pods (acp-1 + acp-2),
+    # so without affinity the Publisher/DevPortal/Admin console round-robins between them and
+    # logins/CSRF break. consistentHash pins each client to one pod via an Istio-issued cookie.
+    loadBalancer:
+      consistentHash:
+        httpCookie:
+          name: SERVERID
+          ttl: 0s   # session cookie (cleared when the browser closes)
     tls:
       mode: SIMPLE
       insecureSkipVerify: true # Required for self-signed certificates

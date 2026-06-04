@@ -8,9 +8,11 @@ PUSH_IMAGES=${PUSH_IMAGES:-true}
 
 CP_IMAGE=${CP_IMAGE:-repo/wso2-apim-acp-mssql:4.7.0}
 GW_IMAGE=${GW_IMAGE:-repo/wso2-apim-gw-mssql:4.7.0}
+IS_IMAGE=${IS_IMAGE:-repo/wso2-is-mssql:7.2.0}
 
 CP_BASE_IMAGE=${CP_BASE_IMAGE:-wso2/wso2am-acp:4.7.0}
 GW_BASE_IMAGE=${GW_BASE_IMAGE:-wso2/wso2am-universal-gw:4.7.0}
+IS_BASE_IMAGE=${IS_BASE_IMAGE:-wso2/wso2is:7.2.0}
 
 PLATFORMS="linux/amd64,linux/arm64"
 
@@ -30,12 +32,22 @@ docker build \
   -t "${GW_IMAGE}" \
   "${ROOT_DIR}"
 
+echo "Building WSO2 IS image: ${IS_IMAGE}"
+docker build \
+  -f "${ROOT_DIR}/images/wso2is/Dockerfile" \
+  --platform "${PLATFORMS}" \
+  --build-arg BASE_IMAGE="${IS_BASE_IMAGE}" \
+  -t "${IS_IMAGE}" \
+  "${ROOT_DIR}"
+
 if [[ "${PUSH_IMAGES}" == "true" ]]; then
   echo "Pushing images (ensure you ran: docker login)"
   docker push "${CP_IMAGE}"
   docker push "${GW_IMAGE}"
+  docker push "${IS_IMAGE}"
 fi
 
 echo "Done. Built images:"
 echo "- ${CP_IMAGE}"
 echo "- ${GW_IMAGE}"
+echo "- ${IS_IMAGE}"

@@ -28,6 +28,18 @@
         "write",
         "manage"
       ]
+    },
+    {
+      "names": [
+        "apim_event_*"
+      ],
+      "privileges": [
+        "write",
+        "create",
+        "create_index",
+        "manage",
+        "manage_ilm"
+      ]
     }
   ]
 }
