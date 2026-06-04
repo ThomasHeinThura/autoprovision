@@ -346,11 +346,31 @@
   vars:
     hacluster_password_eff: "{{ hacluster_password | default((ag_name | default('ag1')) ~ '-HaCluster-Pa55!') }}"
   tasks:
-    - name: Install Pacemaker/Corosync packages
+    - name: Install Pacemaker/Corosync core packages
       apt:
-        name: [pacemaker, pacemaker-cli-utils, pcs, crmsh, resource-agents, fence-agents, corosync]
+        name: [pacemaker, pacemaker-cli-utils, pcs, fence-agents, corosync]
         state: present
         update_cache: yes
+
+    # The OCF resource agents (incl. ocf:heartbeat:IPaddr2 for the AG virtual IP) ship in
+    # `resource-agents-base` on Ubuntu 24.04 (the old `resource-agents` metapackage was split/renamed
+    # in 23.10+). On 22.04 it's still `resource-agents`. Install whichever exists; crmsh is optional.
+    - name: Install resource agents + optional helpers (package names vary by Ubuntu release)
+      apt: { name: "{{ item }}", state: present }
+      loop: [resource-agents-base, resource-agents, crmsh]
+      failed_when: false
+
+    - name: Verify the IPaddr2 OCF agent is present (needed for the AG virtual IP)
+      stat: { path: /usr/lib/ocf/resource.d/heartbeat/IPaddr2 }
+      register: ipaddr2_agent
+    - name: Fail if no resource-agents package provided IPaddr2
+      fail:
+        msg: >-
+          Neither resource-agents-base nor resource-agents installed the OCF agents
+          (/usr/lib/ocf/resource.d/heartbeat/IPaddr2 missing). Check apt sources/universe is enabled
+          on {{ inventory_hostname }} ({{ ansible_facts['distribution'] | default('?') }}
+          {{ ansible_facts['distribution_version'] | default('?') }}).
+      when: not ipaddr2_agent.stat.exists
 
     - name: Install the SQL Server HA resource agent
       apt: { name: mssql-server-ha, state: present }
@@ -456,9 +476,11 @@
       changed_when: false
       failed_when: false
 
+    # `pcs resource show <name>` was removed in pcs 0.11 (Ubuntu 24.04) — use `pcs resource config`,
+    # which exists on both pcs 0.10 (22.04) and 0.11. It's the idempotency guard before create.
     - name: Create the AG cluster resource (ocf:mssql:ag, promotable)
       shell: >
-        pcs resource show ag_cluster >/dev/null 2>&1 ||
+        pcs resource config ag_cluster >/dev/null 2>&1 ||
         pcs resource create ag_cluster ocf:mssql:ag ag_name={{ ag_name_eff }}
           meta failure-timeout=60s promotable notify=true
       changed_when: false
@@ -467,7 +489,7 @@
     - name: Create the virtual IP resource + constraints (when listener_ip is provided)
       when: listener_ip_eff | length > 0
       shell: |
-        pcs resource show virtualip >/dev/null 2>&1 || \
+        pcs resource config virtualip >/dev/null 2>&1 || \
           pcs resource create virtualip ocf:heartbeat:IPaddr2 ip={{ listener_ip_eff }}
         pcs constraint colocation add virtualip with promoted ag_cluster INFINITY || true
         pcs constraint order promote ag_cluster then start virtualip kind=Mandatory || true
