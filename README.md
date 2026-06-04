@@ -258,6 +258,86 @@ docker ps | grep -E 'pg-platform|traefik|dockhand|gitlab|elk-'
 curl -u elastic:changeme http://<elk-vm>:9200/_cluster/health
 ```
 
+## SQL Server — apply a real license key
+
+The playbooks install SQL Server with `MSSQL_PID=Enterprise` (the Enterprise **evaluation** edition).
+To activate a purchased license, apply the product key. On **Linux (Ubuntu 24.04)** the Windows GUI
+"Edition Upgrade" path does **not** apply — use `mssql-conf` on each node:
+
+```bash
+# 1. Stop SQL Server
+sudo systemctl stop mssql-server
+
+# 2. Set the edition / product key. In current builds `set-edition` is INTERACTIVE — it lists the
+#    editions and lets you choose a number OR paste a 25-character product key:
+sudo /opt/mssql/bin/mssql-conf set-edition
+
+#    Non-interactive alternative (set the PID, then re-run setup): the PID may be an edition name
+#    (Enterprise, Standard, Developer, Express, EnterpriseCore) or a product key:
+sudo MSSQL_PID='<edition-name-or-25-char-product-key>' /opt/mssql/bin/mssql-conf set-edition
+
+# 3. Start it back
+sudo systemctl start mssql-server
+
+# 4. Verify the edition (this repo ships mssql-tools18; -C trusts the self-signed cert)
+/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P '<pw>' -C \
+  -Q "SELECT SERVERPROPERTY('Edition'), SERVERPROPERTY('ProductVersion');"
+```
+
+> Apply the key on **every** AG node (run it on each of the 3 replicas), one at a time. SQL Server
+> restarts on each node anyway, so do it during a maintenance window; Pacemaker will keep the AG
+> primary available on the others while one node restarts.
+
+### Check edition, license, and evaluation expiry
+
+Run with `sqlcmd` (e.g. `/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P '<pw>' -C -Q "<query>"`).
+
+```sql
+-- Edition / version / license type
+SELECT
+    SERVERPROPERTY('Edition')        AS Edition,
+    SERVERPROPERTY('ProductVersion') AS ProductVersion,
+    SERVERPROPERTY('ProductLevel')   AS ProductLevel,
+    SERVERPROPERTY('LicenseType')    AS LicenseType,
+    SERVERPROPERTY('NumLicenses')    AS NumLicenses,
+    @@VERSION                        AS FullVersion;
+```
+
+> Note: `LicenseType` always returns `DISABLED` on SQL Server 2012+ — Microsoft stopped tracking it
+> in the engine. Use `Edition` to tell evaluation from licensed (e.g. `Enterprise Evaluation Edition`
+> vs `Enterprise Edition`).
+
+```sql
+-- How long it has been installed (NT AUTHORITY\SYSTEM is created at install time)
+SELECT
+    @@SERVERNAME                          AS ServerName,
+    create_date                           AS InstallDate,
+    DATEDIFF(DAY, create_date, GETDATE()) AS DaysRunning,
+    SERVERPROPERTY('Edition')             AS Edition
+FROM sys.server_principals
+WHERE name = 'NT AUTHORITY\SYSTEM';
+```
+
+```sql
+-- Evaluation expiry — ONLY meaningful if Edition is 'Enterprise Evaluation Edition' (180-day trial)
+SELECT
+    @@SERVERNAME                          AS ServerName,
+    create_date                           AS InstallDate,
+    DATEADD(DD, 180, create_date)         AS ExpiryDate,
+    DATEDIFF(DAY, GETDATE(),
+        DATEADD(DD, 180, create_date))    AS DaysLeft
+FROM sys.server_principals
+WHERE SID = 0x010100000000000512000000;   -- NT AUTHORITY\SYSTEM
+```
+
+```sql
+-- Days remaining direct from the engine (extended proc)
+DECLARE @daysleft INT;
+DECLARE @instancename SYSNAME = CONVERT(SYSNAME, SERVERPROPERTY('InstanceName'));
+EXEC @daysleft = xp_qv '2715127595', @instancename;
+SELECT @daysleft AS DaysLeft;
+```
+
 ## Troubleshooting (common)
 
 | Symptom | Fix |

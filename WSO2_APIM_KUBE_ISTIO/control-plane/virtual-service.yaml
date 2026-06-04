@@ -28,8 +28,13 @@ spec:
   host: apim-wso2am-acp-service
   trafficPolicy:
     # Sticky sessions: apim-wso2am-acp-service fronts BOTH control-plane pods (acp-1 + acp-2),
-    # so without affinity the Publisher/DevPortal/Admin console round-robins between them and
+    # so without affinity the carbon console / Publisher / DevPortal round-robins between them and
     # logins/CSRF break. consistentHash pins each client to one pod via an Istio-issued cookie.
+    #
+    # CRITICAL: the console traffic is on port 9443, which has portLevelSettings below. In Istio,
+    # a port's portLevelSettings OVERRIDES the top-level trafficPolicy for that port — so a
+    # loadBalancer set only at the top level is IGNORED on 9443. The consistentHash MUST live
+    # inside the 9443 portLevelSettings (kept at the top level too, for any non-9443 port).
     loadBalancer:
       consistentHash:
         httpCookie:
@@ -44,4 +49,9 @@ spec:
         tls:
           mode: SIMPLE
           insecureSkipVerify: true
+        loadBalancer:
+          consistentHash:
+            httpCookie:
+              name: SERVERID
+              ttl: 0s
 
