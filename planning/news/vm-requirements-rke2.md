@@ -55,8 +55,13 @@ The old document remains valid as the previous baseline.
   joining servers use one stable endpoint (`tls-san` includes it).
 - Run Istio ingress gateway and other HA add-ons with ≥2 replicas.
 - ELK is on its own VM in production (separate from GitLab).
-- The 3 MSSQL VMs form one Always On Availability Group with a listener; WSO2 APIM/IS connect
-  to the **listener** name, not an individual node.
+- The 3 MSSQL VMs form one Always On Availability Group; WSO2 APIM/IS connect to the AG primary
+  (read-scale AG has no virtual listener — see [mssql-ag-windows-ad.md](mssql-ag-windows-ad.md)
+  for the Windows/listener path).
+- **MSSQL VM OS: Ubuntu 22.04 LTS (or 20.04).** SQL Server 2022 on Linux is **not** supported on
+  Ubuntu 24.04/25.04 (missing OpenLDAP 2.5 → `sqlservr` exits 127). The MSSQL VMs must be
+  **dedicated** — do not co-locate SQL Server on the RKE2 nodes. The playbook enforces this with
+  an OS preflight.
 
 ### Production totals
 
@@ -78,6 +83,7 @@ The old document remains valid as the previous baseline.
 
 - Single control plane is acceptable for UAT.
 - UAT MSSQL is one instance (no AG). WSO2 connects directly to it.
+- **UAT MSSQL VM OS: Ubuntu 22.04 LTS (or 20.04)** — same SQL Server 2022 OS support rule as prod.
 - UAT ELK is independent from production ELK.
 
 ### UAT totals
