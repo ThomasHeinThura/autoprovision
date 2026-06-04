@@ -376,8 +376,13 @@
       apt: { name: mssql-server-ha, state: present }
       failed_when: false
 
+    # Set it on the TARGET via chpasswd (hashes locally) instead of the controller's password_hash
+    # filter — the latter needs `passlib` on the jump host (Python 3.13+ dropped the stdlib `crypt`
+    # module, so password_hash fails without passlib). chpasswd avoids that dependency entirely.
     - name: Set the hacluster user password (same on all nodes)
-      user: { name: hacluster, password: "{{ hacluster_password_eff | password_hash('sha512') }}" }
+      shell: "echo 'hacluster:{{ hacluster_password_eff }}' | chpasswd"
+      no_log: true
+      changed_when: true
 
 
 # ════════════════════════════════════════════════════════════════════════════════
