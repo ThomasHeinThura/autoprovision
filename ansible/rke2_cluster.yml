@@ -24,12 +24,6 @@
 #
 # Result: kubeconfig copied to the jump host at
 #   {{ playbook_dir }}/../data/k8s/{{ cluster_name }}/kubeconfig
-#
-# SCALING (add nodes): this playbook is idempotent — re-run it with MORE IPs in
-# rke2_servers / rke2_agents to grow the cluster (e.g. 1->5 control planes, 2->100
-# workers). Already-joined nodes skip the install (guarded by `creates`) and their
-# config/service tasks are no-ops, so only the NEW IPs actually join. The web UI's
-# "RKE2 add/scale nodes" track calls this with the full (grown) IP list every time.
 
 # ── Preflight: all RKE2 nodes must support the x86-64-v2 CPU microarchitecture ──
 # RKE2 v1.36 images are built against a newer glibc that requires x86-64-v2. On a
@@ -59,29 +53,6 @@
             - QEMU/libvirt: -cpu host   (or <cpu mode='host-passthrough'/>)
             - VMware/ESXi:  raise EVC baseline to >= Sandy Bridge (Intel)
         success_msg: "CPU supports x86-64-v2."
-
-    - name: Read total memory (kB)
-      command: awk '/^MemTotal:/{print $2}' /proc/meminfo
-      register: memtotal_kb
-      changed_when: false
-
-    - name: Require enough RAM (RKE2 server >= ~4 GB, agent >= ~2 GB)
-      vars:
-        is_server: "{{ inventory_hostname in groups['rke2_servers'] }}"
-        min_mb: "{{ 3500 if (inventory_hostname in groups['rke2_servers']) else 1700 }}"
-        node_mb: "{{ (memtotal_kb.stdout | int) // 1024 }}"
-      assert:
-        that: "node_mb | int >= min_mb | int"
-        fail_msg: |
-          {{ inventory_hostname }} has only {{ node_mb }} MB RAM. An RKE2
-          {{ 'server (control plane)' if is_server else 'agent (worker)' }} needs >= {{ min_mb }} MB
-          ({{ '4 GB+ recommended for control planes' if is_server else '2 GB+' }}).
-          With too little RAM the control-plane static pods (kube-scheduler, cloud-controller-manager)
-          are OOM-rejected (UnexpectedAdmissionError "no set of running pods found to reclaim resources",
-          exit 137) -> the canal helm-install Job can't schedule -> no CNI -> node stays NotReady.
-          Increase this VM's memory and re-run.
-        success_msg: "Memory OK ({{ node_mb }} MB)."
-
 
 # ── Optional: preload RKE2 images onto nodes that can't reach the registry ──────
 # Set rke2_images_local_dir to a directory ON THE JUMP HOST containing the RKE2
@@ -118,7 +89,6 @@
             - "{{ rke2_images_local_dir_eff }}/*.tar.zst"
             - "{{ rke2_images_local_dir_eff }}/*.tar.gz"
             - "{{ rke2_images_local_dir_eff }}/*.tar"
-
 
 - name: RKE2 — bootstrap the first server
   hosts: rke2_servers[0]
@@ -164,110 +134,33 @@
           {% endfor %}
           {% endif %}
 
-    - name: Bootstrap the RKE2 server and wait for the API
-      block:
-        - name: Install RKE2 server (idempotent via creates)
-          shell: |
-            curl -sfL https://get.rke2.io | INSTALL_RKE2_TYPE=server INSTALL_RKE2_VERSION={{ rke2_version_eff }} sh -
-          args:
-            creates: /usr/local/bin/rke2
+    - name: Install RKE2 server (idempotent via creates)
+      shell: |
+        curl -sfL https://get.rke2.io | INSTALL_RKE2_TYPE=server INSTALL_RKE2_VERSION={{ rke2_version_eff }} sh -
+      args:
+        creates: /usr/local/bin/rke2
 
-        - name: Enable and start rke2-server
-          systemd:
-            name: rke2-server
-            state: started
-            enabled: true
-            daemon_reload: true   # the install script just dropped the unit file; make systemd see it
+    - name: Enable and start rke2-server
+      systemd:
+        name: rke2-server
+        state: started
+        enabled: true
+        daemon_reload: true # the install script just dropped the unit file; make systemd see it
 
-        - name: Wait for kubeconfig to be written
-          wait_for:
-            path: /etc/rancher/rke2/rke2.yaml
-            timeout: 300
+    - name: Wait for kubeconfig to be written
+      wait_for:
+        path: /etc/rancher/rke2/rke2.yaml
+        timeout: 300
 
-        - name: Wait for the first node to register (API up)
-          shell: >
-            /var/lib/rancher/rke2/bin/kubectl
-            --kubeconfig /etc/rancher/rke2/rke2.yaml get nodes
-          register: first_node
-          retries: 30
-          delay: 10
-          until: first_node.rc == 0
-          changed_when: false
-
-        # Expose the kubeconfig on the jump host AS SOON AS the API is up — so you can watch the
-        # cluster converge (Canal/coredns/scheduler) while the Ready-wait below is still running.
-        - name: Read the kubeconfig from the first server
-          slurp:
-            src: /etc/rancher/rke2/rke2.yaml
-          register: early_kubeconfig
-        - name: Ensure the local kubeconfig directory exists (jump host)
-          file:
-            path: "{{ playbook_dir }}/../data/k8s/{{ cluster_name_eff }}"
-            state: directory
-            mode: "0755"
-          delegate_to: localhost
-          become: false
-        - name: Write the kubeconfig on the jump host now (point it at the registration address)
-          copy:
-            dest: "{{ playbook_dir }}/../data/k8s/{{ cluster_name_eff }}/kubeconfig"
-            mode: "0600"
-            content: "{{ early_kubeconfig.content | b64decode | replace('127.0.0.1', registration_address_eff) | replace('default', cluster_name_eff) }}"
-          delegate_to: localhost
-          become: false
-        - name: How to inspect the cluster RIGHT NOW (while Canal comes up)
-          debug:
-            msg:
-              - "kubeconfig: {{ playbook_dir }}/../data/k8s/{{ cluster_name_eff }}/kubeconfig"
-              - "KUBECONFIG={{ playbook_dir }}/../data/k8s/{{ cluster_name_eff }}/kubeconfig kubectl get pods -A -w"
-              - "KUBECONFIG=... kubectl get nodes -o wide   # waiting for STATUS=Ready (Canal)"
-              - "KUBECONFIG=... kubectl describe node | sed -n '/Conditions:/,/Addresses:/p'"
-
-        # Canal on a healthy first boot goes Ready in well under 5 min (faster if images are
-        # preloaded). If it isn't Ready by then, the CNI/control-plane isn't coming up — fail with
-        # diagnostics rather than hang for 10 min.
-        - name: Wait for the control-plane node to become Ready (Canal CNI up)
-          shell: >
-            /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
-            get nodes --no-headers | awk '{print $2}' | grep -qx Ready
-          register: node_ready
-          retries: 30
-          delay: 10
-          until: node_ready.rc == 0
-          changed_when: false
-      rescue:
-        - name: Capture rke2-server diagnostics
-          shell: |
-            KC="/var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml"
-            echo "==== systemctl status ===="; systemctl status rke2-server --no-pager -l 2>&1 | tail -15
-            echo "==== nodes ===="; $KC get nodes -o wide 2>&1 | tail -10
-            echo "==== node NotReady reason (CNI signal) ===="; $KC describe node 2>&1 | sed -n '/Conditions:/,/Addresses:/p' | tail -25
-            echo "==== all pods (scheduler/controller-manager/canal/coredns should be here) ===="; $KC get pods -A 2>&1 | tail -40
-            echo "==== server manifests (helm-install jobs for canal/coredns) ===="; ls -l /var/lib/rancher/rke2/server/manifests/ 2>&1
-            echo "==== IMAGE PULL FAILURES (most common Ready blocker) ===="; journalctl -u rke2-server --no-pager 2>&1 | grep -iE "failed to pull|not found|toomanyrequests|429|failed to process image event" | tail -20
-            echo "==== journalctl -u rke2-server (errors) ===="; journalctl -u rke2-server --no-pager 2>&1 | grep -iE "fatal|level=error|fail|canal|cni|scheduler|controller-manager" | tail -40
-            echo "==== OS / kernel ===="; uname -r; . /etc/os-release; echo "$PRETTY_NAME"
-          register: rke2_diag
-          changed_when: false
-        - name: Fail with the real reason + remediation
-          fail:
-            msg: |
-              rke2-server on {{ inventory_hostname }} did not become Ready (Canal CNI not up).
-              Check the diagnostics below. Most common causes, in order:
-                1. IMAGE PULL FAILURE (see "IMAGE PULL FAILURES" above). If you see "not found" /
-                   "toomanyrequests" pulling rke2-cloud-provider / hardened-kubernetes / canal from
-                   docker.io, the node can't fetch RKE2's images (Docker Hub rate-limit/connectivity).
-                   cloud-controller-manager then can't run -> the node keeps its 'uninitialized' taint
-                   -> the canal helm-install Job stays Pending -> no CNI -> NotReady.
-                   FIX: preload images — download rke2-images.linux-amd64.tar.zst from the RKE2 release
-                   into your jump-host images dir and set "Images dir on jump host", then re-run. (Or
-                   configure a registry mirror in /etc/rancher/rke2/registries.yaml.)
-                2. Node not clean (leftover RKE2/etcd from a prior install — Install skipped via creates):
-                     sudo rke2-killall.sh ; sudo rke2-uninstall.sh ; sudo rm -rf /etc/rancher/rke2 /var/lib/rancher/rke2
-                3. Unsupported OS/kernel (only if NOT on Ubuntu 22.04/24.04): RKE2 v1.36 targets up to
-                   ~Ubuntu 24.04. Ubuntu 24.04 + kernel 6.8 is supported and is NOT the cause here.
-              Diagnostics:
-              {{ rke2_diag.stdout }}
-
+    - name: Wait for the first node to register
+      shell: >
+        /var/lib/rancher/rke2/bin/kubectl
+        --kubeconfig /etc/rancher/rke2/rke2.yaml get nodes
+      register: first_node
+      retries: 30
+      delay: 10
+      until: first_node.rc == 0
+      changed_when: false
 
 - name: RKE2 — join the remaining servers
   hosts: rke2_servers[1:]
@@ -305,8 +198,7 @@
         name: rke2-server
         state: started
         enabled: true
-        daemon_reload: true   # the install script just dropped the unit file; make systemd see it
-
+        daemon_reload: true # the install script just dropped the unit file; make systemd see it
 
 - name: RKE2 — join the agents (workers)
   hosts: rke2_agents
@@ -342,8 +234,7 @@
         name: rke2-agent
         state: started
         enabled: true
-        daemon_reload: true   # the install script just dropped the unit file; make systemd see it
-
+        daemon_reload: true # the install script just dropped the unit file; make systemd see it
 
 - name: RKE2 — fetch kubeconfig to the jump host
   hosts: rke2_servers[0]
