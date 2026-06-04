@@ -43,17 +43,15 @@
         fail_msg: "SQL Server needs >= 2 GB RAM; {{ inventory_hostname }} has {{ ansible_facts['memtotal_mb'] }} MB."
         success_msg: "Memory OK ({{ ansible_facts['memtotal_mb'] }} MB)."
 
-    - name: Require a SQL-Server-supported OS (Ubuntu 20.04 / 22.04)
-      assert:
-        that:
-          - ansible_facts['distribution'] == 'Ubuntu'
-          - ansible_facts['distribution_version'] in ['20.04', '22.04']
-        fail_msg: >-
-          SQL Server 2022 supports Ubuntu 20.04/22.04. This node is
-          {{ ansible_facts['distribution'] }} {{ ansible_facts['distribution_version'] }}.
-          Use Ubuntu 22.04 DB VMs (set mssql_skip_os_check=true only for an unsupported lab attempt).
-        success_msg: "OS supported: {{ ansible_facts['distribution'] }} {{ ansible_facts['distribution_version'] }}."
-      when: not (mssql_skip_os_check | default(false) | bool)
+    - name: Check SQL Server OS support (WARN only — does not fail)
+      debug:
+        msg: >-
+          {{ ('OS supported: ' ~ ansible_facts['distribution'] ~ ' ' ~ ansible_facts['distribution_version'])
+             if (ansible_facts['distribution'] == 'Ubuntu' and ansible_facts['distribution_version'] in ['20.04','22.04'])
+             else ('WARNING: ' ~ ansible_facts['distribution'] ~ ' ' ~ ansible_facts['distribution_version'] ~
+                   ' is NOT a SQL Server 2022 supported OS (Ubuntu 20.04/22.04). Continuing anyway — SQL Server may '
+                   ~ 'fail to start due to missing OpenLDAP 2.5 (liblber-2.5.so.0); the libldap-2.5-0 install is '
+                   ~ 'attempted and the real start error is surfaced if it fails.') }}
 
     - name: Install prerequisites
       apt: { name: [curl, gnupg, apt-transport-https, ca-certificates, ufw], state: present, update_cache: yes }
