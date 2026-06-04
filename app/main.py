@@ -423,10 +423,10 @@ ALL_TRACKS = [
     # GitLab environment
     "gl_docker", "gl_gitlab",
     # UAT environment (ordered install steps)
-    "uat_docker", "uat_elk", "uat_rke2", "uat_istio", "uat_argocd",
+    "uat_docker", "uat_elk", "uat_rke2", "uat_rke2_scale", "uat_istio", "uat_argocd",
     "uat_headlamp", "uat_db", "uat_wso2_apim", "uat_wso2_is",
     # Prod environment (ordered install steps)
-    "prod_docker", "prod_elk", "prod_rke2", "prod_istio", "prod_argocd",
+    "prod_docker", "prod_elk", "prod_rke2", "prod_rke2_scale", "prod_istio", "prod_argocd",
     "prod_headlamp", "prod_db", "prod_wso2_apim", "prod_wso2_is",
     # Certificates (manual cert ops)
     "traefik_cert", "k8s_cert",
@@ -624,7 +624,7 @@ def _write_job_inventory(job_id: str, groups: dict[str, list[str]], ssh_user: st
 
 def _track_plan(action: str, body: dict) -> dict:
     """Return {inventory: {group: [ips]}, steps: [{playbook, extra_vars, label}]} for a track."""
-    if action == "rke2-cluster-up":
+    if action in ("rke2-cluster-up", "rke2-scale-up"):
         cp = _parse_ip_list(body.get("control_plane_ips"))
         workers = _parse_ip_list(body.get("worker_ips"))
         if not cp:
@@ -638,21 +638,32 @@ def _track_plan(action: str, body: dict) -> dict:
             extra["registration_address"] = body.get("registration_address")
         if body.get("rke2_images_local_dir"):
             extra["rke2_images_local_dir"] = body.get("rke2_images_local_dir")
+        # Scale = same idempotent playbook (already-joined nodes skip install via `creates`;
+        # only new IPs join). `always` so install-status never skips a scale re-run.
+        scaling = action == "rke2-scale-up"
         return {
             "inventory": {"rke2_servers": cp, "rke2_agents": workers},
-            "steps": [{"playbook": "ansible/rke2_cluster.yml", "extra_vars": extra, "label": "RKE2 cluster"}],
+            "steps": [{
+                "playbook": "ansible/rke2_cluster.yml",
+                "extra_vars": extra,
+                "label": "RKE2 add/scale nodes" if scaling else "RKE2 cluster",
+                "always": scaling,
+            }],
         }
 
     if action == "mssql-single-up":
         ip = (body.get("mssql_ip") or "").strip()
         if not ip:
             raise ValueError("mssql_ip is required")
+        # engine=docker (default) runs SQL Server in a container — works on ANY host OS
+        # (incl. Ubuntu 24.04/25.04/26.04); engine=native installs the apt package (Ubuntu 22.04 only).
+        docker = (body.get("mssql_engine") or "docker").strip().lower() != "native"
         return {
             "inventory": {"mssql": [ip]},
             "steps": [{
-                "playbook": "ansible/mssql_single.yml",
+                "playbook": "ansible/mssql_docker.yml" if docker else "ansible/mssql_single.yml",
                 "extra_vars": {"sa_password": body.get("sa_password", ""), "mssql_pid": body.get("mssql_pid") or "Developer"},
-                "label": "MSSQL single instance",
+                "label": ("MSSQL single instance (Docker)" if docker else "MSSQL single instance (native)"),
             }],
         }
 
@@ -660,16 +671,17 @@ def _track_plan(action: str, body: dict) -> dict:
         ips = _parse_ip_list(body.get("mssql_ips"))
         if len(ips) < 2:
             raise ValueError("at least two MSSQL AG node IPs are required (first is primary)")
+        docker = (body.get("mssql_engine") or "docker").strip().lower() != "native"
         return {
             "inventory": {"mssql_ag": ips},
             "steps": [{
-                "playbook": "ansible/mssql_ag.yml",
+                "playbook": "ansible/mssql_docker.yml" if docker else "ansible/mssql_ag.yml",
                 "extra_vars": {
                     "sa_password": body.get("sa_password", ""),
                     "ag_name": body.get("ag_name") or "ag1",
                     "mssql_pid": body.get("mssql_pid") or "Developer",
                 },
-                "label": "MSSQL Always On AG",
+                "label": ("MSSQL Always On AG (Docker)" if docker else "MSSQL Always On AG (native)"),
             }],
         }
 
@@ -899,7 +911,8 @@ async def _run_track_job(job_id: str, action: str, body: dict):
         rc = 0
         for step in plan["steps"]:
             label = step["label"]
-            if not force and done.get(label) == "completed":
+            # `always` steps (e.g. scale/add-nodes) re-run every time so new IPs get joined.
+            if not force and not step.get("always") and done.get(label) == "completed":
                 _log_append(log_path, f"\n✓ SKIP — '{label}' already installed (use Force to re-run).\n")
                 JOBS[job_id]["step"] = f"skipped: {label}"
                 continue

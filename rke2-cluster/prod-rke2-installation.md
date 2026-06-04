@@ -129,6 +129,28 @@ kubectl get nodes -o wide      # 3 servers + 5 agents, all Ready
 
 `ansible/rke2_cluster.yml` does 1a–1d for you and writes the kubeconfig to `$WORK_DIR/kubeconfig`.
 
+### Scaling — add control-plane / worker nodes later (1→5 CP, 2→100 workers)
+
+The playbook is **idempotent**, so adding nodes is just re-running it with a longer IP list:
+
+- In the web UI use the **"RKE2 add/scale nodes"** track for the env, put **all** node IPs (existing
+  + new) in the Control Plane / Worker fields, and Run. Already-joined nodes are skipped (the
+  install is guarded by `creates` and config/service tasks are no-ops); only the **new IPs** join.
+- Manual equivalent: add the new node to `rke2_agents` (worker) or `rke2_servers` (control plane)
+  and re-run, or just install RKE2 on the new node with the same join config:
+  ```bash
+  # new worker
+  cat > /etc/rancher/rke2/config.yaml <<EOF
+  server: https://${REGISTRATION_ADDRESS}:9345
+  token: ${RKE2_TOKEN}
+  EOF
+  curl -sfL https://get.rke2.io | INSTALL_RKE2_TYPE=agent INSTALL_RKE2_VERSION=${RKE2_VERSION} sh -
+  systemctl enable --now rke2-agent
+  ```
+- **Use the registration address / VIP** so new control-plane and worker nodes join one stable
+  endpoint. New control-plane nodes join the etcd quorum (keep the CP count **odd**: 1 → 3 → 5).
+- Verify: `kubectl get nodes -o wide` shows the new nodes `Ready` (Canal handles their networking).
+
 ---
 
 ## Phase 2 — In-cluster add-ons (runbook)

@@ -24,6 +24,12 @@
 #
 # Result: kubeconfig copied to the jump host at
 #   {{ playbook_dir }}/../data/k8s/{{ cluster_name }}/kubeconfig
+#
+# SCALING (add nodes): this playbook is idempotent — re-run it with MORE IPs in
+# rke2_servers / rke2_agents to grow the cluster (e.g. 1->5 control planes, 2->100
+# workers). Already-joined nodes skip the install (guarded by `creates`) and their
+# config/service tasks are no-ops, so only the NEW IPs actually join. The web UI's
+# "RKE2 add/scale nodes" track calls this with the full (grown) IP list every time.
 
 # ── Preflight: all RKE2 nodes must support the x86-64-v2 CPU microarchitecture ──
 # RKE2 v1.36 images are built against a newer glibc that requires x86-64-v2. On a
