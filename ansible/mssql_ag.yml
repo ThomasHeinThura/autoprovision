@@ -36,6 +36,15 @@
         msg: "sa_password is required (strong password)."
       when: sa_password_eff | length == 0
 
+    - name: Require at least ~2 GB RAM (SQL Server on Linux will not start with less)
+      assert:
+        that: ansible_memtotal_mb | int >= 1900
+        fail_msg: >-
+          SQL Server on Linux needs >= 2 GB RAM; {{ inventory_hostname }} has
+          {{ ansible_memtotal_mb }} MB. Give the VM at least 2 GB (4 GB+ recommended) and re-run.
+          NOTE: do not co-locate SQL Server with RKE2 on the same VM — use dedicated DB VMs.
+        success_msg: "Memory OK ({{ ansible_memtotal_mb }} MB)."
+
     - name: Ensure prerequisites are present
       apt:
         name: [curl, gnupg, apt-transport-https, ca-certificates]
@@ -93,6 +102,26 @@
         name: mssql-server
         state: restarted
         enabled: true
+        daemon_reload: true
+      register: mssql_restart
+      failed_when: false
+
+    - name: Capture diagnostics if SQL Server failed to start
+      when: mssql_restart.status.ActiveState | default('') != 'active'
+      shell: |
+        echo "==== free -m ===="; free -m
+        echo "==== systemctl status ===="; systemctl status mssql-server --no-pager -l 2>&1 | tail -25
+        echo "==== journal (last 60) ===="; journalctl -xeu mssql-server.service --no-pager 2>&1 | tail -60
+      register: mssql_diag
+      changed_when: false
+
+    - name: Fail with the real SQL Server start error
+      when: mssql_restart.status.ActiveState | default('') != 'active'
+      fail:
+        msg: |
+          SQL Server failed to start on {{ inventory_hostname }}. Most common cause: too little RAM
+          (needs >= 2 GB). Diagnostics:
+          {{ mssql_diag.stdout }}
 
     - name: Wait for SQL Server to accept connections on 1433
       wait_for:
