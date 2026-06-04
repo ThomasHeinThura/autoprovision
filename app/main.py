@@ -425,6 +425,7 @@ ALL_TRACKS = [
     "elk_uat", "elk_prod",
     "rke2_uat", "rke2_prod",
     "mssql_uat", "mssql_prod",
+    "traefik_cert", "k8s_cert",
 ]
 
 
@@ -472,12 +473,15 @@ def _read_targets() -> dict:
     return out
 
 
+_SECRET_KEYS = ("ssh_pass", "sa_password", "rke2_token", "gitlab_runner_token", "cert_pem", "key_pem")
+
+
 def _save_target(track: str, data: dict) -> None:
     if track not in ALL_TRACKS:
         return
     _ensure_targets_db()
     # Never persist secrets to disk.
-    safe = {k: v for k, v in (data or {}).items() if k not in ("ssh_pass", "sa_password", "rke2_token", "gitlab_runner_token")}
+    safe = {k: v for k, v in (data or {}).items() if k not in _SECRET_KEYS}
     conn = sqlite3.connect(STATE_DB)
     try:
         conn.execute(
@@ -490,6 +494,106 @@ def _save_target(track: str, data: dict) -> None:
         conn.commit()
     finally:
         conn.close()
+
+
+# ─── install status (per step) ──────────────────────────────────────────────────
+# Records whether each step of each track has been installed, so a re-run can SKIP
+# already-completed steps and only run the failed/not-yet-installed ones.
+
+def _ensure_status_db() -> None:
+    os.makedirs(os.path.dirname(STATE_DB), exist_ok=True)
+    conn = sqlite3.connect(STATE_DB)
+    try:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS install_status (
+                track TEXT NOT NULL,
+                step TEXT NOT NULL,
+                status TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (track, step)
+            )
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _set_step_status(track: str, step: str, status: str) -> None:
+    _ensure_status_db()
+    conn = sqlite3.connect(STATE_DB)
+    try:
+        conn.execute(
+            """
+            INSERT INTO install_status (track, step, status, updated_at) VALUES (?, ?, ?, ?)
+            ON CONFLICT(track, step) DO UPDATE SET status = excluded.status, updated_at = excluded.updated_at
+            """,
+            (track, step, status, _utc_now()),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _get_steps_done(track: str) -> dict:
+    """Return {step_label: status} for a track."""
+    _ensure_status_db()
+    conn = sqlite3.connect(STATE_DB)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            "SELECT step, status FROM install_status WHERE track = ?", (track,)
+        ).fetchall()
+    finally:
+        conn.close()
+    return {r["step"]: r["status"] for r in rows}
+
+
+def _aggregate_status(steps: dict) -> str:
+    """Roll per-step statuses up to a single track status for the UI badge."""
+    if not steps:
+        return "idle"
+    vals = list(steps.values())
+    if any(v == "failed" for v in vals):
+        return "failed"
+    if all(v == "completed" for v in vals):
+        return "completed"
+    return "partial"
+
+
+def _status_map() -> dict:
+    """Per-track {status, steps} for every track that has recorded steps."""
+    _ensure_status_db()
+    conn = sqlite3.connect(STATE_DB)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute("SELECT track, step, status FROM install_status").fetchall()
+    finally:
+        conn.close()
+    by_track: dict = {}
+    for r in rows:
+        by_track.setdefault(r["track"], {})[r["step"]] = r["status"]
+    return {t: {"status": _aggregate_status(steps), "steps": steps} for t, steps in by_track.items()}
+
+
+# ─── certificate staging (PEM → files on the jump host, never persisted to DB) ──
+CERTS_DIR = os.path.join(BASE_DIR, "data", "certs")
+
+
+def _stage_cert(track: str, cert_pem: str, key_pem: str) -> tuple[str, str]:
+    if not (cert_pem or "").strip() or not (key_pem or "").strip():
+        raise ValueError("both certificate (PEM) and private key (PEM) are required")
+    d = os.path.join(CERTS_DIR, track)
+    os.makedirs(d, exist_ok=True)
+    crt = os.path.join(d, "tls.crt")
+    key = os.path.join(d, "tls.key")
+    with open(crt, "w", encoding="utf-8") as f:
+        f.write(cert_pem.strip() + "\n")
+    with open(key, "w", encoding="utf-8") as f:
+        f.write(key_pem.strip() + "\n")
+    os.chmod(key, 0o600)
+    return crt, key
 
 
 def _write_job_inventory(job_id: str, groups: dict[str, list[str]], ssh_user: str, ssh_pass: str) -> str:
@@ -632,6 +736,45 @@ def _track_plan(action: str, body: dict) -> dict:
             ],
         }
 
+    if action == "traefik-cert-apply":
+        ips = _parse_ip_list(body.get("docker_ips"))
+        if not ips:
+            raise ValueError("at least one Traefik VM IP is required")
+        crt = os.path.join(CERTS_DIR, "traefik_cert", "tls.crt")
+        key = os.path.join(CERTS_DIR, "traefik_cert", "tls.key")
+        return {
+            "inventory": {"docker_vm": ips},
+            "needs_cert": True,
+            "steps": [{
+                "playbook": "ansible/traefik_cert.yml",
+                "extra_vars": {"cert_src": crt, "key_src": key},
+                "label": "Apply/Update Traefik default certificate",
+            }],
+        }
+
+    if action == "k8s-cert-secret":
+        cluster = (body.get("cluster_name") or "uat-cluster").strip()
+        namespace = (body.get("namespace") or "istio-system").strip()
+        secret = (body.get("secret_name") or "wso2-ingress-cert").strip()
+        kubeconfig = os.path.join(BASE_DIR, "data", "k8s", cluster, "kubeconfig")
+        crt = os.path.join(CERTS_DIR, "k8s_cert", "tls.crt")
+        key = os.path.join(CERTS_DIR, "k8s_cert", "tls.key")
+        return {
+            "inventory": {},  # runs on localhost (kubectl against the cluster kubeconfig)
+            "needs_cert": True,
+            "steps": [{
+                "playbook": "ansible/k8s_cert.yml",
+                "extra_vars": {
+                    "kubeconfig_path": kubeconfig,
+                    "namespace": namespace,
+                    "secret_name": secret,
+                    "cert_src": crt,
+                    "key_src": key,
+                },
+                "label": f"TLS secret {secret} in {namespace} ({cluster})",
+            }],
+        }
+
     raise ValueError(f"unsupported track action: {action}")
 
 
@@ -661,12 +804,22 @@ def _track_log_name(track: str, job_id: str) -> str:
     return f"track-{safe}.log"
 
 
+def _log_append(log_path: str, text: str) -> None:
+    with open(log_path, "a", encoding="utf-8") as lf:
+        lf.write(text)
+
+
 async def _run_track_job(job_id: str, action: str, body: dict):
     track = JOBS[job_id].get("track") or (body.get("track") or "")
+    force = bool(body.get("force"))
     log_name = _track_log_name(track, job_id)
     JOBS[job_id]["log_name"] = log_name
     log_path = os.path.join(BASE_DIR, "data", "logs", log_name)
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
+    # Truncate the per-track log and write a run header; every step appends from here.
+    with open(log_path, "w", encoding="utf-8") as lf:
+        lf.write(f"===== run {action}{'  [FORCE: re-run all steps]' if force else ''} =====\n"
+                 f"Already-completed steps are skipped unless Force is set.\n")
     try:
         plan = _track_plan(action, body)
         JOBS[job_id]["status"] = "running"
@@ -675,13 +828,25 @@ async def _run_track_job(job_id: str, action: str, body: dict):
         inv_path = _write_job_inventory(job_id, plan["inventory"], ssh_user, ssh_pass)
         JOBS[job_id]["inventory"] = inv_path
 
+        # Stage certificate PEMs to jump-host files for cert actions (never saved to DB).
+        if plan.get("needs_cert"):
+            _stage_cert(track, body.get("cert_pem", ""), body.get("key_pem", ""))
+
+        done = _get_steps_done(track)  # {label: status} from previous runs
         rc = 0
-        for idx, step in enumerate(plan["steps"]):
-            JOBS[job_id]["step"] = step["label"]
+        for step in plan["steps"]:
+            label = step["label"]
+            if not force and done.get(label) == "completed":
+                _log_append(log_path, f"\n✓ SKIP — '{label}' already installed (use Force to re-run).\n")
+                JOBS[job_id]["step"] = f"skipped: {label}"
+                continue
+            JOBS[job_id]["step"] = label
+            _log_append(log_path, f"\n▶ RUN — '{label}'\n")
             rc = await _run_playbook_step(
                 step["playbook"], inv_path, log_path,
-                extra_vars=step.get("extra_vars"), append=(idx > 0),
+                extra_vars=step.get("extra_vars"), append=True,
             )
+            _set_step_status(track, label, "completed" if rc == 0 else "failed")
             if rc != 0:
                 break
 
@@ -690,6 +855,7 @@ async def _run_track_job(job_id: str, action: str, body: dict):
     except Exception as e:
         JOBS[job_id]["status"] = "failed"
         JOBS[job_id]["error"] = str(e)
+        _log_append(log_path, f"\nError: {e}\n")
 
 
 def _ensure_traefik_certs_dir() -> None:
@@ -977,6 +1143,13 @@ async def track_log(track: str):
     if track not in ALL_TRACKS:
         return JSONResponse({"error": "unknown track"}, status_code=400)
     return JSONResponse({"track": track, "log": _read_log_tail(f"track-{track}.log", 200000)})
+
+
+@app.get("/tracks/status")
+async def tracks_status():
+    """Persisted per-track install status (and per-step) so the dashboard reflects what is
+    already installed across restarts. Re-running a track skips completed steps unless Force."""
+    return JSONResponse(_status_map())
 
 
 @app.get("/", response_class=HTMLResponse)

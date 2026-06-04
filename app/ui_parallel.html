@@ -44,6 +44,7 @@
       .dot { width:9px; height:9px; border-radius:50%; background:#475569; flex:0 0 auto; }
       .dot.queued, .dot.running { background:#f59e0b; box-shadow:0 0 0 3px rgba(245,158,11,.25); }
       .dot.completed { background:#22c55e; }
+      .dot.partial { background:#f59e0b; }
       .dot.failed { background:#ef4444; }
 
       /* ── main panel ── */
@@ -54,6 +55,7 @@
         background:#e2e8f0; color:#475569; }
       .badge.queued,.badge.running { background:#fef3c7; color:#92400e; }
       .badge.completed { background:#dcfce7; color:#166534; }
+      .badge.partial { background:#fef3c7; color:#92400e; }
       .badge.failed { background:#fee2e2; color:#991b1b; }
       .step { color:var(--muted); font-size:.8rem; margin-left:auto; }
       .desc { color:var(--muted); font-size:.82rem; margin:4px 0 0; }
@@ -65,7 +67,12 @@
         padding:8px 9px; font-size:.84rem; font-family:inherit; }
       .inputs textarea { min-height:54px; resize:vertical; font-family:ui-monospace,Menlo,Consolas,monospace; font-size:.8rem; }
       .inputs input:focus,.inputs textarea:focus { border-color:#14b8a6; box-shadow:0 0 0 3px rgba(20,184,166,.2); outline:none; }
-      .run-row { display:flex; gap:8px; margin-bottom:10px; }
+      .run-row { display:flex; gap:8px; align-items:center; margin-bottom:10px; }
+      .run-row .force { font-size:.78rem; color:var(--muted); display:flex; align-items:center; gap:5px; margin-left:6px; }
+      .steps { display:flex; flex-wrap:wrap; gap:6px; margin:6px 0 0; }
+      .stepchip { font-size:.7rem; padding:2px 8px; border-radius:999px; background:#e2e8f0; color:#475569; }
+      .stepchip.completed { background:#dcfce7; color:#166534; }
+      .stepchip.failed { background:#fee2e2; color:#991b1b; }
 
       .logwrap { flex:1; display:flex; flex-direction:column; min-height:0; }
       .logbar { display:flex; align-items:center; justify-content:space-between; margin-bottom:6px; }
@@ -108,10 +115,12 @@
           <span class="step" id="p-step"></span>
         </div>
         <p class="desc" id="p-desc"></p>
+        <div class="steps" id="p-steps"></div>
         <div class="inputs" id="p-inputs"></div>
         <div class="run-row">
           <button class="btn" id="p-run" onclick="runActive()">Run</button>
           <button class="btn ghost" onclick="previewActive()">Preview</button>
+          <label class="force"><input type="checkbox" id="p-force" /> Force re-run all steps</label>
         </div>
         <div class="logwrap">
           <div class="logbar"><span class="t">Logs</span><span class="meta" id="p-logmeta">previous run shown until you Run</span></div>
@@ -174,6 +183,19 @@
             fields:[ {k:"mssql_ips", l:"AG Node IPs (first = primary)", t:"textarea", ph:"31\n32\n33"}, {k:"ag_name", l:"AG Name", v:"ag1"},
               {k:"sa_password", l:"SA Password (not saved)", t:"password"} ] },
         ]},
+        { label: "Certificates", tabs: [
+          { track:"traefik_cert", action:"traefik-cert-apply", title:"Certificate — Traefik",
+            desc:"Push a TLS cert+key to the Traefik VMs and use it as the well-known default certificate for ALL routers. Re-run to update/rotate. Traefik must already be installed on each VM.",
+            fields:[ {k:"docker_ips", l:"Traefik VM IPs (apply to all)", t:"textarea", ph:"GitLab VM IP\nUAT ELK VM IP\nProd ELK VM IP"},
+              {k:"cert_pem", l:"Certificate PEM (not saved)", t:"textarea", ph:"-----BEGIN CERTIFICATE-----"},
+              {k:"key_pem", l:"Private Key PEM (not saved)", t:"textarea", ph:"-----BEGIN PRIVATE KEY-----"} ] },
+          { track:"k8s_cert", action:"k8s-cert-secret", title:"Certificate — Kubernetes",
+            desc:"Create/update a TLS secret in a specific RKE2 cluster (e.g. wso2-ingress-cert in istio-system for Istio/WSO2). Uses the cluster kubeconfig pulled by the RKE2 workload. Re-run to rotate.",
+            fields:[ {k:"cluster_name", l:"Cluster (kubeconfig name)", v:"uat-cluster"}, {k:"namespace", l:"Namespace", v:"istio-system"},
+              {k:"secret_name", l:"Secret Name", v:"wso2-ingress-cert"},
+              {k:"cert_pem", l:"Certificate PEM (not saved)", t:"textarea", ph:"-----BEGIN CERTIFICATE-----"},
+              {k:"key_pem", l:"Private Key PEM (not saved)", t:"textarea", ph:"-----BEGIN PRIVATE KEY-----"} ] },
+        ]},
       ];
       const TABS = {}; GROUPS.forEach(g => g.tabs.forEach(t => TABS[t.track] = t));
       const PRIMARY = { docker_ip:1, mssql_ip:1, mssql_ips:1, control_plane_ips:1 }; // any present => "configured"
@@ -223,8 +245,34 @@
       // ── main panel ────────────────────────────────────────────────────────────
       function selectTab(track) {
         active = track; renderSide(); renderPanel();
+        const f = $("p-force"); if (f) f.checked = false;
         const st = state[track];
-        if (!st.log && !st.loadedPrev && st.status === "idle") loadPrevLog(track);
+        if (!st.log && !st.loadedPrev) loadPrevLog(track);
+      }
+
+      async function loadStatus() {
+        try {
+          const r = await fetch("/tracks/status"); if (!r.ok) return;
+          const data = await r.json();
+          Object.entries(data).forEach(([track, info]) => {
+            if (!state[track]) return;
+            if (["queued","running"].includes(state[track].status)) return; // don't clobber a live run
+            state[track].status = info.status || state[track].status;
+            state[track].steps = info.steps || {};
+          });
+          updateBadges();
+          if (active && state[active]) renderSteps(), setBadge(state[active].status);
+        } catch (_) {}
+      }
+
+      function renderSteps() {
+        const box = $("p-steps"); box.innerHTML = "";
+        const steps = state[active].steps || {};
+        Object.entries(steps).forEach(([label, s]) => {
+          const c = document.createElement("span"); c.className = "stepchip " + s;
+          c.textContent = (s === "completed" ? "✓ " : s === "failed" ? "✗ " : "") + label;
+          box.appendChild(c);
+        });
       }
 
       function renderPanel() {
@@ -232,6 +280,7 @@
         $("p-title").textContent = t.title;
         $("p-desc").textContent = t.desc;
         setBadge(st.status); $("p-step").textContent = st.step ? "Step: " + st.step : "";
+        renderSteps();
         $("p-run").disabled = (st.status === "queued" || st.status === "running");
         // inputs
         const box = $("p-inputs"); box.innerHTML = "";
@@ -250,8 +299,8 @@
       }
       function setBadge(s){ const b=$("p-badge"); b.textContent=s; b.className="badge "+s; }
 
-      function payloadFor(track) {
-        return Object.assign({ track, ssh_user:gUser(), ssh_pass:gPass() }, values[track]);
+      function payloadFor(track, force) {
+        return Object.assign({ track, ssh_user:gUser(), ssh_pass:gPass(), force: !!force }, values[track]);
       }
 
       async function loadPrevLog(track) {
@@ -275,15 +324,15 @@
         } catch (e) { state[active].log = "Error: " + e; renderPanel(); }
       }
 
-      function runActive(){ runTrack(active); }
-      async function runTrack(track) {
+      function runActive(){ runTrack(active, $("p-force").checked); }
+      async function runTrack(track, force) {
         const t = TABS[track], st = state[track];
         st.status = "queued"; st.step = ""; st.log = "Queued…";
         if (active === track) renderPanel(); updateBadges();
         saveTarget(track);
         try {
           const r = await fetch("/tracks/start", { method:"POST", headers:{"Content-Type":"application/json"},
-            body: JSON.stringify({ action:t.action, payload:payloadFor(track) }) });
+            body: JSON.stringify({ action:t.action, payload:payloadFor(track, force) }) });
           const d = await r.json();
           if (!r.ok) { st.status="failed"; st.log = d.error || JSON.stringify(d); if(active===track) renderPanel(); updateBadges(); return; }
           st.jobId = d.job_id; pollTrack(track, d.job_id);
@@ -304,6 +353,7 @@
           await new Promise(r => setTimeout(r, 1500));
         }
         if (active === track) { renderPanel(); } updateBadges();
+        loadStatus();   // refresh persisted per-step status (chips) after the run settles
       }
 
       function runAll() {
@@ -335,7 +385,7 @@
       // ── boot ──
       initValues();
       renderSide();
-      reloadSaved().then(() => { renderPanel(); loadPrevLog(active); });
+      Promise.all([reloadSaved(), loadStatus()]).then(() => { renderPanel(); loadPrevLog(active); });
     </script>
   </body>
 </html>

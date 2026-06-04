@@ -1,0 +1,62 @@
+# Create / update a Kubernetes TLS secret in a specific RKE2 cluster.
+#
+# Runs on the JUMP HOST (localhost) using the cluster kubeconfig that
+# ansible/rke2_cluster.yml fetched to data/k8s/<cluster>/kubeconfig. Used to install
+# the TLS cert that Istio / WSO2 serve (e.g. secret `wso2-ingress-cert` in istio-system).
+# Idempotent: re-running replaces the secret with the new cert (apply).
+#
+# Required variables (passed by the web UI):
+#   kubeconfig_path  path to the target cluster's kubeconfig on the jump host
+#   namespace        target namespace (e.g. istio-system)
+#   secret_name      TLS secret name (e.g. wso2-ingress-cert)
+#   cert_src         path on the jump host to the certificate PEM
+#   key_src          path on the jump host to the private key PEM
+
+- name: Create/update a Kubernetes TLS secret
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    kubectl: "kubectl --kubeconfig {{ kubeconfig_path }}"
+  tasks:
+    - name: Verify the cluster kubeconfig exists
+      stat:
+        path: "{{ kubeconfig_path }}"
+      register: kc
+
+    - name: Fail clearly if the kubeconfig is missing
+      fail:
+        msg: >-
+          kubeconfig not found at {{ kubeconfig_path }}. Install the RKE2 cluster first
+          (the RKE2 workload fetches it to data/k8s/<cluster>/kubeconfig).
+      when: not kc.stat.exists
+
+    - name: Verify the cluster is reachable
+      shell: "{{ kubectl }} version --request-timeout=15s >/dev/null 2>&1"
+      register: reachable
+      changed_when: false
+      failed_when: reachable.rc != 0
+
+    - name: Ensure the namespace exists
+      shell: >
+        {{ kubectl }} create namespace {{ namespace }} --dry-run=client -o yaml
+        | {{ kubectl }} apply -f -
+      register: ns_apply
+      changed_when: "'created' in ns_apply.stdout"
+
+    - name: Create or update the TLS secret (apply = idempotent rotate)
+      shell: >
+        {{ kubectl }} -n {{ namespace }} create secret tls {{ secret_name }}
+          --cert={{ cert_src }} --key={{ key_src }}
+          --dry-run=client -o yaml
+        | {{ kubectl }} apply -f -
+      register: secret_apply
+      changed_when: "'configured' in secret_apply.stdout or 'created' in secret_apply.stdout"
+
+    - name: Report
+      debug:
+        msg: >-
+          TLS secret '{{ secret_name }}' applied in namespace '{{ namespace }}'
+          (kubeconfig {{ kubeconfig_path }}). If Istio's ingress gateway is already running,
+          restart it to pick up the rotated cert:
+          kubectl -n istio-system rollout restart deploy/istio-ingressgateway

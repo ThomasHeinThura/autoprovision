@@ -1,0 +1,61 @@
+# Apply / update the Traefik default TLS certificate on one or more Docker VMs.
+#
+# Traefik serves this as its well-known default certificate for ALL routers
+# (referenced by docker/traefik/dynamic/tls.yml -> defaultCertificate). Updating the
+# files and restarting Traefik rotates the cert for every service behind that proxy.
+#
+# Target inventory group: docker_vm (the web UI writes a per-job inventory with the
+# Traefik VM IPs you want to apply the cert to).
+#
+# Required variables (the web UI stages the PEMs onto the jump host and passes paths):
+#   cert_src   path on the JUMP HOST to the certificate PEM
+#   key_src    path on the JUMP HOST to the private key PEM
+
+- name: Apply/update the Traefik default certificate
+  hosts: docker_vm
+  become: true
+  vars:
+    repo_root: "/home/{{ ansible_user }}/autoprovision"
+    certs_dir: "{{ repo_root }}/docker/traefik/certs"
+  tasks:
+    - name: Check that Traefik is running on this VM
+      shell: docker ps --format '{{ '{{' }}.Names{{ '}}' }}' | grep -qx traefik
+      register: traefik_present
+      changed_when: false
+      failed_when: false
+
+    - name: Fail clearly if Traefik is not installed here
+      fail:
+        msg: >-
+          Traefik is not running on {{ inventory_hostname }}.
+          Run the 'Docker + Traefik' workload for this VM first, then apply the certificate.
+      when: traefik_present.rc != 0
+
+    - name: Ensure Traefik certs directory exists
+      file:
+        path: "{{ certs_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Copy the certificate (PEM) from the jump host
+      copy:
+        src: "{{ cert_src }}"
+        dest: "{{ certs_dir }}/local-dev-tls.crt"
+        mode: "0644"
+
+    - name: Copy the private key (PEM) from the jump host
+      copy:
+        src: "{{ key_src }}"
+        dest: "{{ certs_dir }}/local-dev-tls.key"
+        mode: "0600"
+
+    - name: Restart Traefik to load the new default certificate
+      shell: docker restart traefik
+      register: tf_restart
+      changed_when: tf_restart.rc == 0
+
+    - name: Report
+      debug:
+        msg: >-
+          Traefik default certificate updated on {{ inventory_hostname }}
+          ({{ certs_dir }}/local-dev-tls.crt). It now serves this cert for all routers.
