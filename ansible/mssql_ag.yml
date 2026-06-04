@@ -423,10 +423,15 @@
       until: pcs_auth.rc == 0
       changed_when: true
 
-    # Nodes were destroyed locally above, so --force has nothing to remote-destroy. Bigger
-    # request-timeout guards against slow pcsd responses on first contact.
+    # Nodes were destroyed locally above, so --force has nothing to remote-destroy.
+    # NOTE: `pcs cluster setup` does not accept --request-timeout (only commands that
+    # talk to remote pcsd, like `pcs host auth`, do). Retry to ride out slow first contact.
     - name: Create the cluster (fresh; nodes already cleaned locally)
-      shell: "pcs cluster setup {{ cluster_name_eff }} {{ ag_node_names }} --force --request-timeout=120"
+      shell: "pcs cluster setup {{ cluster_name_eff }} {{ ag_node_names }} --force"
+      register: pcs_setup
+      retries: 3
+      delay: 10
+      until: pcs_setup.rc == 0
       changed_when: true
 
     - name: Start + enable the cluster on all nodes
