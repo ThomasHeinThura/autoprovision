@@ -172,22 +172,29 @@
           until: first_node.rc == 0
           changed_when: false
 
+        # Canal on a healthy first boot goes Ready in well under 5 min (faster if images are
+        # preloaded). If it isn't Ready by then, the CNI/control-plane isn't coming up — fail with
+        # diagnostics rather than hang for 10 min.
         - name: Wait for the control-plane node to become Ready (Canal CNI up)
           shell: >
             /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
             get nodes --no-headers | awk '{print $2}' | grep -qx Ready
           register: node_ready
-          retries: 40
-          delay: 15
+          retries: 30
+          delay: 10
           until: node_ready.rc == 0
           changed_when: false
       rescue:
         - name: Capture rke2-server diagnostics
           shell: |
+            KC="/var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml"
             echo "==== systemctl status ===="; systemctl status rke2-server --no-pager -l 2>&1 | tail -15
-            echo "==== nodes ===="; /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get nodes 2>&1 | tail -10
-            echo "==== kube-system pods ===="; /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get pods -n kube-system 2>&1 | tail -25
-            echo "==== journalctl -u rke2-server (errors) ===="; journalctl -u rke2-server --no-pager 2>&1 | grep -iE "fatal|level=error|fail|canal" | tail -40
+            echo "==== nodes ===="; $KC get nodes -o wide 2>&1 | tail -10
+            echo "==== node NotReady reason (CNI signal) ===="; $KC describe node 2>&1 | sed -n '/Conditions:/,/Addresses:/p' | tail -25
+            echo "==== all pods (scheduler/controller-manager/canal/coredns should be here) ===="; $KC get pods -A 2>&1 | tail -40
+            echo "==== server manifests (helm-install jobs for canal/coredns) ===="; ls -l /var/lib/rancher/rke2/server/manifests/ 2>&1
+            echo "==== journalctl -u rke2-server (errors) ===="; journalctl -u rke2-server --no-pager 2>&1 | grep -iE "fatal|level=error|fail|canal|cni|scheduler|controller-manager" | tail -50
+            echo "==== OS / kernel ===="; uname -r; . /etc/os-release; echo "$PRETTY_NAME"
           register: rke2_diag
           changed_when: false
         - name: Fail with the real reason + remediation
