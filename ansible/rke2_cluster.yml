@@ -171,22 +171,35 @@
           delay: 10
           until: first_node.rc == 0
           changed_when: false
+
+        - name: Wait for the control-plane node to become Ready (Canal CNI up)
+          shell: >
+            /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
+            get nodes --no-headers | awk '{print $2}' | grep -qx Ready
+          register: node_ready
+          retries: 40
+          delay: 15
+          until: node_ready.rc == 0
+          changed_when: false
       rescue:
-        - name: Capture rke2-server diagnostics (why the API didn't come up)
+        - name: Capture rke2-server diagnostics
           shell: |
-            echo "==== systemctl status ===="; systemctl status rke2-server --no-pager -l 2>&1 | tail -20
-            echo "==== journalctl -u rke2-server (last 60) ===="; journalctl -u rke2-server --no-pager 2>&1 | tail -60
+            echo "==== systemctl status ===="; systemctl status rke2-server --no-pager -l 2>&1 | tail -15
+            echo "==== nodes ===="; /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get nodes 2>&1 | tail -10
+            echo "==== kube-system pods ===="; /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get pods -n kube-system 2>&1 | tail -25
+            echo "==== journalctl -u rke2-server (errors) ===="; journalctl -u rke2-server --no-pager 2>&1 | grep -iE "fatal|level=error|fail|canal" | tail -40
           register: rke2_diag
           changed_when: false
-        - name: Fail with the real rke2-server error + remediation
+        - name: Fail with the real reason + remediation
           fail:
             msg: |
-              rke2-server on {{ inventory_hostname }} did not bring up the API (:6443).
-              Most common cause: this node is NOT clean — it has leftover RKE2/etcd state from a
-              previous install (note "Install RKE2 server" was skipped via `creates`). Clean it and re-run:
-                sudo rke2-killall.sh    ; sudo rke2-uninstall.sh
-                sudo rm -rf /etc/rancher/rke2 /var/lib/rancher/rke2
-              then re-run this track. Diagnostics:
+              rke2-server on {{ inventory_hostname }} did not reach a healthy/Ready state.
+              Check the diagnostics below. Common causes:
+                - Node not clean (leftover RKE2/etcd from a prior install — "Install" skipped via `creates`):
+                    sudo rke2-killall.sh ; sudo rke2-uninstall.sh ; sudo rm -rf /etc/rancher/rke2 /var/lib/rancher/rke2
+                - Unsupported OS/kernel: RKE2 v1.36 targets up to ~Ubuntu 24.04. On Ubuntu 26.04 / kernel 7.x
+                  Canal/control-plane may not come up. Use a supported OS (Ubuntu 22.04/24.04) for RKE2 nodes.
+              Diagnostics:
               {{ rke2_diag.stdout }}
 
 

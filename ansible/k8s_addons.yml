@@ -30,6 +30,24 @@
       shell: "{{ kubectl }} version --request-timeout=15s >/dev/null 2>&1"
       changed_when: false
 
+    - name: Get node readiness
+      shell: "{{ kubectl }} get nodes --no-headers"
+      register: nodes_out
+      changed_when: false
+
+    - name: Require all nodes Ready (CNI must be up before add-ons; fail fast, no 3-min timeout)
+      assert:
+        that:
+          - nodes_out.stdout | length > 0
+          - "'NotReady' not in nodes_out.stdout"
+        fail_msg: |
+          Cluster nodes are NotReady — Canal (CNI) is not up, so MetalLB/Istio/ArgoCD cannot schedule.
+          Fix the RKE2 cluster first (check: kubectl get pods -n kube-system; kubectl describe node).
+          On Ubuntu 26.04 / kernel 7.x, RKE2 v1.36 may not bring up Canal — use Ubuntu 22.04/24.04 nodes.
+          Current nodes:
+          {{ nodes_out.stdout }}
+        success_msg: "All nodes Ready — proceeding with {{ component }}."
+
     # ── MetalLB (LoadBalancer IPs; install before Istio so the gateway gets an IP) ──
     - name: MetalLB
       when: component == 'metallb'

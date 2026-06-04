@@ -97,12 +97,26 @@
     - name: Capture diagnostics if SQL Server failed to start
       when: mssql_restart.status.ActiveState | default('') != 'active'
       shell: |
-        echo "== journal =="; journalctl -xeu mssql-server.service --no-pager 2>&1 | tail -40
+        echo "== sqlservr direct run (the REAL crash reason) =="
+        timeout 10 /opt/mssql/bin/sqlservr 2>&1 | head -15 || true
+        echo "== ldd missing shared libraries =="
+        ldd /opt/mssql/bin/sqlservr 2>&1 | grep -i "not found" || echo "(no missing libs reported by ldd)"
+        echo "== OS / libldap present =="
+        echo "OS: $(. /etc/os-release; echo $PRETTY_NAME)"
+        ls -1 /usr/lib/x86_64-linux-gnu/liblber-2.* /usr/lib/x86_64-linux-gnu/libldap-2.* 2>/dev/null || echo "(no liblber/libldap 2.x found)"
+        echo "== journal (systemd loop, least useful) =="
+        journalctl -xeu mssql-server.service --no-pager 2>&1 | tail -20
       register: mssql_diag
       changed_when: false
     - name: Fail with the real start error
       when: mssql_restart.status.ActiveState | default('') != 'active'
-      fail: { msg: "SQL Server failed to start on {{ inventory_hostname }}:\n{{ mssql_diag.stdout }}" }
+      fail:
+        msg: |
+          SQL Server failed to start on {{ inventory_hostname }}.
+          If you see "liblber-2.5.so.0: cannot open shared object file", the OS is unsupported:
+          SQL Server 2022 requires Ubuntu 20.04/22.04 (ships OpenLDAP 2.5). Ubuntu 24.04+/26.04 ship
+          OpenLDAP 2.6 and cannot run the stock sqlservr binary. Rebuild this node on Ubuntu 22.04.
+          {{ mssql_diag.stdout }}
 
     - name: Wait for SQL Server on 1433
       wait_for: { port: 1433, host: 127.0.0.1, timeout: 120 }
