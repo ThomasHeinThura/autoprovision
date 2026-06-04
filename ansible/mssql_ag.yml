@@ -1,48 +1,46 @@
-# Install SQL Server 2022 on 3 nodes and bootstrap an Always On Availability Group (Production).
+# SQL Server 2022 Enterprise — 3-node High-Availability Availability Group on Ubuntu (IAC).
 #
-# Target inventory group: [mssql_ag]  (the web UI writes a per-job inventory file).
-#   The FIRST host in the group is treated as the AG PRIMARY.
+# Follows the official Microsoft procedure (curated in mssql/ + sql-docs/):
+#   - mssql/mssql-install.md
+#   - mssql/availability-groups-configure.md            (CREATE AG ... CLUSTER_TYPE = EXTERNAL)
+#   - sql-docs/.../includes/cluster-availability-group-create-prereq.md  (cert/endpoint/hadr)
+#   - sql-docs/.../sql-server-linux-availability-group-cluster-pacemaker.md (Ubuntu/Pacemaker)
 #
-# Required variable (pass via --extra-vars from the web UI):
-#   sa_password    strong SA password
-# Optional:
-#   ag_name        availability group name (default "ag1")
-#   cert_password  certificate backup password (default derived from ag_name)
-#   endpoint_port  Hadr endpoint port (default 5022)
-#   mssql_pid      edition (default Developer)
-#   ubuntu_release apt repo release (default "22.04")
+# This is a TRUE HA AG: 3 SYNCHRONOUS replicas, CLUSTER_TYPE = EXTERNAL, FAILOVER_MODE = EXTERNAL,
+# managed by Pacemaker/Corosync with automatic failover + a virtual IP. (Read-scale CLUSTER_TYPE=NONE
+# is NOT used here.) Target inventory group: [mssql_ag]; the FIRST host is the initial primary.
 #
-# NOTE: effective values are computed into distinct *_eff names so the play vars never
-# reference themselves (Ansible 2.20 rejects self-referential vars as a recursive loop).
+# Required: sa_password. Optional: ag_name (ag1), mssql_pid (Enterprise), endpoint_port (5022),
+#   listener_ip (virtual IP for the AG — recommended), ubuntu_release (22.04),
+#   pacemaker_password / hacluster_password / cert_password / master_key_password (derived if unset),
+#   enable_fencing (default false — LAB ONLY; production MUST configure a real fencing/STONITH device).
 #
-# IMPORTANT — read the manual verification checklist at the end of this run.
-# This playbook creates a CLUSTER_TYPE=NONE (read-scale) Availability Group, which is fully
-# automatable. A production HA AG with automatic failover + a virtual listener additionally
-# requires a Pacemaker/Corosync cluster and a load balancer/VIP — that step is intentionally
-# left manual (see the checklist) because it is environment-specific and risky to fully automate.
+# Node names: the SQL replica name must equal SERVERPROPERTY('ServerName') (= the node hostname,
+# <=15 chars, unique). Endpoint URLs use node IPs so they resolve regardless of /etc/hosts.
 
-# ─── Play 1: install SQL Server + enable Always On on all 3 nodes ───────────────
-- name: Install SQL Server 2022 and enable Always On (all AG nodes)
+# ════════════════════════════════════════════════════════════════════════════════
+# PHASE 1 — Install SQL Server 2022 + tools, enable Always On, prep host (all nodes)
+# ════════════════════════════════════════════════════════════════════════════════
+- name: SQL Server 2022 install + Always On prep (all AG nodes)
   hosts: mssql_ag
   become: true
   gather_facts: true
   vars:
-    mssql_pid_eff: "{{ mssql_pid | default('Developer') }}"
-    ubuntu_release_eff: "{{ ubuntu_release | default('22.04') }}"
     sa_password_eff: "{{ sa_password | default('') }}"
+    mssql_pid_eff: "{{ mssql_pid | default('Enterprise') }}"
+    ubuntu_release_eff: "{{ ubuntu_release | default('22.04') }}"
+    pacemaker_password_eff: "{{ pacemaker_password | default((ag_name | default('ag1')) ~ '-Pacemaker-Pa55!') }}"
+    endpoint_port_eff: "{{ endpoint_port | default(5022) }}"
+    sqlcmd: "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"{{ sa_password | default('') }}\" -C"
   tasks:
     - name: Fail early if SA password is not provided
-      fail:
-        msg: "sa_password is required (strong password)."
+      fail: { msg: "sa_password is required (strong password)." }
       when: sa_password_eff | length == 0
 
-    - name: Require at least ~2 GB RAM (SQL Server on Linux will not start with less)
+    - name: Require >= 2 GB RAM
       assert:
         that: ansible_facts['memtotal_mb'] | int >= 1900
-        fail_msg: >-
-          SQL Server on Linux needs >= 2 GB RAM; {{ inventory_hostname }} has
-          {{ ansible_facts['memtotal_mb'] }} MB. Give the VM at least 2 GB (4 GB+ recommended).
-          NOTE: do not co-locate SQL Server with RKE2 on the same VM — use dedicated DB VMs.
+        fail_msg: "SQL Server needs >= 2 GB RAM; {{ inventory_hostname }} has {{ ansible_facts['memtotal_mb'] }} MB."
         success_msg: "Memory OK ({{ ansible_facts['memtotal_mb'] }} MB)."
 
     - name: Require a SQL-Server-supported OS (Ubuntu 20.04 / 22.04)
@@ -51,256 +49,241 @@
           - ansible_facts['distribution'] == 'Ubuntu'
           - ansible_facts['distribution_version'] in ['20.04', '22.04']
         fail_msg: >-
-          SQL Server 2022 on Linux supports Ubuntu 20.04 or 22.04. This node is
+          SQL Server 2022 supports Ubuntu 20.04/22.04. This node is
           {{ ansible_facts['distribution'] }} {{ ansible_facts['distribution_version'] }}.
-          Newer Ubuntu ships OpenLDAP 2.6, so liblber-2.5.so.0 (libldap-2.5-0) is missing and
-          sqlservr exits 127 on start. Use an Ubuntu 22.04 DB VM (recommended), or set
-          mssql_skip_os_check=true to attempt the unsupported libldap-2.5 workaround.
+          Use Ubuntu 22.04 DB VMs (set mssql_skip_os_check=true only for an unsupported lab attempt).
         success_msg: "OS supported: {{ ansible_facts['distribution'] }} {{ ansible_facts['distribution_version'] }}."
       when: not (mssql_skip_os_check | default(false) | bool)
 
-    - name: Ensure prerequisites are present
-      apt:
-        name: [curl, gnupg, apt-transport-https, ca-certificates]
-        state: present
-        update_cache: yes
+    - name: Install prerequisites
+      apt: { name: [curl, gnupg, apt-transport-https, ca-certificates, ufw], state: present, update_cache: yes }
 
     - name: Add Microsoft GPG key
-      get_url:
-        url: https://packages.microsoft.com/keys/microsoft.asc
-        dest: /etc/apt/trusted.gpg.d/microsoft.asc
-        mode: "0644"
+      get_url: { url: "https://packages.microsoft.com/keys/microsoft.asc", dest: /etc/apt/trusted.gpg.d/microsoft.asc, mode: "0644" }
 
-    - name: Add SQL Server 2022 apt repository
-      get_url:
-        url: "https://packages.microsoft.com/config/ubuntu/{{ ubuntu_release_eff }}/mssql-server-2022.list"
-        dest: /etc/apt/sources.list.d/mssql-server-2022.list
-        mode: "0644"
-
-    - name: Add Microsoft prod (mssql-tools) apt repository
-      get_url:
-        url: "https://packages.microsoft.com/config/ubuntu/{{ ubuntu_release_eff }}/prod.list"
-        dest: /etc/apt/sources.list.d/mssql-prod.list
-        mode: "0644"
+    - name: Add SQL Server 2022 + tools apt repositories
+      get_url: { url: "{{ item.u }}", dest: "{{ item.d }}", mode: "0644" }
+      loop:
+        - { u: "https://packages.microsoft.com/config/ubuntu/{{ ubuntu_release_eff }}/mssql-server-2022.list", d: /etc/apt/sources.list.d/mssql-server-2022.list }
+        - { u: "https://packages.microsoft.com/config/ubuntu/{{ ubuntu_release_eff }}/prod.list", d: /etc/apt/sources.list.d/mssql-prod.list }
 
     - name: Install mssql-server
-      apt:
-        name: mssql-server
-        state: present
-        update_cache: yes
+      apt: { name: mssql-server, state: present, update_cache: yes }
 
-    - name: Ensure OpenLDAP 2.5 runtime is present (SQL Server needs liblber-2.5.so.0)
-      apt:
-        name: libldap-2.5-0
-        state: present
-      failed_when: false   # not available on unsupported newer Ubuntu; start diagnostics will flag it
+    - name: Ensure OpenLDAP 2.5 runtime (liblber-2.5.so.0)
+      apt: { name: libldap-2.5-0, state: present }
+      failed_when: false
 
-    - name: Install mssql-tools18 and unixodbc-dev (sqlcmd)
-      apt:
-        name: [mssql-tools18, unixodbc-dev]
-        state: present
-      environment:
-        ACCEPT_EULA: "Y"
+    - name: Install mssql-tools18 + unixodbc-dev (sqlcmd)
+      apt: { name: [mssql-tools18, unixodbc-dev], state: present }
+      environment: { ACCEPT_EULA: "Y" }
 
-    - name: Run mssql-conf setup (non-interactive)
-      shell: |
-        /opt/mssql/bin/mssql-conf -n setup accept-eula
+    - name: Run mssql-conf setup (non-interactive, Enterprise edition)
+      shell: /opt/mssql/bin/mssql-conf -n setup accept-eula
       environment:
         ACCEPT_EULA: "Y"
         MSSQL_SA_PASSWORD: "{{ sa_password_eff }}"
         MSSQL_PID: "{{ mssql_pid_eff }}"
-      args:
-        creates: /var/opt/mssql/.system/instance_id
+      args: { creates: /var/opt/mssql/.system/instance_id }
 
-    - name: Enable the Always On Availability Groups feature (hadr)
+    - name: Enable Always On availability groups (hadr)
       shell: /opt/mssql/bin/mssql-conf set hadr.hadrenabled 1
-      register: hadr_set
-      changed_when: "'1' in hadr_set.stdout or hadr_set.rc == 0"
+      register: hadr
+      changed_when: hadr.rc == 0
 
     - name: Restart SQL Server to apply hadr
-      systemd:
-        name: mssql-server
-        state: restarted
-        enabled: true
-        daemon_reload: true
+      systemd: { name: mssql-server, state: restarted, enabled: true, daemon_reload: true }
       register: mssql_restart
       failed_when: false
 
     - name: Capture diagnostics if SQL Server failed to start
       when: mssql_restart.status.ActiveState | default('') != 'active'
       shell: |
-        echo "==== free -m ===="; free -m
-        echo "==== systemctl status ===="; systemctl status mssql-server --no-pager -l 2>&1 | tail -25
-        echo "==== journal (last 60) ===="; journalctl -xeu mssql-server.service --no-pager 2>&1 | tail -60
+        echo "== journal =="; journalctl -xeu mssql-server.service --no-pager 2>&1 | tail -40
       register: mssql_diag
       changed_when: false
-
-    - name: Fail with the real SQL Server start error
+    - name: Fail with the real start error
       when: mssql_restart.status.ActiveState | default('') != 'active'
-      fail:
-        msg: |
-          SQL Server failed to start on {{ inventory_hostname }}. Most common cause: too little RAM
-          (needs >= 2 GB). Diagnostics:
-          {{ mssql_diag.stdout }}
+      fail: { msg: "SQL Server failed to start on {{ inventory_hostname }}:\n{{ mssql_diag.stdout }}" }
 
-    - name: Wait for SQL Server to accept connections on 1433
-      wait_for:
-        port: 1433
-        host: 127.0.0.1
-        timeout: 120
+    - name: Wait for SQL Server on 1433
+      wait_for: { port: 1433, host: 127.0.0.1, timeout: 120 }
 
     - name: Enable AlwaysOn_health extended event session
-      shell: >
-        /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "{{ sa_password_eff }}" -C
-        -Q "ALTER EVENT SESSION AlwaysOn_health ON SERVER WITH (STARTUP_STATE=ON);"
+      shell: '{{ sqlcmd }} -Q "ALTER EVENT SESSION AlwaysOn_health ON SERVER WITH (STARTUP_STATE=ON);"'
       changed_when: false
       failed_when: false
 
+    - name: Add all AG nodes to /etc/hosts (name resolution between replicas)
+      blockinfile:
+        path: /etc/hosts
+        marker: "# {mark} MSSQL AG NODES"
+        block: |
+          {% for h in groups['mssql_ag'] %}
+          {{ h }} {{ hostvars[h].ansible_facts.hostname }}
+          {% endfor %}
 
-# ─── Play 2: certificate exchange + endpoints + AG on the PRIMARY ───────────────
-- name: Configure AG certificate and endpoint on the primary
+    - name: Open firewall ports (Pacemaker, SQL, AG endpoint)
+      shell: |
+        ufw allow 2224/tcp; ufw allow 3121/tcp; ufw allow 21064/tcp; ufw allow 5405/udp
+        ufw allow 1433/tcp; ufw allow {{ endpoint_port_eff }}/tcp; ufw reload || true
+      failed_when: false
+      changed_when: false
+
+    - name: Create the Pacemaker SQL login on every instance
+      shell: >
+        {{ sqlcmd }} -Q
+        "IF SUSER_ID('pacemakerLogin') IS NULL CREATE LOGIN [pacemakerLogin] WITH PASSWORD = N'{{ pacemaker_password_eff }}';
+         IF IS_SRVROLEMEMBER('sysadmin','pacemakerLogin') = 0 ALTER SERVER ROLE [sysadmin] ADD MEMBER [pacemakerLogin];"
+      changed_when: false
+
+    - name: Save the Pacemaker login credentials for the resource agent
+      copy:
+        dest: /var/opt/mssql/secrets/passwd
+        owner: root
+        group: root
+        mode: "0400"
+        content: |
+          pacemakerLogin
+          {{ pacemaker_password_eff }}
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# PHASE 2 — Certificate on the PRIMARY (mirroring endpoint auth)
+# ════════════════════════════════════════════════════════════════════════════════
+- name: AG certificate on the primary
   hosts: mssql_ag[0]
   become: true
-  gather_facts: true
+  gather_facts: false
   vars:
     sa_password_eff: "{{ sa_password | default('') }}"
     ag_name_eff: "{{ ag_name | default('ag1') }}"
+    master_key_password_eff: "{{ master_key_password | default((ag_name | default('ag1')) ~ '-Master-Pa55!') }}"
     cert_password_eff: "{{ cert_password | default((ag_name | default('ag1')) ~ '-Cert-Pa55!') }}"
-    endpoint_port_eff: "{{ endpoint_port | default(5022) }}"
     sqlcmd: "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"{{ sa_password | default('') }}\" -C"
-    data_dir: /var/opt/mssql/data
   tasks:
-    - name: Create master key and AG certificate on primary
+    - name: Create master key + certificate
       shell: >
         {{ sqlcmd }} -Q
         "IF NOT EXISTS (SELECT 1 FROM sys.symmetric_keys WHERE name='##MS_DatabaseMasterKey##')
-           CREATE MASTER KEY ENCRYPTION BY PASSWORD = '{{ cert_password_eff }}';
+           CREATE MASTER KEY ENCRYPTION BY PASSWORD = '{{ master_key_password_eff }}';
          IF NOT EXISTS (SELECT 1 FROM sys.certificates WHERE name='dbm_certificate')
            CREATE CERTIFICATE dbm_certificate WITH SUBJECT = 'dbm';"
       changed_when: false
 
-    - name: Back up the AG certificate (with private key)
+    - name: Back up the certificate + private key
       shell: >
         {{ sqlcmd }} -Q
-        "BACKUP CERTIFICATE dbm_certificate TO FILE = '{{ data_dir }}/dbm_certificate.cer'
-         WITH PRIVATE KEY (FILE = '{{ data_dir }}/dbm_certificate.pvk',
+        "BACKUP CERTIFICATE dbm_certificate TO FILE = '/var/opt/mssql/data/dbm_certificate.cer'
+         WITH PRIVATE KEY (FILE = '/var/opt/mssql/data/dbm_certificate.pvk',
          ENCRYPTION BY PASSWORD = '{{ cert_password_eff }}');"
-      args:
-        creates: "{{ data_dir }}/dbm_certificate.cer"
+      args: { creates: /var/opt/mssql/data/dbm_certificate.cer }
 
     - name: Fetch certificate files to the jump host
-      fetch:
-        src: "{{ data_dir }}/{{ item }}"
-        dest: "/tmp/mssql-ag-{{ ag_name_eff }}/{{ item }}"
-        flat: true
-      loop:
-        - dbm_certificate.cer
-        - dbm_certificate.pvk
-
-    - name: Create the database-mirroring endpoint on the primary
-      shell: >
-        {{ sqlcmd }} -Q
-        "IF NOT EXISTS (SELECT 1 FROM sys.endpoints WHERE name='Hadr_endpoint')
-         CREATE ENDPOINT [Hadr_endpoint] STATE = STARTED
-           AS TCP (LISTENER_PORT = {{ endpoint_port_eff }}, LISTENER_IP = ALL)
-           FOR DATABASE_MIRRORING (ROLE = ALL,
-             AUTHENTICATION = CERTIFICATE dbm_certificate,
-             ENCRYPTION = REQUIRED ALGORITHM AES);"
-      changed_when: false
+      fetch: { src: "/var/opt/mssql/data/{{ item }}", dest: "/tmp/mssql-ag-{{ ag_name_eff }}/{{ item }}", flat: true }
+      loop: [ dbm_certificate.cer, dbm_certificate.pvk ]
 
 
-# ─── Play 3: restore certificate + endpoints on the SECONDARIES ─────────────────
-- name: Configure AG certificate and endpoint on the secondaries
+# ════════════════════════════════════════════════════════════════════════════════
+# PHASE 3 — Restore certificate on SECONDARIES
+# ════════════════════════════════════════════════════════════════════════════════
+- name: AG certificate on the secondaries
   hosts: mssql_ag[1:]
   become: true
-  gather_facts: true
+  gather_facts: false
   vars:
     sa_password_eff: "{{ sa_password | default('') }}"
     ag_name_eff: "{{ ag_name | default('ag1') }}"
+    master_key_password_eff: "{{ master_key_password | default((ag_name | default('ag1')) ~ '-Master-Pa55!') }}"
     cert_password_eff: "{{ cert_password | default((ag_name | default('ag1')) ~ '-Cert-Pa55!') }}"
-    endpoint_port_eff: "{{ endpoint_port | default(5022) }}"
     sqlcmd: "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"{{ sa_password | default('') }}\" -C"
-    data_dir: /var/opt/mssql/data
   tasks:
-    - name: Copy certificate files from the jump host to the secondary
-      copy:
-        src: "/tmp/mssql-ag-{{ ag_name_eff }}/{{ item }}"
-        dest: "{{ data_dir }}/{{ item }}"
-        owner: mssql
-        group: mssql
-        mode: "0660"
-      loop:
-        - dbm_certificate.cer
-        - dbm_certificate.pvk
+    - name: Copy certificate files to the secondary
+      copy: { src: "/tmp/mssql-ag-{{ ag_name_eff }}/{{ item }}", dest: "/var/opt/mssql/data/{{ item }}", owner: mssql, group: mssql, mode: "0660" }
+      loop: [ dbm_certificate.cer, dbm_certificate.pvk ]
 
-    - name: Create master key and restore AG certificate on the secondary
+    - name: Create master key + restore certificate
       shell: >
         {{ sqlcmd }} -Q
         "IF NOT EXISTS (SELECT 1 FROM sys.symmetric_keys WHERE name='##MS_DatabaseMasterKey##')
-           CREATE MASTER KEY ENCRYPTION BY PASSWORD = '{{ cert_password_eff }}';
+           CREATE MASTER KEY ENCRYPTION BY PASSWORD = '{{ master_key_password_eff }}';
          IF NOT EXISTS (SELECT 1 FROM sys.certificates WHERE name='dbm_certificate')
-           CREATE CERTIFICATE dbm_certificate
-             FROM FILE = '{{ data_dir }}/dbm_certificate.cer'
-             WITH PRIVATE KEY (FILE = '{{ data_dir }}/dbm_certificate.pvk',
+           CREATE CERTIFICATE dbm_certificate FROM FILE = '/var/opt/mssql/data/dbm_certificate.cer'
+             WITH PRIVATE KEY (FILE = '/var/opt/mssql/data/dbm_certificate.pvk',
                DECRYPTION BY PASSWORD = '{{ cert_password_eff }}');"
       changed_when: false
 
-    - name: Create the database-mirroring endpoint on the secondary
+
+# ════════════════════════════════════════════════════════════════════════════════
+# PHASE 4 — Database mirroring endpoint on ALL nodes
+# ════════════════════════════════════════════════════════════════════════════════
+- name: Hadr mirroring endpoint (all nodes)
+  hosts: mssql_ag
+  become: true
+  gather_facts: false
+  vars:
+    sa_password_eff: "{{ sa_password | default('') }}"
+    endpoint_port_eff: "{{ endpoint_port | default(5022) }}"
+    sqlcmd: "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"{{ sa_password | default('') }}\" -C"
+  tasks:
+    - name: Create + start the Hadr_endpoint (certificate auth)
       shell: >
         {{ sqlcmd }} -Q
         "IF NOT EXISTS (SELECT 1 FROM sys.endpoints WHERE name='Hadr_endpoint')
-         CREATE ENDPOINT [Hadr_endpoint] STATE = STARTED
-           AS TCP (LISTENER_PORT = {{ endpoint_port_eff }}, LISTENER_IP = ALL)
-           FOR DATABASE_MIRRORING (ROLE = ALL,
-             AUTHENTICATION = CERTIFICATE dbm_certificate,
-             ENCRYPTION = REQUIRED ALGORITHM AES);"
+         CREATE ENDPOINT [Hadr_endpoint] AS TCP (LISTENER_PORT = {{ endpoint_port_eff }})
+           FOR DATABASE_MIRRORING (ROLE = ALL, AUTHENTICATION = CERTIFICATE dbm_certificate,
+             ENCRYPTION = REQUIRED ALGORITHM AES);
+         ALTER ENDPOINT [Hadr_endpoint] STATE = STARTED;"
       changed_when: false
 
 
-# ─── Play 4: create the Availability Group on the primary and join secondaries ──
-- name: Create the Availability Group (CLUSTER_TYPE = NONE) on the primary
+# ════════════════════════════════════════════════════════════════════════════════
+# PHASE 5 — Create the AG (CLUSTER_TYPE = EXTERNAL, 3 synchronous replicas) on primary
+# ════════════════════════════════════════════════════════════════════════════════
+- name: Create the Availability Group (EXTERNAL) on the primary
   hosts: mssql_ag[0]
   become: true
-  gather_facts: true
+  gather_facts: false
   vars:
     sa_password_eff: "{{ sa_password | default('') }}"
     ag_name_eff: "{{ ag_name | default('ag1') }}"
     endpoint_port_eff: "{{ endpoint_port | default(5022) }}"
     sqlcmd: "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"{{ sa_password | default('') }}\" -C"
   tasks:
-    - name: Build the FOR REPLICA ON clause from all AG nodes
+    - name: Build FOR REPLICA ON clause (replica name = node hostname; endpoint = node IP)
       set_fact:
         replica_clause: >-
           {% for h in groups['mssql_ag'] %}
-          N'{{ hostvars[h].ansible_hostname }}' WITH (
+          N'{{ hostvars[h].ansible_facts.hostname }}' WITH (
             ENDPOINT_URL = N'tcp://{{ h }}:{{ endpoint_port_eff }}',
-            AVAILABILITY_MODE = SYNCHRONOUS_COMMIT,
-            FAILOVER_MODE = MANUAL,
-            SEEDING_MODE = AUTOMATIC,
-            SECONDARY_ROLE (ALLOW_CONNECTIONS = ALL)
+            AVAILABILITY_MODE = SYNCHRONOUS_COMMIT, FAILOVER_MODE = EXTERNAL, SEEDING_MODE = AUTOMATIC
           ){{ "," if not loop.last else "" }}
           {% endfor %}
 
-    - name: Create the Availability Group on the primary
+    - name: Create the AG with DB_FAILOVER = ON, CLUSTER_TYPE = EXTERNAL
       shell: >
         {{ sqlcmd }} -Q
         "IF NOT EXISTS (SELECT 1 FROM sys.availability_groups WHERE name='{{ ag_name_eff }}')
-         CREATE AVAILABILITY GROUP [{{ ag_name_eff }}]
-           WITH (CLUSTER_TYPE = NONE)
+         CREATE AVAILABILITY GROUP [{{ ag_name_eff }}] WITH (DB_FAILOVER = ON, CLUSTER_TYPE = EXTERNAL)
            FOR REPLICA ON {{ replica_clause }};"
       register: create_ag
       changed_when: false
       failed_when: create_ag.rc != 0 and 'already exists' not in (create_ag.stderr | default(''))
 
-    - name: Grant create-any-database on the primary AG
+    - name: Grant create-any-database + Pacemaker permissions on the AG
       shell: >
         {{ sqlcmd }} -Q
-        "ALTER AVAILABILITY GROUP [{{ ag_name_eff }}] GRANT CREATE ANY DATABASE;"
+        "ALTER AVAILABILITY GROUP [{{ ag_name_eff }}] GRANT CREATE ANY DATABASE;
+         GRANT ALTER, CONTROL, VIEW DEFINITION ON AVAILABILITY GROUP::[{{ ag_name_eff }}] TO [pacemakerLogin];
+         GRANT VIEW SERVER STATE TO [pacemakerLogin];"
       changed_when: false
       failed_when: false
 
 
-- name: Join the secondaries to the Availability Group
+# ════════════════════════════════════════════════════════════════════════════════
+# PHASE 6 — Join secondaries to the AG
+# ════════════════════════════════════════════════════════════════════════════════
+- name: Join secondaries to the AG
   hosts: mssql_ag[1:]
   become: true
   gather_facts: false
@@ -309,49 +292,192 @@
     ag_name_eff: "{{ ag_name | default('ag1') }}"
     sqlcmd: "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"{{ sa_password | default('') }}\" -C"
   tasks:
-    - name: Join the AG and grant create-any-database
+    - name: Join the AG (CLUSTER_TYPE = EXTERNAL) + grant permissions
       shell: >
         {{ sqlcmd }} -Q
-        "ALTER AVAILABILITY GROUP [{{ ag_name_eff }}] JOIN WITH (CLUSTER_TYPE = NONE);
-         ALTER AVAILABILITY GROUP [{{ ag_name_eff }}] GRANT CREATE ANY DATABASE;"
+        "ALTER AVAILABILITY GROUP [{{ ag_name_eff }}] JOIN WITH (CLUSTER_TYPE = EXTERNAL);
+         ALTER AVAILABILITY GROUP [{{ ag_name_eff }}] GRANT CREATE ANY DATABASE;
+         GRANT ALTER, CONTROL, VIEW DEFINITION ON AVAILABILITY GROUP::[{{ ag_name_eff }}] TO [pacemakerLogin];
+         GRANT VIEW SERVER STATE TO [pacemakerLogin];"
       register: join_ag
       changed_when: false
       failed_when: join_ag.rc != 0 and 'already' not in (join_ag.stderr | default('') | lower)
 
 
-# ─── Play 5: verification + manual checklist ────────────────────────────────────
-- name: Report AG status and manual checklist
+# ════════════════════════════════════════════════════════════════════════════════
+# PHASE 7 — Install Pacemaker/Corosync + SQL Server HA resource agent (all nodes)
+# ════════════════════════════════════════════════════════════════════════════════
+- name: Install Pacemaker + Corosync + mssql-server-ha (all nodes)
+  hosts: mssql_ag
+  become: true
+  gather_facts: false
+  vars:
+    hacluster_password_eff: "{{ hacluster_password | default((ag_name | default('ag1')) ~ '-HaCluster-Pa55!') }}"
+  tasks:
+    - name: Install Pacemaker/Corosync packages
+      apt:
+        name: [pacemaker, pacemaker-cli-utils, pcs, crmsh, resource-agents, fence-agents, corosync]
+        state: present
+        update_cache: yes
+
+    - name: Install the SQL Server HA resource agent
+      apt: { name: mssql-server-ha, state: present }
+      failed_when: false
+
+    - name: Set the hacluster user password (same on all nodes)
+      user: { name: hacluster, password: "{{ hacluster_password_eff | password_hash('sha512') }}" }
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# PHASE 8 — Build the Corosync cluster (keygen + corosync.conf, distributed via the jump host)
+# ════════════════════════════════════════════════════════════════════════════════
+- name: Generate the corosync authkey on the primary
+  hosts: mssql_ag[0]
+  become: true
+  gather_facts: false
+  vars:
+    ag_name_eff: "{{ ag_name | default('ag1') }}"
+  tasks:
+    - name: Create corosync authkey
+      shell: corosync-keygen
+      args: { creates: /etc/corosync/authkey }
+    - name: Fetch authkey to the jump host
+      fetch: { src: /etc/corosync/authkey, dest: "/tmp/mssql-ag-{{ ag_name_eff }}/authkey", flat: true }
+
+- name: Write corosync config + authkey on all nodes
+  hosts: mssql_ag
+  become: true
+  gather_facts: false
+  vars:
+    ag_name_eff: "{{ ag_name | default('ag1') }}"
+    cluster_name_eff: "{{ cluster_name | default((ag_name | default('ag1')) ~ 'cluster') }}"
+  tasks:
+    - name: Distribute the corosync authkey
+      copy: { src: "/tmp/mssql-ag-{{ ag_name_eff }}/authkey", dest: /etc/corosync/authkey, owner: root, group: root, mode: "0400" }
+
+    - name: Write /etc/corosync/corosync.conf (node list from the AG group)
+      copy:
+        dest: /etc/corosync/corosync.conf
+        mode: "0644"
+        content: |
+          totem {
+              version: 2
+              cluster_name: {{ cluster_name_eff }}
+              transport: udpu
+              crypto_cipher: none
+              crypto_hash: none
+          }
+          logging {
+              to_logfile: yes
+              logfile: /var/log/corosync/corosync.log
+              to_syslog: yes
+          }
+          quorum {
+              provider: corosync_votequorum
+          }
+          nodelist {
+          {% for h in groups['mssql_ag'] %}
+              node {
+                  name: {{ hostvars[h].ansible_facts.hostname | default(h) }}
+                  nodeid: {{ loop.index }}
+                  ring0_addr: {{ h }}
+              }
+          {% endfor %}
+          }
+
+    - name: Restart pacemaker + corosync
+      systemd: { name: "{{ item }}", state: restarted, enabled: true }
+      loop: [ corosync, pacemaker ]
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# PHASE 9 — Cluster properties + AG resource + virtual IP (primary)
+# ════════════════════════════════════════════════════════════════════════════════
+- name: Configure Pacemaker resources for the AG (primary)
+  hosts: mssql_ag[0]
+  become: true
+  gather_facts: false
+  vars:
+    ag_name_eff: "{{ ag_name | default('ag1') }}"
+    listener_ip_eff: "{{ listener_ip | default('') }}"
+    enable_fencing_eff: "{{ enable_fencing | default(false) }}"
+  tasks:
+    - name: Wait for the cluster to report nodes
+      shell: pcs status >/dev/null 2>&1
+      register: pcs_ready
+      retries: 12
+      delay: 5
+      until: pcs_ready.rc == 0
+      changed_when: false
+      failed_when: false
+
+    - name: Disable STONITH for lab (production MUST configure a real fencing device)
+      shell: pcs property set stonith-enabled=false
+      when: not (enable_fencing_eff | bool)
+      changed_when: false
+      failed_when: false
+
+    - name: Set cluster-recheck-interval + start-failure-is-fatal
+      shell: |
+        pcs property set cluster-recheck-interval=2min
+        pcs property set start-failure-is-fatal=true
+      changed_when: false
+      failed_when: false
+
+    - name: Create the AG cluster resource (ocf:mssql:ag, promotable)
+      shell: >
+        pcs resource show ag_cluster >/dev/null 2>&1 ||
+        pcs resource create ag_cluster ocf:mssql:ag ag_name={{ ag_name_eff }}
+          meta failure-timeout=60s promotable notify=true
+      changed_when: false
+      failed_when: false
+
+    - name: Create the virtual IP resource + constraints (when listener_ip is provided)
+      when: listener_ip_eff | length > 0
+      shell: |
+        pcs resource show virtualip >/dev/null 2>&1 || \
+          pcs resource create virtualip ocf:heartbeat:IPaddr2 ip={{ listener_ip_eff }}
+        pcs constraint colocation add virtualip with promoted ag_cluster INFINITY || true
+        pcs constraint order promote ag_cluster then start virtualip kind=Mandatory || true
+      changed_when: false
+      failed_when: false
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# PHASE 10 — Status + checklist
+# ════════════════════════════════════════════════════════════════════════════════
+- name: Report AG + cluster status
   hosts: mssql_ag[0]
   become: true
   gather_facts: false
   vars:
     sa_password_eff: "{{ sa_password | default('') }}"
     ag_name_eff: "{{ ag_name | default('ag1') }}"
+    listener_ip_eff: "{{ listener_ip | default('') }}"
     sqlcmd: "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"{{ sa_password | default('') }}\" -C"
   tasks:
-    - name: Query AG replica states
+    - name: AG replica health
       shell: >
         {{ sqlcmd }} -Q
-        "SELECT ag.name, ar.replica_server_name, rs.role_desc, rs.synchronization_health_desc
-         FROM sys.availability_groups ag
-         JOIN sys.availability_replicas ar ON ag.group_id = ar.group_id
-         JOIN sys.dm_hadr_availability_replica_states rs ON ar.replica_id = rs.replica_id;"
+        "SELECT ar.replica_server_name, rs.role_desc, rs.synchronization_health_desc
+         FROM sys.availability_replicas ar
+         JOIN sys.dm_hadr_availability_replica_states rs ON ar.replica_id=rs.replica_id;"
       register: ag_status
       changed_when: false
       failed_when: false
-
-    - name: Show AG status
-      debug:
-        msg: "{{ ag_status.stdout_lines | default(['(could not query AG state)']) }}"
-
-    - name: Manual verification checklist
+    - name: pcs status
+      shell: pcs status
+      register: pcs_out
+      changed_when: false
+      failed_when: false
+    - name: Report
       debug:
         msg:
-          - "AG '{{ ag_name_eff }}' bootstrapped as CLUSTER_TYPE = NONE (read-scale, manual failover)."
-          - "1. Confirm all 3 replicas show synchronization_health_desc = HEALTHY above."
-          - "2. Add user databases to the AG (each must be in FULL recovery and backed up once)."
-          - "3. WSO2 connects to the PRIMARY for writes. With CLUSTER_TYPE=NONE there is no virtual listener."
-          - "4. For automatic failover + a real listener: set up Pacemaker/Corosync, recreate the AG with"
-          - "   CLUSTER_TYPE = EXTERNAL, create the cluster resource, and add a listener VIP/LB. This step"
-          - "   is environment-specific and intentionally left manual."
-          - "5. Point WSO2 JDBC at the listener (once created) or the primary node for the MVP."
+          - "── AG replicas ──"
+          - "{{ ag_status.stdout_lines | default(['(n/a)']) }}"
+          - "── Pacemaker ──"
+          - "{{ pcs_out.stdout_lines | default(['(n/a)']) }}"
+          - "HA AG '{{ ag_name_eff }}' (CLUSTER_TYPE=EXTERNAL, 3 synchronous, automatic failover)."
+          - "Connect WSO2 to the virtual IP {{ listener_ip_eff | default('(set listener_ip to enable)') }} (port 1433)."
+          - "PRODUCTION: configure a real STONITH/fencing device (set enable_fencing=true after configuring it)."
+          - "Add user DBs (FULL recovery + one full backup on primary) — automatic seeding replicates them."

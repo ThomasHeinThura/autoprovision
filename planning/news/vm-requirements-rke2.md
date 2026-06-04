@@ -9,21 +9,21 @@ The old document remains valid as the previous baseline.
 1. Kubernetes nodes run **RKE2** (not Talos). RKE2 is installed by Ansible from the jump host.
 2. CNI is the **RKE2 default (Canal)**. Kube-proxy is kept (RKE2 default).
 3. Kubernetes ingress is **Istio**, not Envoy Gateway.
-4. SQL Server runs on **dedicated VMs** that Ansible installs:
-   - Production: **3-node Always On Availability Group**.
-   - UAT: **1 single instance**.
+4. SQL Server runs on **dedicated Ubuntu 22.04 VMs** that Ansible installs (native, no Docker):
+   - Production: **3-node read-scale Always On Availability Group**.
+   - UAT: **2-node read-scale Always On Availability Group** (also VM Ubuntu + AG, not single, not Docker).
 5. GitLab runs on its own **shared Docker VM "in between"** Production and UAT.
 
 ---
 
-## Total VM count: 19
+## Total VM count: 20
 
 | Environment | VMs | Count |
 | ----------- | --- | ----: |
 | Production  | 3 RKE2 control plane + 5 RKE2 worker + 1 ELK + 3 MSSQL AG | 12 |
-| UAT         | 1 RKE2 control plane + 2 RKE2 worker + 1 MSSQL + 1 ELK | 5 |
+| UAT         | 1 RKE2 control plane + 2 RKE2 worker + 2 MSSQL AG + 1 ELK | 6 |
 | Shared      | 1 GitLab (Docker) + 1 jump host | 2 |
-| **Total**   |     | **19** |
+| **Total**   |     | **20** |
 
 > Note: the brief said "18 VMs"; the itemized list totals 19. We use **19** as the
 > authoritative count. If a single VM must be removed to reach 18, the safest candidate is
@@ -69,21 +69,22 @@ The old document remains valid as the previous baseline.
 
 ---
 
-## UAT VM Requirements (5 VMs)
+## UAT VM Requirements (6 VMs)
 
 | VM   | Role                     | vCPU | RAM   | Disk   | Notes |
 | ---- | ------------------------ | ---: | ----: | -----: | ----- |
 | VM-1 | RKE2 control plane (server) | 4 | 8 GB | 200 GB | Single control plane for UAT |
 | VM-2 | RKE2 worker (agent)      |    8 | 32 GB | 500 GB | Kubernetes workloads |
 | VM-3 | RKE2 worker (agent)      |    8 | 32 GB | 500 GB | Kubernetes workloads |
-| VM-4 | MSSQL single             |    8 | 32 GB | 500 GB | SQL Server 2022 single instance |
-| VM-5 | ELK (Docker)             |   16 | 48 GB |   2 TB | UAT ELK stack |
+| VM-4 | MSSQL AG node 1 (primary)   | 8 | 32 GB | 500 GB | SQL Server 2022, read-scale AG primary |
+| VM-5 | MSSQL AG node 2 (secondary) | 8 | 32 GB | 500 GB | SQL Server 2022, read-scale AG secondary |
+| VM-6 | ELK (Docker)             |   16 | 48 GB |   2 TB | UAT ELK stack |
 
 ### UAT notes
 
 - Single control plane is acceptable for UAT.
-- UAT MSSQL is one instance (no AG). WSO2 connects directly to it.
-- **UAT MSSQL VM OS: Ubuntu 22.04 LTS (or 20.04)** — same SQL Server 2022 OS support rule as prod.
+- **UAT MSSQL is a 2-node read-scale AG** (like prod, just fewer nodes) — VM Ubuntu, **native install, not Docker**. WSO2 connects to the AG **primary** (read-scale AG has no virtual listener).
+- **UAT MSSQL VM OS: Ubuntu 22.04 LTS (or 20.04)** — same SQL Server 2022 OS support rule as prod. (Docker engine is only a fallback for unsupported host OS.)
 - UAT ELK is independent from production ELK.
 
 ### UAT totals

@@ -657,7 +657,7 @@ def _track_plan(action: str, body: dict) -> dict:
             raise ValueError("mssql_ip is required")
         # engine=docker (default) runs SQL Server in a container — works on ANY host OS
         # (incl. Ubuntu 24.04/25.04/26.04); engine=native installs the apt package (Ubuntu 22.04 only).
-        docker = (body.get("mssql_engine") or "docker").strip().lower() != "native"
+        docker = (body.get("mssql_engine") or "native").strip().lower() != "native"
         return {
             "inventory": {"mssql": [ip]},
             "steps": [{
@@ -671,17 +671,24 @@ def _track_plan(action: str, body: dict) -> dict:
         ips = _parse_ip_list(body.get("mssql_ips"))
         if len(ips) < 2:
             raise ValueError("at least two MSSQL AG node IPs are required (first is primary)")
-        docker = (body.get("mssql_engine") or "docker").strip().lower() != "native"
+        docker = (body.get("mssql_engine") or "native").strip().lower() != "native"
+        ag_extra = {
+            "sa_password": body.get("sa_password", ""),
+            "ag_name": body.get("ag_name") or "ag1",
+            "mssql_pid": body.get("mssql_pid") or ("Developer" if docker else "Enterprise"),
+        }
+        if not docker:
+            # Native HA AG (Pacemaker, CLUSTER_TYPE=EXTERNAL): optional virtual IP (listener).
+            if body.get("listener_ip"):
+                ag_extra["listener_ip"] = body.get("listener_ip")
+            if body.get("enable_fencing"):
+                ag_extra["enable_fencing"] = body.get("enable_fencing")
         return {
             "inventory": {"mssql_ag": ips},
             "steps": [{
                 "playbook": "ansible/mssql_docker.yml" if docker else "ansible/mssql_ag.yml",
-                "extra_vars": {
-                    "sa_password": body.get("sa_password", ""),
-                    "ag_name": body.get("ag_name") or "ag1",
-                    "mssql_pid": body.get("mssql_pid") or "Developer",
-                },
-                "label": ("MSSQL Always On AG (Docker)" if docker else "MSSQL Always On AG (native)"),
+                "extra_vars": ag_extra,
+                "label": ("MSSQL Always On AG (Docker read-scale)" if docker else "MSSQL HA AG (native + Pacemaker)"),
             }],
         }
 
