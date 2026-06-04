@@ -155,6 +155,16 @@
           {{ h }} {{ hostvars[h].ansible_facts.hostname }}
           {% endfor %}
 
+    # Ubuntu ships a `127.0.1.1 <hostname>` line. corosync resolves its ring0_addr (the node name)
+    # through /etc/hosts and that loopback line wins — so corosync binds the cluster link to
+    # 127.0.1.1 and every node can only see itself (split-brain, no quorum). Remove it so the node
+    # name resolves to the real LAN IP added above. (127.0.0.1 localhost is untouched.)
+    - name: Remove the Ubuntu 127.0.1.1 loopback hostname mapping (corosync must bind the LAN IP)
+      lineinfile:
+        path: /etc/hosts
+        regexp: '^127\.0\.1\.1\s'
+        state: absent
+
     - name: Open firewall ports (Pacemaker, SQL, AG endpoint)
       shell: |
         ufw allow 2224/tcp; ufw allow 3121/tcp; ufw allow 21064/tcp
@@ -414,6 +424,10 @@
     hacluster_password_eff: "{{ hacluster_password | default((ag_name | default('ag1')) ~ '-HaCluster-Pa55!') }}"
     enable_fencing_eff: "{{ enable_fencing | default(false) }}"
     ag_node_names: "{{ groups['mssql_ag'] | map('extract', hostvars) | map(attribute='ansible_facts.hostname') | join(' ') }}"
+    # "name addr=IP" pairs so `pcs cluster setup` pins each corosync ring0_addr to the node's real
+    # LAN IP — corosync then binds the right interface regardless of how /etc/hosts resolves names.
+    ag_node_setup: >-
+      {% for h in groups['mssql_ag'] %}{{ hostvars[h].ansible_facts.hostname }} addr={{ h }}{% if not loop.last %} {% endif %}{% endfor %}
   tasks:
     - name: Authenticate all nodes to pcsd as hacluster
       shell: "pcs host auth {{ ag_node_names }} -u hacluster -p '{{ hacluster_password_eff }}'"
@@ -428,7 +442,7 @@
     # NOTE: `pcs cluster setup` does not accept --request-timeout (only commands that
     # talk to remote pcsd, like `pcs host auth`, do). Retry to ride out slow first contact.
     - name: Create the cluster (fresh; nodes already cleaned locally)
-      shell: "pcs cluster setup {{ cluster_name_eff }} {{ ag_node_names }} --force"
+      shell: "pcs cluster setup {{ cluster_name_eff }} {{ ag_node_setup }} --force"
       register: pcs_setup
       retries: 3
       delay: 10
