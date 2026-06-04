@@ -1,21 +1,24 @@
-# Install a single SQL Server 2022 instance (UAT).
+# Install a single SQL Server instance (UAT).
+# Defaults to SQL Server 2025 on Ubuntu 24.04 — a Microsoft-supported combination.
 #
 # Target inventory group: [mssql]  (the web UI writes a per-job inventory file)
 #
 # Required variable (pass via --extra-vars from the web UI):
 #   sa_password   strong SA password (>=8 chars, upper/lower/digit/symbol)
 # Optional:
-#   mssql_pid     edition: Developer (default) | Express | Standard | Enterprise | EnterpriseCore
-#   ubuntu_release  apt repo release, default "22.04"
+#   mssql_pid       edition: Developer (default) | Express | Standard | Enterprise | EnterpriseCore
+#   mssql_version   2025 (default) | 2022
+#   ubuntu_release  apt repo release, default "24.04" (2025: 22.04/24.04; 2022: 20.04/22.04)
 
-- name: Install SQL Server 2022 (single instance)
+- name: Install SQL Server (single instance)
   hosts: mssql
   become: true
   # Effective values use distinct *_eff names so play vars never reference themselves
   # (Ansible 2.20 rejects self-referential vars as a recursive loop).
   vars:
     mssql_pid_eff: "{{ mssql_pid | default('Developer') }}"
-    ubuntu_release_eff: "{{ ubuntu_release | default('22.04') }}"
+    mssql_version_eff: "{{ mssql_version | default('2025') }}"
+    ubuntu_release_eff: "{{ ubuntu_release | default('24.04') }}"
     sa_password_eff: "{{ sa_password | default('') }}"
   tasks:
     - name: Fail early if SA password is not provided
@@ -32,13 +35,16 @@
         success_msg: "Memory OK ({{ ansible_facts['memtotal_mb'] }} MB)."
 
     - name: Check SQL Server OS support (WARN only — does not fail)
+      vars:
+        supported_releases: "{{ ['20.04','22.04'] if mssql_version_eff == '2022' else ['22.04','24.04'] }}"
       debug:
         msg: >-
-          {{ ('OS supported: ' ~ ansible_facts['distribution'] ~ ' ' ~ ansible_facts['distribution_version'])
-             if (ansible_facts['distribution'] == 'Ubuntu' and ansible_facts['distribution_version'] in ['20.04','22.04'])
+          {{ ('OS supported: ' ~ ansible_facts['distribution'] ~ ' ' ~ ansible_facts['distribution_version']
+              ~ ' for SQL Server ' ~ mssql_version_eff)
+             if (ansible_facts['distribution'] == 'Ubuntu' and ansible_facts['distribution_version'] in supported_releases)
              else ('WARNING: ' ~ ansible_facts['distribution'] ~ ' ' ~ ansible_facts['distribution_version'] ~
-                   ' is NOT a SQL Server 2022 supported OS (Ubuntu 20.04/22.04). Continuing anyway — SQL Server may '
-                   ~ 'fail to start due to missing OpenLDAP 2.5 (liblber-2.5.so.0).') }}
+                   ' is NOT a SQL Server ' ~ mssql_version_eff ~ ' supported OS (Ubuntu ' ~ (supported_releases | join('/')) ~
+                   '). Continuing anyway — the real start error (sqlservr/ldd) is surfaced below if it fails.') }}
 
     - name: Ensure prerequisites are present
       apt:
@@ -52,17 +58,22 @@
         dest: /etc/apt/trusted.gpg.d/microsoft.asc
         mode: "0644"
 
-    - name: Add SQL Server 2022 apt repository
+    - name: Add SQL Server {{ mssql_version_eff }} engine apt repository
       get_url:
-        url: "https://packages.microsoft.com/config/ubuntu/{{ ubuntu_release_eff }}/mssql-server-2022.list"
-        dest: /etc/apt/sources.list.d/mssql-server-2022.list
+        url: "https://packages.microsoft.com/config/ubuntu/{{ ubuntu_release_eff }}/mssql-server-{{ mssql_version_eff }}.list"
+        dest: "/etc/apt/sources.list.d/mssql-server-{{ mssql_version_eff }}.list"
         mode: "0644"
 
-    - name: Add Microsoft prod (mssql-tools) apt repository
+    # The Microsoft "prod" repo (mssql-tools18) is registered via packages-microsoft-prod.deb on
+    # 24.04 (no prod.list there); the .deb also works on 22.04.
+    - name: Download packages-microsoft-prod.deb (tools/prod repo)
       get_url:
-        url: "https://packages.microsoft.com/config/ubuntu/{{ ubuntu_release_eff }}/prod.list"
-        dest: /etc/apt/sources.list.d/mssql-prod.list
+        url: "https://packages.microsoft.com/config/ubuntu/{{ ubuntu_release_eff }}/packages-microsoft-prod.deb"
+        dest: /tmp/packages-microsoft-prod.deb
         mode: "0644"
+    - name: Register the Microsoft prod repo
+      apt:
+        deb: /tmp/packages-microsoft-prod.deb
 
     - name: Install mssql-server
       apt:
@@ -70,11 +81,12 @@
         state: present
         update_cache: yes
 
-    - name: Ensure OpenLDAP 2.5 runtime is present (SQL Server needs liblber-2.5.so.0)
+    # SQL Server 2022 links OpenLDAP 2.5 (liblber-2.5); 2025 links OpenLDAP 2.6 (liblber-2.6).
+    - name: Ensure the OpenLDAP runtime SQL Server needs is present
       apt:
-        name: libldap-2.5-0
+        name: "{{ 'libldap-2.5-0' if mssql_version_eff == '2022' else 'libldap-2.6-0' }}"
         state: present
-      failed_when: false   # not available on unsupported newer Ubuntu; start diagnostics will flag it
+      failed_when: false   # ships by default on supported Ubuntu; start diagnostics flag it otherwise
 
     - name: Install mssql-tools and unixodbc-dev (sqlcmd)
       apt:
@@ -123,9 +135,10 @@
         msg: |
           SQL Server failed to start on {{ inventory_hostname }}.
           Common causes: (1) < 2 GB RAM; (2) unsupported OS — if you see
-          "liblber-2.5.so.0: cannot open shared object file", SQL Server 2022 requires
-          Ubuntu 20.04/22.04 (OpenLDAP 2.5). Ubuntu 24.04+/26.04 ship OpenLDAP 2.6 and
-          cannot run the stock sqlservr binary. Rebuild this node on Ubuntu 22.04.
+          "liblber-2.X.so.0: cannot open shared object file":
+            - SQL Server 2022 needs OpenLDAP 2.5 -> Ubuntu 20.04/22.04
+            - SQL Server 2025 needs OpenLDAP 2.6 -> Ubuntu 22.04/24.04
+          Ubuntu 26.04 is not supported. Rebuild on a supported Ubuntu (recommended 24.04 for 2025).
           Diagnostics:
           {{ mssql_diag.stdout }}
 
@@ -145,4 +158,4 @@
 
     - name: Report SQL Server status
       debug:
-        msg: "SQL Server 2022 single instance ready on {{ inventory_hostname }}:1433. {{ mssql_version.stdout_lines[0] | default('') }}"
+        msg: "SQL Server {{ mssql_version_eff }} single instance ready on {{ inventory_hostname }}:1433. {{ mssql_version.stdout_lines[0] | default('') }}"

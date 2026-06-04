@@ -540,6 +540,20 @@ def _set_step_status(track: str, step: str, status: str) -> None:
         conn.close()
 
 
+def _reset_track_status(track: str) -> int:
+    """Clear all recorded step statuses for a track so the next run re-installs everything.
+    Used when a step was marked 'completed' but the result is actually broken (e.g. an RKE2
+    cluster that returned rc=0 before the node-Ready gate existed). Returns rows deleted."""
+    _ensure_status_db()
+    conn = sqlite3.connect(STATE_DB)
+    try:
+        cur = conn.execute("DELETE FROM install_status WHERE track = ?", (track,))
+        conn.commit()
+        return cur.rowcount
+    finally:
+        conn.close()
+
+
 def _get_steps_done(track: str) -> dict:
     """Return {step_label: status} for a track."""
     _ensure_status_db()
@@ -655,15 +669,19 @@ def _track_plan(action: str, body: dict) -> dict:
         ip = (body.get("mssql_ip") or "").strip()
         if not ip:
             raise ValueError("mssql_ip is required")
-        # engine=docker (default) runs SQL Server in a container — works on ANY host OS
-        # (incl. Ubuntu 24.04/25.04/26.04); engine=native installs the apt package (Ubuntu 22.04 only).
-        docker = (body.get("mssql_engine") or "native").strip().lower() != "native"
+        # Native install only (apt package on the Ubuntu VM). Defaults to SQL Server 2025 on
+        # Ubuntu 24.04 (supported); 2022 needs Ubuntu 20.04/22.04. Ubuntu 26.04 is unsupported.
+        single_extra = {"sa_password": body.get("sa_password", ""), "mssql_pid": body.get("mssql_pid") or "Developer"}
+        if body.get("mssql_version"):
+            single_extra["mssql_version"] = body.get("mssql_version")
+        if body.get("ubuntu_release"):
+            single_extra["ubuntu_release"] = body.get("ubuntu_release")
         return {
             "inventory": {"mssql": [ip]},
             "steps": [{
-                "playbook": "ansible/mssql_docker.yml" if docker else "ansible/mssql_single.yml",
-                "extra_vars": {"sa_password": body.get("sa_password", ""), "mssql_pid": body.get("mssql_pid") or "Developer"},
-                "label": ("MSSQL single instance (Docker)" if docker else "MSSQL single instance (native)"),
+                "playbook": "ansible/mssql_single.yml",
+                "extra_vars": single_extra,
+                "label": "MSSQL single instance (native)",
             }],
         }
 
@@ -671,24 +689,27 @@ def _track_plan(action: str, body: dict) -> dict:
         ips = _parse_ip_list(body.get("mssql_ips"))
         if len(ips) < 2:
             raise ValueError("at least two MSSQL AG node IPs are required (first is primary)")
-        docker = (body.get("mssql_engine") or "native").strip().lower() != "native"
+        # Native HA AG only (Pacemaker, CLUSTER_TYPE=EXTERNAL): optional virtual IP (listener).
+        # Defaults to SQL Server 2025 on Ubuntu 24.04; override via mssql_version/ubuntu_release.
         ag_extra = {
             "sa_password": body.get("sa_password", ""),
             "ag_name": body.get("ag_name") or "ag1",
-            "mssql_pid": body.get("mssql_pid") or ("Developer" if docker else "Enterprise"),
+            "mssql_pid": body.get("mssql_pid") or "Enterprise",
         }
-        if not docker:
-            # Native HA AG (Pacemaker, CLUSTER_TYPE=EXTERNAL): optional virtual IP (listener).
-            if body.get("listener_ip"):
-                ag_extra["listener_ip"] = body.get("listener_ip")
-            if body.get("enable_fencing"):
-                ag_extra["enable_fencing"] = body.get("enable_fencing")
+        if body.get("listener_ip"):
+            ag_extra["listener_ip"] = body.get("listener_ip")
+        if body.get("enable_fencing"):
+            ag_extra["enable_fencing"] = body.get("enable_fencing")
+        if body.get("mssql_version"):
+            ag_extra["mssql_version"] = body.get("mssql_version")
+        if body.get("ubuntu_release"):
+            ag_extra["ubuntu_release"] = body.get("ubuntu_release")
         return {
             "inventory": {"mssql_ag": ips},
             "steps": [{
-                "playbook": "ansible/mssql_docker.yml" if docker else "ansible/mssql_ag.yml",
+                "playbook": "ansible/mssql_ag.yml",
                 "extra_vars": ag_extra,
-                "label": ("MSSQL Always On AG (Docker read-scale)" if docker else "MSSQL HA AG (native + Pacemaker)"),
+                "label": "MSSQL HA AG (native + Pacemaker)",
             }],
         }
 
@@ -1233,6 +1254,18 @@ async def tracks_status():
     """Persisted per-track install status (and per-step) so the dashboard reflects what is
     already installed across restarts. Re-running a track skips completed steps unless Force."""
     return JSONResponse(_status_map())
+
+
+@app.post("/tracks/reset")
+async def tracks_reset(request: Request):
+    """Clear a track's recorded install status so the next run re-installs every step.
+    Use this when a step is marked 'completed' but is actually broken."""
+    body = await request.json()
+    track = body.get("track", "")
+    if track not in ALL_TRACKS:
+        return JSONResponse({"error": "unknown track"}, status_code=400)
+    n = _reset_track_status(track)
+    return JSONResponse({"track": track, "cleared": n})
 
 
 @app.get("/", response_class=HTMLResponse)

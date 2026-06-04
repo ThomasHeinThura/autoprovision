@@ -1,4 +1,6 @@
-# SQL Server 2022 Enterprise — 3-node High-Availability Availability Group on Ubuntu (IAC).
+# SQL Server 2025 Enterprise — 3-node High-Availability Availability Group on Ubuntu (IAC).
+# (Version + Ubuntu repo are selectable; defaults to SQL Server 2025 on Ubuntu 24.04 — a
+#  Microsoft-supported combination. SQL Server 2025 links OpenLDAP 2.6; 2022 links 2.5.)
 #
 # Follows the official Microsoft procedure (curated in mssql/ + sql-docs/):
 #   - mssql/mssql-install.md
@@ -11,7 +13,7 @@
 # is NOT used here.) Target inventory group: [mssql_ag]; the FIRST host is the initial primary.
 #
 # Required: sa_password. Optional: ag_name (ag1), mssql_pid (Enterprise), endpoint_port (5022),
-#   listener_ip (virtual IP for the AG — recommended), ubuntu_release (22.04),
+#   listener_ip (virtual IP for the AG — recommended), mssql_version (2025), ubuntu_release (24.04),
 #   pacemaker_password / hacluster_password / cert_password / master_key_password (derived if unset),
 #   enable_fencing (default false — LAB ONLY; production MUST configure a real fencing/STONITH device).
 #
@@ -19,16 +21,17 @@
 # <=15 chars, unique). Endpoint URLs use node IPs so they resolve regardless of /etc/hosts.
 
 # ════════════════════════════════════════════════════════════════════════════════
-# PHASE 1 — Install SQL Server 2022 + tools, enable Always On, prep host (all nodes)
+# PHASE 1 — Install SQL Server + tools, enable Always On, prep host (all nodes)
 # ════════════════════════════════════════════════════════════════════════════════
-- name: SQL Server 2022 install + Always On prep (all AG nodes)
+- name: SQL Server install + Always On prep (all AG nodes)
   hosts: mssql_ag
   become: true
   gather_facts: true
   vars:
     sa_password_eff: "{{ sa_password | default('') }}"
     mssql_pid_eff: "{{ mssql_pid | default('Enterprise') }}"
-    ubuntu_release_eff: "{{ ubuntu_release | default('22.04') }}"
+    mssql_version_eff: "{{ mssql_version | default('2025') }}"
+    ubuntu_release_eff: "{{ ubuntu_release | default('24.04') }}"
     pacemaker_password_eff: "{{ pacemaker_password | default((ag_name | default('ag1')) ~ '-Pacemaker-Pa55!') }}"
     endpoint_port_eff: "{{ endpoint_port | default(5022) }}"
     sqlcmd: "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"{{ sa_password | default('') }}\" -C"
@@ -44,14 +47,17 @@
         success_msg: "Memory OK ({{ ansible_facts['memtotal_mb'] }} MB)."
 
     - name: Check SQL Server OS support (WARN only — does not fail)
+      vars:
+        supported_releases: "{{ ['20.04','22.04'] if mssql_version_eff == '2022' else ['22.04','24.04'] }}"
       debug:
         msg: >-
-          {{ ('OS supported: ' ~ ansible_facts['distribution'] ~ ' ' ~ ansible_facts['distribution_version'])
-             if (ansible_facts['distribution'] == 'Ubuntu' and ansible_facts['distribution_version'] in ['20.04','22.04'])
+          {{ ('OS supported: ' ~ ansible_facts['distribution'] ~ ' ' ~ ansible_facts['distribution_version']
+              ~ ' for SQL Server ' ~ mssql_version_eff)
+             if (ansible_facts['distribution'] == 'Ubuntu' and ansible_facts['distribution_version'] in supported_releases)
              else ('WARNING: ' ~ ansible_facts['distribution'] ~ ' ' ~ ansible_facts['distribution_version'] ~
-                   ' is NOT a SQL Server 2022 supported OS (Ubuntu 20.04/22.04). Continuing anyway — SQL Server may '
-                   ~ 'fail to start due to missing OpenLDAP 2.5 (liblber-2.5.so.0); the libldap-2.5-0 install is '
-                   ~ 'attempted and the real start error is surfaced if it fails.') }}
+                   ' is NOT a SQL Server ' ~ mssql_version_eff ~ ' supported OS (Ubuntu ' ~ (supported_releases | join('/')) ~
+                   '). Continuing anyway — SQL Server may fail to start due to a missing OpenLDAP runtime; the real '
+                   ~ 'start error (sqlservr/ldd) is surfaced below if it fails. Use a supported Ubuntu release.') }}
 
     - name: Install prerequisites
       apt: { name: [curl, gnupg, apt-transport-https, ca-certificates, ufw], state: present, update_cache: yes }
@@ -59,17 +65,29 @@
     - name: Add Microsoft GPG key
       get_url: { url: "https://packages.microsoft.com/keys/microsoft.asc", dest: /etc/apt/trusted.gpg.d/microsoft.asc, mode: "0644" }
 
-    - name: Add SQL Server 2022 + tools apt repositories
-      get_url: { url: "{{ item.u }}", dest: "{{ item.d }}", mode: "0644" }
-      loop:
-        - { u: "https://packages.microsoft.com/config/ubuntu/{{ ubuntu_release_eff }}/mssql-server-2022.list", d: /etc/apt/sources.list.d/mssql-server-2022.list }
-        - { u: "https://packages.microsoft.com/config/ubuntu/{{ ubuntu_release_eff }}/prod.list", d: /etc/apt/sources.list.d/mssql-prod.list }
+    - name: Add the SQL Server {{ mssql_version_eff }} engine apt repository
+      get_url:
+        url: "https://packages.microsoft.com/config/ubuntu/{{ ubuntu_release_eff }}/mssql-server-{{ mssql_version_eff }}.list"
+        dest: "/etc/apt/sources.list.d/mssql-server-{{ mssql_version_eff }}.list"
+        mode: "0644"
+
+    # The Microsoft "prod" repo (mssql-tools18, etc.) is registered via packages-microsoft-prod.deb
+    # on 24.04 (no prod.list is published there); the .deb also works on 22.04. Engine repo above is separate.
+    - name: Download packages-microsoft-prod.deb (tools/prod repo)
+      get_url:
+        url: "https://packages.microsoft.com/config/ubuntu/{{ ubuntu_release_eff }}/packages-microsoft-prod.deb"
+        dest: /tmp/packages-microsoft-prod.deb
+        mode: "0644"
+    - name: Register the Microsoft prod repo
+      apt: { deb: /tmp/packages-microsoft-prod.deb }
 
     - name: Install mssql-server
       apt: { name: mssql-server, state: present, update_cache: yes }
 
-    - name: Ensure OpenLDAP 2.5 runtime (liblber-2.5.so.0)
-      apt: { name: libldap-2.5-0, state: present }
+    # SQL Server 2022 links OpenLDAP 2.5 (liblber-2.5); 2025 links OpenLDAP 2.6 (liblber-2.6).
+    # The matching runtime ships by default on the supported Ubuntu release; install best-effort.
+    - name: Ensure the OpenLDAP runtime SQL Server needs is present
+      apt: { name: "{{ 'libldap-2.5-0' if mssql_version_eff == '2022' else 'libldap-2.6-0' }}", state: present }
       failed_when: false
 
     - name: Install mssql-tools18 + unixodbc-dev (sqlcmd)
@@ -112,10 +130,12 @@
       when: mssql_restart.status.ActiveState | default('') != 'active'
       fail:
         msg: |
-          SQL Server failed to start on {{ inventory_hostname }}.
-          If you see "liblber-2.5.so.0: cannot open shared object file", the OS is unsupported:
-          SQL Server 2022 requires Ubuntu 20.04/22.04 (ships OpenLDAP 2.5). Ubuntu 24.04+/26.04 ship
-          OpenLDAP 2.6 and cannot run the stock sqlservr binary. Rebuild this node on Ubuntu 22.04.
+          SQL Server {{ mssql_version_eff }} failed to start on {{ inventory_hostname }}.
+          If you see "liblber-2.X.so.0: cannot open shared object file", the OS is unsupported:
+            - SQL Server 2022 needs OpenLDAP 2.5  -> Ubuntu 20.04 / 22.04
+            - SQL Server 2025 needs OpenLDAP 2.6  -> Ubuntu 22.04 / 24.04
+          Ubuntu 26.04 is not supported by any SQL Server release. Rebuild this node on a supported
+          Ubuntu (recommended: 24.04 for SQL Server 2025).
           {{ mssql_diag.stdout }}
 
     - name: Wait for SQL Server on 1433
