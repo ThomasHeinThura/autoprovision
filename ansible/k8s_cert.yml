@@ -44,12 +44,11 @@
       register: ns_apply
       changed_when: "'created' in ns_apply.stdout"
 
+    # One physical line: a folded scalar (`>`/`>-`) turns more-indented continuation lines into
+    # literal newlines, which would split `--cert/--key` off and break `create secret tls`.
     - name: Create or update the TLS secret (apply = idempotent rotate)
-      shell: >
-        {{ kubectl }} -n {{ namespace }} create secret tls {{ secret_name }}
-          --cert={{ cert_src }} --key={{ key_src }}
-          --dry-run=client -o yaml
-        | {{ kubectl }} apply -f -
+      shell: >-
+        {{ kubectl }} -n {{ namespace }} create secret tls {{ secret_name }} --cert={{ cert_src }} --key={{ key_src }} --dry-run=client -o yaml | {{ kubectl }} apply -f -
       register: secret_apply
       changed_when: "'configured' in secret_apply.stdout or 'created' in secret_apply.stdout"
 

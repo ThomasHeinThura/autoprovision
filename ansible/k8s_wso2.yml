@@ -36,14 +36,11 @@
     - name: Copy the WSO2 repo into the render directory
       shell: "cp -a {{ wso2_src }}/. {{ render_dir }}/"
 
+    # One physical line: a folded scalar (`>`) would turn these more-indented `-e` lines into
+    # literal newlines, breaking the single `find ... -exec sed -i ... {} +` invocation.
     - name: Substitute environment values into the rendered manifests (no manual CM edits)
-      shell: >
-        find {{ render_dir }} -type f \( -name '*.yaml' -o -name '*.yml' \) -exec sed -i
-          -e 's|apim\.example\.com|{{ apim_host }}|g'
-          -e 's|internal-gw\.example\.com|{{ internal_gw_host }}|g'
-          -e 's|external-gw\.example\.com|{{ external_gw_host }}|g'
-          -e 's|wso2is\.example\.com|{{ is_host }}|g'
-          -e 's|<MSSQL_DB_URL>|{{ mssql_host }}|g' {} +
+      shell: >-
+        find {{ render_dir }} -type f \( -name '*.yaml' -o -name '*.yml' \) -exec sed -i -e 's|apim\.example\.com|{{ apim_host }}|g' -e 's|internal-gw\.example\.com|{{ internal_gw_host }}|g' -e 's|external-gw\.example\.com|{{ external_gw_host }}|g' -e 's|wso2is\.example\.com|{{ is_host }}|g' -e 's|<MSSQL_DB_URL>|{{ mssql_host }}|g' {} +
 
     - name: Ensure WSO2 namespaces exist with Istio sidecar injection
       shell: |
@@ -55,10 +52,8 @@
         wso2_namespaces: "{{ 'wso2-cp wso2-internal-gw wso2-external-gw' if component == 'apim' else 'wso2-is' }}"
 
     - name: Ensure the Istio ingress TLS secret exists (HTTPS for the WSO2 gateway)
-      shell: >
-        {{ kubectl }} -n istio-system create secret tls {{ tls_secret }}
-          --cert={{ render_dir }}/certificates/server.crt --key={{ render_dir }}/certificates/server.key
-          --dry-run=client -o yaml | {{ kubectl }} apply -f -
+      shell: >-
+        {{ kubectl }} -n istio-system create secret tls {{ tls_secret }} --cert={{ render_dir }}/certificates/server.crt --key={{ render_dir }}/certificates/server.key --dry-run=client -o yaml | {{ kubectl }} apply -f -
 
     - name: Apply the shared Istio Gateway (HTTPS for all WSO2 hosts)
       shell: "{{ kubectl }} apply -f {{ render_dir }}/istio-gateway.yaml"

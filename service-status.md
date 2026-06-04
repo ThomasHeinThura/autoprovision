@@ -1,10 +1,13 @@
 # Service Status
 
-Last update: 2026-05-31
+Last update: 2026-06-04
 Scope: consolidated from all workspace Markdown files.
 
 ## Finished and Tested (current lab state)
 
+- RKE2 Kubernetes cluster (3-node): PASSED
+	- 1 control-plane (cp) + 2 workers (wn1, wn2), all `Ready` on `v1.36.1+rke2r2`.
+	- Core system pods Running: canal, coredns (+autoscaler), metrics-server, snapshot-controller, kube-proxy on all nodes; helm-install jobs Completed.
 - Docker VM base bootstrap (Phase B1): PASSED
 	- Latest result: `ok=10 changed=5 unreachable=0 failed=0`.
 - Platform stack (Phase B2: Postgres + Traefik + Dockhand): PASSED
@@ -39,11 +42,11 @@ Scope: consolidated from all workspace Markdown files.
 
 ## Not Marked Done in Markdown (planned or target state)
 
-- Talos cluster rollout phases (D1, D2)
 - Full Kubernetes platform service rollout (cert-manager, Envoy, ArgoCD, Headlamp, OTel)
 - WSO2 APIM/IS production rollout through ArgoCD
 - Migration and lifecycle validation phases (F)
 - Full MVP Definition of Done checklist in updated-mvp.md
+- Note: Kubernetes is provided by the RKE2 cluster (above); Talos rollout is no longer the active path.
 
 ## Applied Fixes Recorded
 
@@ -56,7 +59,7 @@ Scope: consolidated from all workspace Markdown files.
 
 ## Next Run Order
 
-1. Start Kubernetes setup (Talos cluster creation flow).
+1. ~~Kubernetes cluster~~ — DONE (RKE2 3-node cluster up).
 2. Install Kubernetes platform services (cert-manager, Envoy Gateway, ArgoCD, Headlamp, OTel).
 3. Deploy WSO2 via ArgoCD.
 

@@ -80,11 +80,12 @@
         - name: Wait for istiod
           shell: "{{ kubectl }} -n istio-system rollout status deploy/istiod --timeout=180s"
           changed_when: false
+        # Keep the whole pipeline on ONE physical line. With a YAML folded scalar (`>`/`>-`), a
+        # more-indented continuation line becomes a literal newline (not a space), which split
+        # `--cert=… --key=…` off into separate commands → "key and cert must be specified".
         - name: Create/refresh the ingress TLS secret in istio-system (enables HTTPS :443)
-          shell: >
-            {{ kubectl }} -n istio-system create secret tls {{ tls_secret }}
-              --cert={{ wso2_certs_dir }}/server.crt --key={{ wso2_certs_dir }}/server.key
-              --dry-run=client -o yaml | {{ kubectl }} apply -f -
+          shell: >-
+            {{ kubectl }} -n istio-system create secret tls {{ tls_secret }} --cert={{ wso2_certs_dir }}/server.crt --key={{ wso2_certs_dir }}/server.key --dry-run=client -o yaml | {{ kubectl }} apply -f -
         - name: Show the ingress gateway (should get an EXTERNAL-IP from MetalLB)
           shell: "{{ kubectl }} -n istio-system get svc istio-ingressgateway"
           register: ig
