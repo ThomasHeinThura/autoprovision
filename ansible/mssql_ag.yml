@@ -157,7 +157,8 @@
 
     - name: Open firewall ports (Pacemaker, SQL, AG endpoint)
       shell: |
-        ufw allow 2224/tcp; ufw allow 3121/tcp; ufw allow 21064/tcp; ufw allow 5405/udp
+        ufw allow 2224/tcp; ufw allow 3121/tcp; ufw allow 21064/tcp
+        ufw allow 5404/udp; ufw allow 5405/udp
         ufw allow 1433/tcp; ufw allow {{ endpoint_port_eff }}/tcp; ufw reload || true
       failed_when: false
       changed_when: false
@@ -384,67 +385,52 @@
       no_log: true
       changed_when: true
 
+    - name: Ensure pcsd is running on every node (pcs cluster setup connects to it)
+      systemd: { name: pcsd, state: started, enabled: true }
+
 
 # ════════════════════════════════════════════════════════════════════════════════
-# PHASE 8 — Build the Corosync cluster (keygen + corosync.conf, distributed via the jump host)
+# PHASE 8 — Build the Pacemaker/Corosync cluster the supported Ubuntu way (pcs 0.11):
+#   pcs host auth  ->  pcs cluster setup  ->  pcs cluster start/enable --all.
+# Hand-writing corosync.conf + restarting services (RHEL-style) leaves all nodes OFFLINE on
+# Ubuntu because pcsd/pacemaker are never initialized through pcs. The primary drives all nodes
+# via pcsd (port 2224); node names resolve via the /etc/hosts entries written in Phase 1.
 # ════════════════════════════════════════════════════════════════════════════════
-- name: Generate the corosync authkey on the primary
+- name: Build the Pacemaker cluster with pcs (primary drives all nodes)
   hosts: mssql_ag[0]
   become: true
   gather_facts: false
   vars:
-    ag_name_eff: "{{ ag_name | default('ag1') }}"
-  tasks:
-    - name: Create corosync authkey
-      shell: corosync-keygen
-      args: { creates: /etc/corosync/authkey }
-    - name: Fetch authkey to the jump host
-      fetch: { src: /etc/corosync/authkey, dest: "/tmp/mssql-ag-{{ ag_name_eff }}/authkey", flat: true }
-
-- name: Write corosync config + authkey on all nodes
-  hosts: mssql_ag
-  become: true
-  gather_facts: false
-  vars:
-    ag_name_eff: "{{ ag_name | default('ag1') }}"
     cluster_name_eff: "{{ cluster_name | default((ag_name | default('ag1')) ~ 'cluster') }}"
+    hacluster_password_eff: "{{ hacluster_password | default((ag_name | default('ag1')) ~ '-HaCluster-Pa55!') }}"
+    ag_node_names: "{{ groups['mssql_ag'] | map('extract', hostvars) | map(attribute='ansible_facts.hostname') | join(' ') }}"
   tasks:
-    - name: Distribute the corosync authkey
-      copy: { src: "/tmp/mssql-ag-{{ ag_name_eff }}/authkey", dest: /etc/corosync/authkey, owner: root, group: root, mode: "0400" }
+    - name: Authenticate all nodes to pcsd as hacluster
+      shell: "pcs host auth {{ ag_node_names }} -u hacluster -p '{{ hacluster_password_eff }}'"
+      no_log: true
+      register: pcs_auth
+      retries: 6
+      delay: 10
+      until: pcs_auth.rc == 0
+      changed_when: true
 
-    - name: Write /etc/corosync/corosync.conf (node list from the AG group)
-      copy:
-        dest: /etc/corosync/corosync.conf
-        mode: "0644"
-        content: |
-          totem {
-              version: 2
-              cluster_name: {{ cluster_name_eff }}
-              transport: udpu
-              crypto_cipher: none
-              crypto_hash: none
-          }
-          logging {
-              to_logfile: yes
-              logfile: /var/log/corosync/corosync.log
-              to_syslog: yes
-          }
-          quorum {
-              provider: corosync_votequorum
-          }
-          nodelist {
-          {% for h in groups['mssql_ag'] %}
-              node {
-                  name: {{ hostvars[h].ansible_facts.hostname | default(h) }}
-                  nodeid: {{ loop.index }}
-                  ring0_addr: {{ h }}
-              }
-          {% endfor %}
-          }
+    - name: Create the cluster (--force overwrites any corosync.conf left by a failed run)
+      shell: "pcs cluster setup {{ cluster_name_eff }} {{ ag_node_names }} --force"
+      changed_when: true
 
-    - name: Restart pacemaker + corosync
-      systemd: { name: "{{ item }}", state: restarted, enabled: true }
-      loop: [ corosync, pacemaker ]
+    - name: Start + enable the cluster on all nodes
+      shell: |
+        pcs cluster start --all
+        pcs cluster enable --all
+      changed_when: true
+
+    - name: Wait until a DC is elected (cluster membership formed; nodes ONLINE)
+      shell: "pcs status | grep 'Current DC:' | grep -qv NONE"
+      register: dc_elected
+      retries: 18
+      delay: 10
+      until: dc_elected.rc == 0
+      changed_when: false
 
 
 # ════════════════════════════════════════════════════════════════════════════════
