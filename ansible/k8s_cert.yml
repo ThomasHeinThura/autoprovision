@@ -44,18 +44,65 @@
       register: ns_apply
       changed_when: "'created' in ns_apply.stdout"
 
+    # ── Path A: a PEM was provided → create/replace the secret directly (idempotent rotate) ──
     # One physical line: a folded scalar (`>`/`>-`) turns more-indented continuation lines into
     # literal newlines, which would split `--cert/--key` off and break `create secret tls`.
-    - name: Create or update the TLS secret (apply = idempotent rotate)
+    - name: Create or update the TLS secret from the provided PEM
       shell: >-
         {{ kubectl }} -n {{ namespace }} create secret tls {{ secret_name }} --cert={{ cert_src }} --key={{ key_src }} --dry-run=client -o yaml | {{ kubectl }} apply -f -
       register: secret_apply
       changed_when: "'configured' in secret_apply.stdout or 'created' in secret_apply.stdout"
+      when: not (use_certmanager | default(false) | bool)
+
+    # ── Path B: no PEM → cert-manager issues + AUTO-RENEWS the secret from the internal CA ──
+    # Requires the 'cert-manager (internal CA)' workload to have run on this cluster first.
+    - name: Check the ca-issuer ClusterIssuer is Ready (cert-manager fallback)
+      shell: "{{ kubectl }} get clusterissuer {{ ca_issuer | default('ca-issuer') }} -o jsonpath='{.status.conditions[?(@.type==\"Ready\")].status}'"
+      register: ca_issuer_ready
+      changed_when: false
+      failed_when: false
+      when: use_certmanager | default(false) | bool
+
+    - name: Fail clearly if cert-manager / ca-issuer is not ready
+      fail:
+        msg: >-
+          No PEM was supplied, so this falls back to cert-manager — but ClusterIssuer
+          '{{ ca_issuer | default('ca-issuer') }}' is not Ready (got '{{ ca_issuer_ready.stdout | default('') }}').
+          Run the 'cert-manager (internal CA)' workload for this cluster first, then re-run this.
+      when:
+        - use_certmanager | default(false) | bool
+        - ca_issuer_ready.stdout | default('') != 'True'
+
+    - name: Issue the TLS secret via cert-manager (auto-renewing Certificate)
+      shell: |
+        cat <<EOF | {{ kubectl }} apply -f -
+        apiVersion: cert-manager.io/v1
+        kind: Certificate
+        metadata: { name: {{ secret_name }}, namespace: {{ namespace }} }
+        spec:
+          secretName: {{ secret_name }}
+          duration: 8760h
+          renewBefore: 720h
+          commonName: "{{ (cert_dns | default('*.example.com')).split(',')[0] | trim }}"
+          dnsNames: [{% for d in (cert_dns | default('*.example.com')).split(',') %}"{{ d | trim }}"{{ "," if not loop.last else "" }}{% endfor %}]
+          issuerRef: { name: {{ ca_issuer | default('ca-issuer') }}, kind: ClusterIssuer, group: cert-manager.io }
+        EOF
+      changed_when: true
+      when: use_certmanager | default(false) | bool
+
+    - name: Wait until cert-manager has written the secret
+      shell: "{{ kubectl }} -n {{ namespace }} get secret {{ secret_name }} -o name"
+      register: cm_secret
+      retries: 18
+      delay: 10
+      until: cm_secret.rc == 0
+      changed_when: false
+      when: use_certmanager | default(false) | bool
 
     - name: Report
       debug:
         msg: >-
-          TLS secret '{{ secret_name }}' applied in namespace '{{ namespace }}'
-          (kubeconfig {{ kubeconfig_path }}). If Istio's ingress gateway is already running,
-          restart it to pick up the rotated cert:
-          kubectl -n istio-system rollout restart deploy/istio-ingressgateway
+          TLS secret '{{ secret_name }}' is set in namespace '{{ namespace }}'
+          ({{ 'cert-manager / internal CA, auto-renewing, dnsNames=' ~ (cert_dns | default('*.example.com'))
+              if (use_certmanager | default(false) | bool) else 'from provided PEM' }}).
+          Istio gateways using credentialName reload via SDS automatically — no restart needed.

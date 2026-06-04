@@ -429,7 +429,7 @@ ALL_TRACKS = [
     "prod_docker", "prod_elk", "prod_rke2", "prod_rke2_scale", "prod_istio", "prod_argocd",
     "prod_headlamp", "prod_db", "prod_wso2_apim", "prod_wso2_is",
     # Certificates (manual cert ops)
-    "traefik_cert", "k8s_cert",
+    "traefik_cert", "k8s_cert", "k8s_certmanager",
 ]
 
 
@@ -801,21 +801,44 @@ def _track_plan(action: str, body: dict) -> dict:
         namespace = (body.get("namespace") or "istio-system").strip()
         secret = (body.get("secret_name") or "wso2-ingress-cert").strip()
         kubeconfig = os.path.join(BASE_DIR, "data", "k8s", cluster, "kubeconfig")
-        crt = os.path.join(CERTS_DIR, "k8s_cert", "tls.crt")
-        key = os.path.join(CERTS_DIR, "k8s_cert", "tls.key")
+        cert_pem = (body.get("cert_pem") or "").strip()
+        key_pem = (body.get("key_pem") or "").strip()
+        base_vars = {"kubeconfig_path": kubeconfig, "namespace": namespace, "secret_name": secret}
+        if cert_pem and key_pem:
+            # PEM provided → stage it to jump-host files and create the secret (idempotent rotate).
+            base_vars["cert_src"] = os.path.join(CERTS_DIR, "k8s_cert", "tls.crt")
+            base_vars["key_src"] = os.path.join(CERTS_DIR, "k8s_cert", "tls.key")
+            return {
+                "inventory": {},  # runs on localhost (kubectl against the cluster kubeconfig)
+                "needs_cert": True,
+                "steps": [{
+                    "playbook": "ansible/k8s_cert.yml",
+                    "extra_vars": base_vars,
+                    "label": f"TLS secret {secret} in {namespace} ({cluster}) [provided cert]",
+                }],
+            }
+        # No PEM → cert-manager issues + auto-renews the secret from the internal CA (ca-issuer).
+        # Requires the 'cert-manager (internal CA)' workload to have run on this cluster first.
+        base_vars["use_certmanager"] = True
+        base_vars["cert_dns"] = (body.get("cert_dns") or "*.example.com").strip()
         return {
-            "inventory": {},  # runs on localhost (kubectl against the cluster kubeconfig)
-            "needs_cert": True,
+            "inventory": {},
             "steps": [{
                 "playbook": "ansible/k8s_cert.yml",
-                "extra_vars": {
-                    "kubeconfig_path": kubeconfig,
-                    "namespace": namespace,
-                    "secret_name": secret,
-                    "cert_src": crt,
-                    "key_src": key,
-                },
-                "label": f"TLS secret {secret} in {namespace} ({cluster})",
+                "extra_vars": base_vars,
+                "label": f"TLS secret {secret} in {namespace} ({cluster}) [cert-manager]",
+            }],
+        }
+
+    if action == "k8s-certmanager-up":
+        cluster = (body.get("cluster_name") or "uat-cluster").strip()
+        kubeconfig = os.path.join(BASE_DIR, "data", "k8s", cluster, "kubeconfig")
+        return {
+            "inventory": {},
+            "steps": [{
+                "playbook": "ansible/k8s_addons.yml",
+                "extra_vars": {"kubeconfig_path": kubeconfig, "component": "certmanager"},
+                "label": f"cert-manager + internal CA ({cluster})",
             }],
         }
 

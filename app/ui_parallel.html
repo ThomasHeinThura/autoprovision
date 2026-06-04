@@ -231,12 +231,15 @@
             fields:[ {k:"docker_ips", l:"Traefik VM IPs (apply to all)", t:"textarea", ph:"GitLab VM IP\nUAT ELK VM IP\nProd ELK VM IP"},
               {k:"cert_pem", l:"Certificate PEM (not saved)", t:"textarea", ph:"-----BEGIN CERTIFICATE-----"},
               {k:"key_pem", l:"Private Key PEM (not saved)", t:"textarea", ph:"-----BEGIN PRIVATE KEY-----"} ] },
+          { track:"k8s_certmanager", action:"k8s-certmanager-up", title:"cert-manager (internal CA)",
+            desc:"One-time per cluster: install cert-manager + a self-signed root CA (ca-issuer ClusterIssuer). After this, the 'Certificate — Kubernetes' workload with EMPTY PEM fields auto-issues + auto-renews the secret from the internal CA. Import ca.crt (secret internal-ca-secret, ns cert-manager) into clients to trust it.",
+            fields:[ {k:"cluster_name", l:"Cluster (kubeconfig name)", v:"uat-cluster"} ] },
           { track:"k8s_cert", action:"k8s-cert-secret", title:"Certificate — Kubernetes",
-            desc:"Create/update a TLS secret in a specific RKE2 cluster (e.g. wso2-ingress-cert in istio-system for Istio/WSO2). Uses the cluster kubeconfig pulled by the RKE2 workload. Re-run to rotate.",
+            desc:"Create/update a TLS secret in a specific RKE2 cluster (e.g. wso2-ingress-cert in istio-system for Istio/WSO2). PASTE a PEM to use your own cert (re-run yearly to rotate). LEAVE PEMs EMPTY to have cert-manager issue + auto-renew it from the internal CA (run the cert-manager workload first).",
             fields:[ {k:"cluster_name", l:"Cluster (kubeconfig name)", v:"uat-cluster"}, {k:"namespace", l:"Namespace", v:"istio-system"},
               {k:"secret_name", l:"Secret Name", v:"wso2-ingress-cert"},
-              {k:"cert_pem", l:"Certificate PEM (not saved)", t:"textarea", ph:"-----BEGIN CERTIFICATE-----"},
-              {k:"key_pem", l:"Private Key PEM (not saved)", t:"textarea", ph:"-----BEGIN PRIVATE KEY-----"} ] },
+              {k:"cert_pem", l:"Certificate PEM (empty → cert-manager)", t:"textarea", ph:"-----BEGIN CERTIFICATE-----"},
+              {k:"key_pem", l:"Private Key PEM (empty → cert-manager)", t:"textarea", ph:"-----BEGIN PRIVATE KEY-----"} ] },
         ]},
       ];
       const TABS = {}; GROUPS.forEach(g => g.tabs.forEach(t => TABS[t.track] = t));

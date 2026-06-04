@@ -71,6 +71,65 @@
             spec: { ipAddressPools: [ lan-pool ] }
             EOF
 
+    # ── cert-manager (operator + self-signed root CA → ca-issuer ClusterIssuer) ──
+    # One-time per cluster. Afterward, k8s_cert.yml issues + AUTO-RENEWS TLS secrets from this
+    # internal CA whenever no PEM is supplied. Trust the CA once by importing ca.crt from the
+    # secret internal-ca-secret (namespace cert-manager) into your browsers/clients.
+    - name: cert-manager
+      when: component == 'certmanager'
+      block:
+        - name: Install cert-manager (CRDs + controller + webhook)
+          shell: "{{ kubectl }} apply -f https://github.com/cert-manager/cert-manager/releases/download/{{ certmanager_version | default('v1.16.2') }}/cert-manager.yaml"
+        - name: Wait for cert-manager deployments to be Available
+          shell: "{{ kubectl }} -n cert-manager rollout status deploy/{{ item }} --timeout=180s"
+          loop: [cert-manager, cert-manager-webhook, cert-manager-cainjector]
+          changed_when: false
+        # The validating webhook can briefly reject applies just after rollout — retry the bundle.
+        - name: Create the self-signed root CA + ca-issuer ClusterIssuer (idempotent)
+          shell: |
+            cat <<EOF | {{ kubectl }} apply -f -
+            apiVersion: cert-manager.io/v1
+            kind: ClusterIssuer
+            metadata: { name: selfsigned-bootstrap }
+            spec: { selfSigned: {} }
+            ---
+            apiVersion: cert-manager.io/v1
+            kind: Certificate
+            metadata: { name: internal-ca, namespace: cert-manager }
+            spec:
+              isCA: true
+              commonName: autoprovision-internal-ca
+              secretName: internal-ca-secret
+              duration: 87600h
+              renewBefore: 8760h
+              privateKey: { algorithm: ECDSA, size: 256 }
+              issuerRef: { name: selfsigned-bootstrap, kind: ClusterIssuer, group: cert-manager.io }
+            ---
+            apiVersion: cert-manager.io/v1
+            kind: ClusterIssuer
+            metadata: { name: ca-issuer }
+            spec:
+              ca: { secretName: internal-ca-secret }
+            EOF
+          register: cm_issuer
+          retries: 12
+          delay: 10
+          until: cm_issuer.rc == 0
+          changed_when: true
+        - name: Wait until the ca-issuer ClusterIssuer is Ready
+          shell: "{{ kubectl }} get clusterissuer ca-issuer -o jsonpath='{.status.conditions[?(@.type==\"Ready\")].status}'"
+          register: ca_ready
+          retries: 18
+          delay: 10
+          until: ca_ready.stdout == 'True'
+          changed_when: false
+        - debug:
+            msg: >-
+              cert-manager ready; ca-issuer (internal CA) is Ready. Import ca.crt from secret
+              'internal-ca-secret' (namespace cert-manager) into clients to trust issued certs.
+              The 'Certificate — Kubernetes' workload with EMPTY PEM fields will now auto-issue
+              and auto-renew that secret.
+
     # ── Istio (default profile → ingressgateway in istio-system) + HTTPS TLS secret ──
     - name: Istio
       when: component == 'istio'
