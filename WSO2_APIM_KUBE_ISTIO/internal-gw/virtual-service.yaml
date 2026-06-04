@@ -15,20 +15,10 @@ spec:
       route:
         - destination:
             host: apim-gw-wso2am-universal-gw-service
+            # Mesh-native: route to the PLAINTEXT pass-through port (8280). Ingress terminates the
+            # client TLS; ingress->pod is secured by Istio mTLS. No backend TLS origination.
             port:
-              number: 8243
----
----
-# DestinationRule for Gateway - Enable TLS to backend with self-signed cert support
-apiVersion: networking.istio.io/v1beta1
-kind: DestinationRule
-metadata:
-  name: gw-dr
-  namespace: wso2-internal-gw
-spec:
-  host: apim-gw-wso2am-universal-gw-service
-  trafficPolicy:
-    tls:
-      mode: SIMPLE
-      insecureSkipVerify: true # Required for self-signed certificates
+              number: 8280
+# No DestinationRule: API traffic is stateless (token-based) so no session affinity is needed,
+# and TLS origination is gone under mesh-native. Istio mTLS secures the ingress->gateway hop.
 

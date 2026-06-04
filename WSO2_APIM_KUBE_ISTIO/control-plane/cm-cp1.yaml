@@ -180,6 +180,12 @@ data:
     [transport.https.properties]
     proxyPort = 443
 
+    # Mesh-native: the Istio ingress terminates client TLS on 443 and forwards to the PLAINTEXT
+    # http transport (9763). proxyPort=443 + the ingress's X-Forwarded-Proto=https make carbon /
+    # publisher / devportal emit https:// links (no redirect loop).
+    [transport.http.properties]
+    proxyPort = 443
+
     [service_provider]
     sp_name_regex = "^[\\sa-zA-Z0-9._-]*$"
 

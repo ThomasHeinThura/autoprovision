@@ -15,25 +15,10 @@ spec:
       route:
         - destination:
             host: wso2-is-identity-server
+            # Mesh-native: route to the PLAINTEXT servlet port (9763). Ingress terminates client
+            # TLS; ingress->pod secured by Istio mTLS. No backend TLS origination.
             port:
-              number: 9443
----
-# DestinationRule for APIM - Enable TLS to backend with self-signed cert support
-apiVersion: networking.istio.io/v1beta1
-kind: DestinationRule
-metadata:
-  name: is-dr
-  namespace: wso2-is
-spec:
-  host: wso2-is-identity-server
-  trafficPolicy:
-    tls:
-      mode: SIMPLE
-      insecureSkipVerify: true # Required for self-signed certificates
-    portLevelSettings:
-      - port:
-          number: 9443
-        tls:
-          mode: SIMPLE
-          insecureSkipVerify: true
+              number: 9763
+# No DestinationRule: IS is single-replica (no affinity needed) and TLS origination is gone under
+# mesh-native. Istio mTLS secures the ingress->IS hop.
 

@@ -15,10 +15,13 @@ spec:
       route:
         - destination:
             host: apim-wso2am-acp-service
+            # Mesh-native: route to the PLAINTEXT servlet port (9763). The ingress terminates the
+            # client TLS (wso2-ingress-cert) and the ingress->pod hop is secured by Istio mTLS.
+            # No backend TLS origination, so in-mesh WSO2->WSO2 calls are no longer double-TLS'd.
             port:
-              number: 9443
+              number: 9763
 ---
-# DestinationRule for APIM - Enable TLS to backend with self-signed cert support
+# DestinationRule for APIM — sticky sessions ONLY (no TLS origination under mesh-native).
 apiVersion: networking.istio.io/v1beta1
 kind: DestinationRule
 metadata:
@@ -27,31 +30,13 @@ metadata:
 spec:
   host: apim-wso2am-acp-service
   trafficPolicy:
-    # Sticky sessions: apim-wso2am-acp-service fronts BOTH control-plane pods (acp-1 + acp-2),
-    # so without affinity the carbon console / Publisher / DevPortal round-robins between them and
-    # logins/CSRF break. consistentHash pins each client to one pod via an Istio-issued cookie.
-    #
-    # CRITICAL: the console traffic is on port 9443, which has portLevelSettings below. In Istio,
-    # a port's portLevelSettings OVERRIDES the top-level trafficPolicy for that port — so a
-    # loadBalancer set only at the top level is IGNORED on 9443. The consistentHash MUST live
-    # inside the 9443 portLevelSettings (kept at the top level too, for any non-9443 port).
+    # apim-wso2am-acp-service fronts BOTH control-plane pods (acp-1 + acp-2); without affinity the
+    # carbon console / Publisher / DevPortal round-robins and logins/CSRF break. consistentHash
+    # pins each client to one pod via an Istio-issued cookie. No portLevelSettings now, so this
+    # applies to the 9763 route.
     loadBalancer:
       consistentHash:
         httpCookie:
           name: SERVERID
           ttl: 0s   # session cookie (cleared when the browser closes)
-    tls:
-      mode: SIMPLE
-      insecureSkipVerify: true # Required for self-signed certificates
-    portLevelSettings:
-      - port:
-          number: 9443
-        tls:
-          mode: SIMPLE
-          insecureSkipVerify: true
-        loadBalancer:
-          consistentHash:
-            httpCookie:
-              name: SERVERID
-              ttl: 0s
 
