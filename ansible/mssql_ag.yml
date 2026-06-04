@@ -15,7 +15,10 @@
 # Required: sa_password. Optional: ag_name (ag1), mssql_pid (Enterprise), endpoint_port (5022),
 #   listener_ip (virtual IP for the AG — recommended), mssql_version (2025), ubuntu_release (24.04),
 #   pacemaker_password / hacluster_password / cert_password / master_key_password (derived if unset),
-#   enable_fencing (default false — LAB ONLY; production MUST configure a real fencing/STONITH device).
+#   enable_fencing (default false — LAB ONLY; production MUST configure a real fencing/STONITH device),
+#   listener_name (<ag>-listener), listener_port (1433), listener_subnet_mask
+#     (auto: 0.0.0.0 for SQL 2022/2025, 255.255.255.255 for 2017/2019 — the listener IP is owned by
+#      the Pacemaker VIP, so this is metadata only). The listener is created only when listener_ip is set.
 #
 # Node names: the SQL replica name must equal SERVERPROPERTY('ServerName') (= the node hostname,
 # <=15 chars, unique). Endpoint URLs use node IPs so they resolve regardless of /etc/hosts.
@@ -321,6 +324,62 @@
          GRANT VIEW SERVER STATE TO [pacemakerLogin];"
       changed_when: false
       failed_when: false
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# PHASE 5b — Create the AG Listener on the primary (registers the Pacemaker VIP in SQL Server)
+#
+# On Linux CLUSTER_TYPE=EXTERNAL the listener is split across two layers (MS docs:
+# sql-server-linux-availability-group-overview.md):
+#   - Pacemaker owns the floating IP (the `virtualip` IPaddr2 resource, created in Phase 9).
+#   - SQL Server owns the listener OBJECT — `ALTER AVAILABILITY GROUP ... ADD LISTENER` with that
+#     same IP. This is what makes SSMS show the listener and enables read-only routing.
+# The listener IP MUST equal the Pacemaker VIP (listener_ip). Subnet mask is metadata only and is
+# 0.0.0.0 on SQL 2022+ (255.255.255.255 on 2017/2019). Skipped when listener_ip is not set.
+# ════════════════════════════════════════════════════════════════════════════════
+- name: Create the AG Listener on the primary
+  hosts: mssql_ag[0]
+  become: true
+  gather_facts: false
+  vars:
+    sa_password_eff: "{{ sa_password | default('') }}"
+    ag_name_eff: "{{ ag_name | default('ag1') }}"
+    listener_ip_eff: "{{ listener_ip | default('') }}"
+    listener_name_eff: "{{ listener_name | default((ag_name | default('ag1')) ~ '-listener') }}"
+    listener_port_eff: "{{ listener_port | default(1433) }}"
+    listener_subnet_mask_eff: "{{ listener_subnet_mask | default('255.255.255.255' if (mssql_version | default('2025')) in ['2017','2019'] else '0.0.0.0') }}"
+    sqlcmd: "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"{{ sa_password | default('') }}\" -C"
+  tasks:
+    - name: Note when no listener is requested
+      debug: { msg: "listener_ip not set — skipping AG listener. Set listener_ip (= the Pacemaker VIP) to enable." }
+      when: listener_ip_eff | length == 0
+
+    # Idempotent: skip if a listener already exists for this AG; 'already' in stderr is treated OK.
+    - name: Add the AG listener (IP = Pacemaker VIP, mask 0.0.0.0 on SQL 2022/2025)
+      when: listener_ip_eff | length > 0
+      shell: >
+        {{ sqlcmd }} -Q
+        "IF NOT EXISTS (SELECT 1 FROM sys.availability_group_listeners agl
+           JOIN sys.availability_groups ag ON agl.group_id = ag.group_id
+           WHERE ag.name = N'{{ ag_name_eff }}')
+         ALTER AVAILABILITY GROUP [{{ ag_name_eff }}]
+           ADD LISTENER N'{{ listener_name_eff }}'
+           (WITH IP ((N'{{ listener_ip_eff }}', N'{{ listener_subnet_mask_eff }}')), PORT = {{ listener_port_eff }});"
+      register: listener_create
+      changed_when: false
+      failed_when: listener_create.rc != 0 and 'already' not in (listener_create.stderr | default('') | lower)
+
+    - name: Show the registered listener
+      when: listener_ip_eff | length > 0
+      shell: >
+        {{ sqlcmd }} -h -1 -Q
+        "SELECT agl.dns_name, agl.port FROM sys.availability_group_listeners agl
+         JOIN sys.availability_groups ag ON agl.group_id = ag.group_id
+         WHERE ag.name = N'{{ ag_name_eff }}';"
+      register: listener_show
+      changed_when: false
+      failed_when: false
+    - debug: { msg: "AG listener for {{ ag_name_eff }}: {{ listener_show.stdout | default('(none reported)') | trim }}" }
 
 
 # ════════════════════════════════════════════════════════════════════════════════
