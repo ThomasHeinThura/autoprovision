@@ -60,6 +60,28 @@
             - VMware/ESXi:  raise EVC baseline to >= Sandy Bridge (Intel)
         success_msg: "CPU supports x86-64-v2."
 
+    - name: Read total memory (kB)
+      command: awk '/^MemTotal:/{print $2}' /proc/meminfo
+      register: memtotal_kb
+      changed_when: false
+
+    - name: Require enough RAM (RKE2 server >= ~4 GB, agent >= ~2 GB)
+      vars:
+        is_server: "{{ inventory_hostname in groups['rke2_servers'] }}"
+        min_mb: "{{ 3500 if (inventory_hostname in groups['rke2_servers']) else 1700 }}"
+        node_mb: "{{ (memtotal_kb.stdout | int) // 1024 }}"
+      assert:
+        that: "node_mb | int >= min_mb | int"
+        fail_msg: |
+          {{ inventory_hostname }} has only {{ node_mb }} MB RAM. An RKE2
+          {{ 'server (control plane)' if is_server else 'agent (worker)' }} needs >= {{ min_mb }} MB
+          ({{ '4 GB+ recommended for control planes' if is_server else '2 GB+' }}).
+          With too little RAM the control-plane static pods (kube-scheduler, cloud-controller-manager)
+          are OOM-rejected (UnexpectedAdmissionError "no set of running pods found to reclaim resources",
+          exit 137) -> the canal helm-install Job can't schedule -> no CNI -> node stays NotReady.
+          Increase this VM's memory and re-run.
+        success_msg: "Memory OK ({{ node_mb }} MB)."
+
 
 # ── Optional: preload RKE2 images onto nodes that can't reach the registry ──────
 # Set rke2_images_local_dir to a directory ON THE JUMP HOST containing the RKE2
