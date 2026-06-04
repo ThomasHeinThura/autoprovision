@@ -412,6 +412,7 @@
   vars:
     cluster_name_eff: "{{ cluster_name | default((ag_name | default('ag1')) ~ 'cluster') }}"
     hacluster_password_eff: "{{ hacluster_password | default((ag_name | default('ag1')) ~ '-HaCluster-Pa55!') }}"
+    enable_fencing_eff: "{{ enable_fencing | default(false) }}"
     ag_node_names: "{{ groups['mssql_ag'] | map('extract', hostvars) | map(attribute='ansible_facts.hostname') | join(' ') }}"
   tasks:
     - name: Authenticate all nodes to pcsd as hacluster
@@ -440,12 +441,55 @@
         pcs cluster enable --all
       changed_when: true
 
-    - name: Wait until a DC is elected (cluster membership formed; nodes ONLINE)
-      shell: "pcs status | grep 'Current DC:' | grep -qv NONE"
-      register: dc_elected
-      retries: 18
+    # The freshly-started cluster must converge into ONE quorate partition with EVERY node
+    # Online before we touch resources. The previous check only required "a DC exists", which a
+    # lone, no-quorum node also satisfies — so a split-brain (each node alone, the others
+    # UNCLEAN) slipped through and every later step ran against a 1-node partition. Gate strictly
+    # on membership + quorum here; the fail task below makes a non-converging cluster loud.
+    - name: Wait until the cluster is quorate with all nodes Online
+      shell: |
+        status="$(pcs status 2>/dev/null)" || exit 1
+        echo "$status" | grep -q 'partition WITHOUT quorum' && exit 1
+        online="$(echo "$status" | sed -n 's/.*Online:[[:space:]]*\[[[:space:]]*\(.*\)[[:space:]]*\].*/\1/p')"
+        for n in {{ ag_node_names }}; do
+          echo " $online " | grep -q " $n " || exit 1
+        done
+        exit 0
+      register: cluster_quorate
+      retries: 24
       delay: 10
-      until: dc_elected.rc == 0
+      until: cluster_quorate.rc == 0
+      changed_when: false
+      failed_when: false
+
+    - name: Gather corosync/pacemaker diagnostics if the cluster never converged
+      when: cluster_quorate.rc != 0
+      shell: |
+        echo "== pcs status =="; pcs status 2>&1 || true
+        echo "== corosync quorum =="; corosync-quorumtool -s 2>&1 || true
+        echo "== corosync rings =="; corosync-cfgtool -s 2>&1 || true
+        echo "== corosync journal (last 40) =="; journalctl -u corosync --no-pager -n 40 2>&1 || true
+      register: cluster_diag
+      changed_when: false
+
+    - name: Fail if the cluster did not form a quorate, all-nodes-Online partition
+      when: cluster_quorate.rc != 0
+      fail:
+        msg: |
+          Pacemaker cluster '{{ cluster_name_eff }}' did not converge to a single quorate partition
+          with all nodes Online ({{ ag_node_names }}). This is almost always corosync inter-node
+          traffic (UDP 5405 between {{ groups['mssql_ag'] | join(', ') }}) being blocked, or node
+          names not resolving. Verify 5405/udp is open between every node and that /etc/hosts maps
+          each node name to its IP on every node. Diagnostics from {{ inventory_hostname }}:
+          {{ cluster_diag.stdout }}
+
+    # Disable node-level fencing (STONITH) for the lab AS SOON AS the cluster is quorate, so a
+    # transient membership blip can't leave nodes UNCLEAN-and-unfenceable (which blocks recovery).
+    # Setting it while the partition is quorate guarantees it replicates to every node's CIB.
+    # Production MUST configure a real fencing device instead (set enable_fencing=true).
+    - name: Disable STONITH while the cluster is quorate (lab only)
+      shell: pcs property set stonith-enabled=false
+      when: not (enable_fencing_eff | bool)
       changed_when: false
 
 
@@ -485,11 +529,16 @@
 
     # `pcs resource show <name>` was removed in pcs 0.11 (Ubuntu 24.04) — use `pcs resource config`,
     # which exists on both pcs 0.10 (22.04) and 0.11. It's the idempotency guard before create.
+    #
+    # IMPORTANT: the `pcs resource create` must stay on ONE physical line. In a YAML folded scalar
+    # (`>`/`>-`), a line indented MORE than the first becomes a literal newline (not a space). The
+    # old form put `meta ... promotable notify=true` on an extra-indented line, so it ran as a
+    # SEPARATE command — leaving ag_cluster a bare primitive (no clone, no notify=true). Pacemaker
+    # then reported "Resource must be configured with notify=true" and BLOCKED the resource.
     - name: Create the AG cluster resource (ocf:mssql:ag, promotable)
-      shell: >
+      shell: >-
         pcs resource config ag_cluster >/dev/null 2>&1 ||
-        pcs resource create ag_cluster ocf:mssql:ag ag_name={{ ag_name_eff }}
-          meta failure-timeout=60s promotable notify=true
+        pcs resource create ag_cluster ocf:mssql:ag ag_name={{ ag_name_eff }} meta failure-timeout=60s promotable notify=true
       changed_when: false
       failed_when: false
 
@@ -502,6 +551,16 @@
         pcs constraint order promote ag_cluster then start virtualip kind=Mandatory || true
       changed_when: false
       failed_when: false
+
+    # Safety net: the create task above runs with failed_when:false (idempotent rerun), so a
+    # silent miscreation would otherwise pass unnoticed. Creating ag_cluster with `promotable`
+    # makes pcs auto-name the clone `ag_cluster-clone`; if that clone is absent the AG resource
+    # is a bare primitive (no notify=true) and Pacemaker will BLOCK it. Fail loudly here instead.
+    - name: Assert the promotable clone ag_cluster-clone exists
+      shell: pcs resource config ag_cluster-clone >/dev/null 2>&1
+      register: clone_check
+      changed_when: false
+      failed_when: clone_check.rc != 0
 
 
 # ════════════════════════════════════════════════════════════════════════════════
