@@ -1,0 +1,39 @@
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: apim-vs
+  namespace: wso2-cp
+spec:
+  hosts:
+    - "apim.example.com"
+  gateways:
+    - istio-system/wso2-gateway
+  http:
+    - match:
+        - uri:
+            prefix: /
+      route:
+        - destination:
+            host: apim-wso2am-acp-service
+            port:
+              number: 9443
+---
+# DestinationRule for APIM - Enable TLS to backend with self-signed cert support
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: apim-dr
+  namespace: wso2-cp
+spec:
+  host: apim-wso2am-acp-service
+  trafficPolicy:
+    tls:
+      mode: SIMPLE
+      insecureSkipVerify: true # Required for self-signed certificates
+    portLevelSettings:
+      - port:
+          number: 9443
+        tls:
+          mode: SIMPLE
+          insecureSkipVerify: true
+

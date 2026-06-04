@@ -420,11 +420,15 @@ async def _run_action_job(job_id: str, action: str, body: dict):
 # colliding on a shared inventory or log file.
 
 ALL_TRACKS = [
-    "docker_traefik_gitlab", "docker_traefik_elk_uat", "docker_traefik_elk_prod",
-    "dockhand", "gitlab",
-    "elk_uat", "elk_prod",
-    "rke2_uat", "rke2_prod",
-    "mssql_uat", "mssql_prod",
+    # GitLab environment
+    "gl_docker", "gl_gitlab",
+    # UAT environment (ordered install steps)
+    "uat_docker", "uat_elk", "uat_rke2", "uat_istio", "uat_argocd",
+    "uat_headlamp", "uat_db", "uat_wso2_apim", "uat_wso2_is",
+    # Prod environment (ordered install steps)
+    "prod_docker", "prod_elk", "prod_rke2", "prod_istio", "prod_argocd",
+    "prod_headlamp", "prod_db", "prod_wso2_apim", "prod_wso2_is",
+    # Certificates (manual cert ops)
     "traefik_cert", "k8s_cert",
 ]
 
@@ -774,6 +778,65 @@ def _track_plan(action: str, body: dict) -> dict:
                 "label": f"TLS secret {secret} in {namespace} ({cluster})",
             }],
         }
+
+    # ── In-cluster IAC: Istio / ArgoCD / Headlamp / WSO2 (run on localhost vs the cluster) ──
+    if action in ("k8s-istio-up", "k8s-argocd-up", "k8s-headlamp-up", "k8s-wso2-apim-up", "k8s-wso2-is-up"):
+        cluster = (body.get("cluster_name") or "uat-cluster").strip()
+        kubeconfig = os.path.join(BASE_DIR, "data", "k8s", cluster, "kubeconfig")
+        tls_secret = body.get("tls_secret") or "wso2-ingress-cert"
+        wso2_src = os.path.join(BASE_DIR, "WSO2_APIM_KUBE_ISTIO")
+        common = {"kubeconfig_path": kubeconfig, "tls_secret": tls_secret}
+
+        if action == "k8s-istio-up":
+            steps = []
+            ip_range = (body.get("metallb_ip_range") or "").strip()
+            if ip_range:
+                steps.append({"playbook": "ansible/k8s_addons.yml", "label": "MetalLB (LoadBalancer IPs)",
+                              "extra_vars": {**common, "component": "metallb", "metallb_ip_range": ip_range}})
+            steps.append({"playbook": "ansible/k8s_addons.yml", "label": "Istio (+HTTPS ingress)",
+                          "extra_vars": {**common, "component": "istio",
+                                         "wso2_certs_dir": os.path.join(wso2_src, "certificates")}})
+            return {"inventory": {}, "steps": steps}
+
+        if action == "k8s-argocd-up":
+            return {"inventory": {}, "steps": [{
+                "playbook": "ansible/k8s_addons.yml", "label": "ArgoCD (HTTPS via Istio)",
+                "extra_vars": {**common, "component": "argocd",
+                               "argocd_host": body.get("argocd_host") or "argocd.example.com"},
+            }]}
+
+        if action == "k8s-headlamp-up":
+            return {"inventory": {}, "steps": [{
+                "playbook": "ansible/k8s_addons.yml", "label": "Headlamp (skipped if repo blocked)",
+                "extra_vars": {**common, "component": "headlamp",
+                               "headlamp_host": body.get("headlamp_host") or "headlamp.example.com"},
+            }]}
+
+        # WSO2 APIM / IS — render the repo with env values and apply
+        wso2_vars = {
+            **common,
+            "wso2_src": wso2_src,
+            "render_dir": os.path.join(BASE_DIR, "data", "wso2-render", cluster),
+            "apim_host": body.get("apim_host") or "apim.example.com",
+            "internal_gw_host": body.get("internal_gw_host") or "internal-gw.example.com",
+            "external_gw_host": body.get("external_gw_host") or "external-gw.example.com",
+            "is_host": body.get("is_host") or "wso2is.example.com",
+            "mssql_host": body.get("mssql_host") or "",
+        }
+        if action == "k8s-wso2-apim-up":
+            if not wso2_vars["mssql_host"]:
+                raise ValueError("mssql_host (SQL Server IP/hostname) is required for WSO2 APIM")
+            return {"inventory": {}, "steps": [{
+                "playbook": "ansible/k8s_wso2.yml", "label": "WSO2 API Manager (CP + gateways)",
+                "extra_vars": {**wso2_vars, "component": "apim"},
+            }]}
+        if action == "k8s-wso2-is-up":
+            if not wso2_vars["mssql_host"]:
+                raise ValueError("mssql_host (SQL Server IP/hostname) is required for WSO2 IS")
+            return {"inventory": {}, "steps": [{
+                "playbook": "ansible/k8s_wso2.yml", "label": "WSO2 Identity Server",
+                "extra_vars": {**wso2_vars, "component": "is"},
+            }]}
 
     raise ValueError(f"unsupported track action: {action}")
 

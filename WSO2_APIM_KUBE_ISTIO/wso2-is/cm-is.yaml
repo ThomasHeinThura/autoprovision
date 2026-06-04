@@ -1,0 +1,219 @@
+apiVersion: v1
+data:
+  deployment.toml: |
+    [server]
+    hostname = "wso2is.example.com"
+    node_ip = "$env{NODE_IP}"
+    base_path = "https://$ref{server.hostname}:${carbon.management.port}"
+    offset = "0"
+
+    [transport.https.properties]
+    proxyPort = 443
+    server = "WSO2 Carbon Server"
+
+    [transport.https.sslHostConfig.properties]
+    protocols="+TLSv1, +TLSv1.1, +TLSv1.2, +TLSv1.3"
+    ciphers="TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384, TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256, TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384, TLS_ECDH_ECDSA_WITH_AES_256_GCM_SHA384, TLS_DHE_DSS_WITH_AES_256_GCM_SHA384, TLS_ECDH_RSA_WITH_AES_256_GCM_SHA384, TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256, TLS_ECDH_ECDSA_WITH_AES_128_GCM_SHA256, TLS_ECDH_RSA_WITH_AES_128_GCM_SHA256, TLS_DHE_DSS_WITH_AES_128_GCM_SHA256, TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA384, TLS_ECDH_ECDSA_WITH_AES_256_CBC_SHA384, TLS_ECDH_RSA_WITH_AES_256_CBC_SHA384, TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384, TLS_DHE_DSS_WITH_AES_256_CBC_SHA256, TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA, TLS_ECDH_ECDSA_WITH_AES_256_CBC_SHA, TLS_ECDH_RSA_WITH_AES_256_CBC_SHA, TLS_DHE_DSS_WITH_AES_256_CBC_SHA, TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256, TLS_ECDH_ECDSA_WITH_AES_128_CBC_SHA256, TLS_ECDH_RSA_WITH_AES_128_CBC_SHA256, TLS_DHE_DSS_WITH_AES_128_CBC_SHA256, TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA, TLS_ECDH_ECDSA_WITH_AES_128_CBC_SHA, TLS_ECDH_RSA_WITH_AES_128_CBC_SHA, TLS_DHE_DSS_WITH_AES_128_CBC_SHA, TLS_EMPTY_RENEGOTIATION_INFO_SCSVF"
+
+    [super_admin]
+    username = "admin"
+    password = "admin"
+    create_admin_account = true
+
+    [identity_mgt]
+    user_self_registration.callback_url = "https://wso2is.example.com/.*"
+
+    [user_store]
+    type = "database_unique_id"
+
+    [database.identity_db]
+    type = "h2"
+    url = "jdbc:h2:./repository/database/WSO2IDENTITY_DB;DB_CLOSE_ON_EXIT=FALSE;LOCK_TIMEOUT=60000"
+    username = "wso2carbon"
+    password = "wso2carbon"
+    driver = "org.h2.Driver"
+
+    [database.shared_db]
+    type = "h2"
+    url = "jdbc:h2:./repository/database/WSO2SHARED_DB;DB_CLOSE_ON_EXIT=FALSE;LOCK_TIMEOUT=60000"
+    username = "wso2carbon"
+    password = "wso2carbon"
+    driver = "org.h2.Driver"
+
+    [datasource.WSO2ConsentDS]
+    id="WSO2CONSENT_DB"
+    url = "jdbc:h2:./repository/database/WSO2IDENTITY_DB;DB_CLOSE_ON_EXIT=FALSE;LOCK_TIMEOUT=60000"
+    type = "h2"
+    username = "wso2carbon"
+    password = "wso2carbon"
+    driver = "org.h2.Driver"
+    jmx_enable=false
+
+    [datasource.AgentIdentity]
+    id ="AgentIdentity"
+    url = "jdbc:h2:./repository/database/WSO2AGENTIDENTITY_DB;DB_CLOSE_ON_EXIT=FALSE;LOCK_TIMEOUT=60000"
+    type = "h2"
+    username = "wso2carbon"
+    password = "wso2carbon"
+    driver = "org.h2.Driver"
+    jmx_enable=false
+
+    [authentication.consent]
+    data_source="jdbc/WSO2CONSENT_DB"
+
+    [realm_manager]
+    data_source = "WSO2USER_DB"
+
+    [database.user]
+    type = "h2"
+    url = "jdbc:h2:./repository/database/WSO2SHARED_DB;DB_CLOSE_ON_EXIT=FALSE;LOCK_TIMEOUT=60000"
+    username = "wso2carbon"
+    password = "wso2carbon"
+    driver = "org.h2.Driver"
+
+    [keystore.tls]
+    file_name =  "wso2carbon.p12"
+    type =  "PKCS12"
+    password = "wso2carbon"
+    alias = "wso2carbon"
+    key_password = "wso2carbon"
+
+    [keystore.primary]
+    file_name =  "wso2carbon.p12"
+    type =  "PKCS12"
+    password = "wso2carbon"
+    alias = "wso2carbon"
+    key_password = "wso2carbon"
+
+    [keystore.internal]
+    file_name =  "wso2carbon.p12"
+    type =  "PKCS12"
+    password = "wso2carbon"
+    alias = "wso2carbon"
+    key_password ="wso2carbon"
+
+    [truststore]
+    file_name =  "client-truststore.p12"
+    type =  "PKCS12"
+    password = "wso2carbon"
+
+    [account_recovery.endpoint.auth]
+    hash= "66cd9688a2ae068244ea01e70f0e230f5623b7fa4cdecb65070a09ec06452262"
+
+    [identity.auth_framework.endpoint]
+    app_password= "dashboard"
+    [clustering]
+    membership_scheme="kubernetes"
+    domain= "wso2.is.domain"
+    local_member_port="4001"
+    properties.KUBERNETES_NAMESPACE="wso2-is"
+    properties.KUBERNETES_SERVICES="wso2-is-identity-server"
+
+    [oauth.token_cleanup]
+    enable = false
+
+    [oauth.token_generation]
+    include_username_in_access_token = false
+
+    # Block all unused fileupload with super tenant permissions (SECURITYINTERNAL-1738)
+    [[resource.access_control]]
+    context="(.*)/fileupload/service(.*)"
+    secure=true
+    http_method = "all"
+    permissions = ["/permission/admin/manage/identity/applicationmgt/create"]
+
+    [[resource.access_control]]
+    context="(.*)/fileupload(.*)"
+    secure=true
+    http_method = "all"
+    permissions = ["/permission/protected/manage/monitor/tenants"]
+
+    # Configuring user account locking. Ref: https://is.docs.wso2.com/en/latest/guides/identity-lifecycles/lock-account/
+    [event.default_listener.identity_mgt]
+    priority= "50"
+    enable = false
+
+    [event.default_listener.governance_identity_mgt]
+    priority= "95"
+    enable = true
+
+    [identity_mgt.account_locking]
+    allowed_failed_attempts=5
+    auto_unlock_time_increment_ratio=2
+    auto_unlock_after=5
+    enable_account_locking=true
+
+    [authentication.authenticator.email_otp]
+    enable=false
+
+    [authentication.authenticator.email_otp.parameters]
+    EMAILOTPAuthenticationEndpointURL = "https://localhost:9443/emailotpauthenticationendpoint/emailotp.jsp"
+    EmailOTPAuthenticationEndpointErrorPage = "https://localhost:9443/emailotpauthenticationendpoint/emailotpError.jsp"
+    EmailAddressRequestPage = "https://localhost:9443/emailotpauthenticationendpoint/emailAddress.jsp"
+    usecase = "local"
+    secondaryUserstore = "primary"
+    EMAILOTPMandatory = false
+    sendOTPToFederatedEmailAttribute = false
+    federatedEmailAttributeKey = "email"
+    EmailOTPEnableByUserClaim = true
+    CaptureAndUpdateEmailAddress = true
+    showEmailAddressInUI = true
+    useEventHandlerBasedEmailSender = true
+    emailAddressRegex = '(?&lt;=.{1}).(?=.*@)'
+    tokenExpirationTime = 300000
+    EnableAccountLockingForFailedAttempts = false
+
+    [authentication.authenticator.sms_otp]
+    enable=false
+
+    [authentication.authenticator.sms_otp.parameters]
+    SMSOTPAuthenticationEndpointURL= "/smsotpauthenticationendpoint/smsotp.jsp"
+    SMSOTPAuthenticationEndpointErrorPage= "/smsotpauthenticationendpoint/smsotpError.jsp"
+    MobileNumberRegPage = "/smsotpauthenticationendpoint/mobile.jsp"
+    RetryEnable = true
+    ResendEnable = true
+    BackupCode = true
+    SMSOTPEnableByUserClaim = true
+    usecase = "local"
+    secondaryUserstore = "primary"
+    SMSOTPMandatory = false
+    SendOtpToFederatedMobile = false
+    federatedMobileAttributeKey = "mobile"
+    CaptureAndUpdateMobileNumber = true
+    SendOTPDirectlyToMobile = false
+    redirectToMultiOptionPageOnFailure = false
+    EnableAccountLockingForFailedAttempts = false
+
+    [authentication.authenticator.totp]
+    enable=false
+
+    [authentication.authenticator.totp.parameters]
+    encodingMethod="Base32"
+    timeStepSize="30"
+    windowSize="3"
+    authenticationMandatory=true
+    enrolUserInAuthenticationFlow=true
+    usecase="local"
+    secondaryUserstore="primary"
+    TOTPAuthenticationEndpointURL="authenticationendpoint/totp.do"
+    TOTPAuthenticationEndpointErrorPage="authenticationendpoint/totp_error.do"
+    TOTPAuthenticationEndpointEnableTOTPPage="authenticationendpoint/totp_enroll.do"
+    Issuer="WSO2"
+    UseCommonIssuer=true
+    EnableAccountLockingForFailedAttempts = false
+
+    [encryption]
+    internal_crypto_provider = "org.wso2.carbon.crypto.provider.SymmetricKeyInternalCryptoProvider"
+    key= "3cc0481b70794667b5bee7e2beed2de4"
+kind: ConfigMap
+metadata:
+  annotations:
+    meta.helm.sh/release-name: wso2-is
+    meta.helm.sh/release-namespace: wso2-is
+  creationTimestamp: "2026-06-01T10:52:26Z"
+  labels:
+    app.kubernetes.io/managed-by: Helm
+  name: wso2-is-identity-server-deployment-toml
+  namespace: wso2-is
+  resourceVersion: "2146062"
+  uid: 1360dc0d-0063-4030-81fd-7be403dac749

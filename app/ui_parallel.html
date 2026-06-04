@@ -131,57 +131,89 @@
 
     <script>
       // ── workload (tab) definitions ──────────────────────────────────────────
+      // RKE2 field sets reused across env groups
+      const RKE2_UAT_FIELDS = [ {k:"cluster_name", l:"Cluster Name", v:"uat-cluster"},
+        {k:"control_plane_ips", l:"Control Plane IP", t:"textarea", ph:"192.168.65.11"},
+        {k:"worker_ips", l:"Worker IPs", t:"textarea", ph:"21\n22"}, {k:"rke2_version", l:"RKE2 Version", v:"v1.36.1+rke2r2"},
+        {k:"rke2_token", l:"RKE2 Token (not saved)", t:"password"}, {k:"rke2_images_local_dir", l:"Images dir on jump host (optional)", ph:"/home/bimdevops/rke2-images"} ];
+      const RKE2_PROD_FIELDS = [ {k:"cluster_name", l:"Cluster Name", v:"prod-cluster"},
+        {k:"control_plane_ips", l:"Control Plane IPs (first = bootstrap)", t:"textarea", ph:"11\n12\n13"},
+        {k:"worker_ips", l:"Worker IPs", t:"textarea", ph:"21\n22\n23\n24\n25"}, {k:"registration_address", l:"Registration Address / VIP", ph:"rke2-prod.example.local"},
+        {k:"rke2_version", l:"RKE2 Version", v:"v1.36.1+rke2r2"}, {k:"rke2_token", l:"RKE2 Token (not saved)", t:"password"},
+        {k:"rke2_images_local_dir", l:"Images dir on jump host (optional)", ph:"/home/bimdevops/rke2-images"} ];
+      // Build the per-environment in-cluster step set (Istio → ArgoCD → Headlamp → DB → WSO2)
+      function envK8s(env, clusterName) {
+        const C = {k:"cluster_name", l:"Cluster (kubeconfig)", v:clusterName};
+        return [
+          { track:env+"_istio", action:"k8s-istio-up", title:"4 · Istio (+HTTPS, MetalLB)",
+            desc:"Install MetalLB (LoadBalancer IPs) + Istio (default profile → ingressgateway in istio-system) and the HTTPS TLS secret. Fixes the gateway having no external IP.",
+            fields:[ C, {k:"metallb_ip_range", l:"MetalLB IP range (LAN)", ph:"192.168.65.200-192.168.65.220"} ] },
+          { track:env+"_argocd", action:"k8s-argocd-up", title:"5 · ArgoCD",
+            desc:"Install ArgoCD and expose it over HTTPS via Istio.",
+            fields:[ C, {k:"argocd_host", l:"ArgoCD Host", v:"argocd."+env+".example.com"} ] },
+          { track:env+"_headlamp", action:"k8s-headlamp-up", title:"6 · Headlamp (optional)",
+            desc:"Install Headlamp + expose via Istio. SKIPS automatically if the chart repo is blocked (no failure).",
+            fields:[ C, {k:"headlamp_host", l:"Headlamp Host", v:"headlamp."+env+".example.com"} ] },
+        ];
+      }
+      const WSO2_FIELDS = (env, cluster) => [
+        {k:"cluster_name", l:"Cluster (kubeconfig)", v:cluster},
+        {k:"apim_host", l:"APIM Host", v:"apim."+env+".example.com"},
+        {k:"internal_gw_host", l:"Internal GW Host", v:"internal-gw."+env+".example.com"},
+        {k:"external_gw_host", l:"External GW Host", v:"external-gw."+env+".example.com"},
+        {k:"is_host", l:"IS Host", v:"wso2is."+env+".example.com"},
+        {k:"mssql_host", l:"MSSQL host/IP (DB)", ph:"192.168.x.x"},
+      ];
+
       const GROUPS = [
-        { label: "Docker + Traefik (per VM — run first)", tabs: [
-          { track:"docker_traefik_gitlab", action:"docker-traefik-up", title:"Docker + Traefik — GitLab VM",
-            desc:"Install Docker CE + Traefik edge proxy on the GitLab VM (owns the shared platform network). Run before Dockhand/GitLab.",
+        { label: "GitLab Environment", tabs: [
+          { track:"gl_docker", action:"docker-traefik-up", title:"1 · Docker + Traefik",
+            desc:"Install Docker CE + Traefik edge proxy on the GitLab VM (owns the shared platform network).",
             fields:[ {k:"docker_ip", l:"GitLab VM IP", ph:"192.168.x.x"} ] },
-          { track:"docker_traefik_elk_uat", action:"docker-traefik-up", title:"Docker + Traefik — ELK UAT",
-            desc:"Install Docker CE + Traefik edge proxy on the UAT ELK VM. Run before ELK — UAT.",
-            fields:[ {k:"docker_ip", l:"UAT ELK VM IP", ph:"192.168.x.x"} ] },
-          { track:"docker_traefik_elk_prod", action:"docker-traefik-up", title:"Docker + Traefik — ELK Prod",
-            desc:"Install Docker CE + Traefik edge proxy on the Prod ELK VM. Run before ELK — Prod.",
-            fields:[ {k:"docker_ip", l:"Prod ELK VM IP", ph:"192.168.x.x"} ] },
-        ]},
-        { label: "Docker Platform", tabs: [
-          { track:"dockhand", action:"dockhand-up", title:"Dockhand + PostgreSQL",
-            desc:"PostgreSQL (shared) + Dockhand UI on the GitLab VM, exposed via Traefik.",
-            fields:[ {k:"docker_ip", l:"GitLab VM IP", ph:"192.168.x.x"}, {k:"dockhand_domain", l:"Dockhand Domain", v:"dockhand.example.com"} ] },
-          { track:"gitlab", action:"gitlab-platform-up", title:"GitLab + SonarQube",
-            desc:"Full GitLab VM chain: base → Traefik → PostgreSQL/Dockhand → GitLab CE+Runner+Registry → SonarQube.",
+          { track:"gl_gitlab", action:"gitlab-platform-up", title:"2 · GitLab + SonarQube",
+            desc:"PostgreSQL/Dockhand → GitLab CE + Runner + Registry → SonarQube (self-contained: also ensures Docker+Traefik).",
             fields:[ {k:"docker_ip", l:"GitLab VM IP", ph:"192.168.x.x"}, {k:"gitlab_domain", l:"GitLab Domain", v:"gitlab.example.com"},
               {k:"gitlab_registry_domain", l:"Registry Domain", v:"registry.example.com"}, {k:"dockhand_domain", l:"Dockhand Domain", v:"dockhand.example.com"},
               {k:"sonarqube_domain", l:"SonarQube Domain", v:"sonar.example.com"}, {k:"gitlab_runner_token", l:"Runner Token (not saved)", t:"password"} ] },
         ]},
-        { label: "ELK (Docker)", tabs: [
-          { track:"elk_uat", action:"elk-stack-up", title:"ELK — UAT",
-            desc:"UAT ELK VM: base → Traefik → Elasticsearch/Logstash/Kibana/Fleet/APM (Kibana via Traefik).",
+        { label: "UAT Environment", tabs: [
+          { track:"uat_docker", action:"docker-traefik-up", title:"1 · Docker + Traefik (ELK VM)",
+            desc:"Docker CE + Traefik on the UAT ELK VM.",
+            fields:[ {k:"docker_ip", l:"UAT ELK VM IP", ph:"192.168.x.x"} ] },
+          { track:"uat_elk", action:"elk-stack-up", title:"2 · ELK",
+            desc:"UAT ELK stack (Elasticsearch/Logstash/Kibana/Fleet/APM, Kibana via Traefik).",
             fields:[ {k:"docker_ip", l:"UAT ELK VM IP", ph:"192.168.x.x"}, {k:"kibana_domain", l:"Kibana Domain", v:"kibana-uat.example.com"} ] },
-          { track:"elk_prod", action:"elk-stack-up", title:"ELK — Prod",
-            desc:"Production ELK VM: base → Traefik → Elasticsearch/Logstash/Kibana/Fleet/APM.",
-            fields:[ {k:"docker_ip", l:"Prod ELK VM IP", ph:"192.168.x.x"}, {k:"kibana_domain", l:"Kibana Domain", v:"kibana.example.com"} ] },
-        ]},
-        { label: "Kubernetes (RKE2)", tabs: [
-          { track:"rke2_uat", action:"rke2-cluster-up", title:"RKE2 — UAT",
-            desc:"UAT cluster: 1 control plane + 2 workers, default CNI (Canal). Kubeconfig pulled to the jump host.",
-            fields:[ {k:"cluster_name", l:"Cluster Name", v:"uat-cluster"}, {k:"control_plane_ips", l:"Control Plane IP", t:"textarea", ph:"192.168.65.11"},
-              {k:"worker_ips", l:"Worker IPs", t:"textarea", ph:"21\n22"}, {k:"rke2_version", l:"RKE2 Version", v:"v1.36.1+rke2r2"},
-              {k:"rke2_token", l:"RKE2 Token (not saved)", t:"password"}, {k:"rke2_images_local_dir", l:"Images dir on jump host (optional)", ph:"/home/bimdevops/rke2-images"} ] },
-          { track:"rke2_prod", action:"rke2-cluster-up", title:"RKE2 — Prod",
-            desc:"Prod cluster: 3 control planes + 5 workers, default CNI (Canal). Use a registration address/VIP.",
-            fields:[ {k:"cluster_name", l:"Cluster Name", v:"prod-cluster"}, {k:"control_plane_ips", l:"Control Plane IPs (first = bootstrap)", t:"textarea", ph:"11\n12\n13"},
-              {k:"worker_ips", l:"Worker IPs", t:"textarea", ph:"21\n22\n23\n24\n25"}, {k:"registration_address", l:"Registration Address / VIP", ph:"rke2-prod.example.local"},
-              {k:"rke2_version", l:"RKE2 Version", v:"v1.36.1+rke2r2"}, {k:"rke2_token", l:"RKE2 Token (not saved)", t:"password"},
-              {k:"rke2_images_local_dir", l:"Images dir on jump host (optional)", ph:"/home/bimdevops/rke2-images"} ] },
-        ]},
-        { label: "Database (MSSQL)", tabs: [
-          { track:"mssql_uat", action:"mssql-single-up", title:"MSSQL — UAT",
-            desc:"Single SQL Server 2022 instance for UAT.",
+          { track:"uat_rke2", action:"rke2-cluster-up", title:"3 · RKE2 cluster",
+            desc:"UAT cluster: 1 control plane + 2 workers, default CNI (Canal).", fields: RKE2_UAT_FIELDS },
+          ...envK8s("uat", "uat-cluster"),
+          { track:"uat_db", action:"mssql-single-up", title:"7 · Database (MSSQL single)",
+            desc:"Single SQL Server 2022 instance for UAT (Ubuntu 22.04 VM).",
             fields:[ {k:"mssql_ip", l:"MSSQL VM IP", ph:"192.168.x.x"}, {k:"sa_password", l:"SA Password (not saved)", t:"password"} ] },
-          { track:"mssql_prod", action:"mssql-ag-up", title:"MSSQL — Prod (AG)",
-            desc:"SQL Server 2022 on 3 nodes + read-scale Always On AG (first IP = primary).",
+          { track:"uat_wso2_apim", action:"k8s-wso2-apim-up", title:"8 · WSO2 APIM",
+            desc:"Render the WSO2 repo with UAT hosts + MSSQL URL (no manual CM edits) and apply CP + gateways.",
+            fields: WSO2_FIELDS("uat", "uat-cluster") },
+          { track:"uat_wso2_is", action:"k8s-wso2-is-up", title:"9 · WSO2 Identity Server",
+            desc:"Render + apply WSO2 IS for UAT.", fields: WSO2_FIELDS("uat", "uat-cluster") },
+        ]},
+        { label: "Prod Environment", tabs: [
+          { track:"prod_docker", action:"docker-traefik-up", title:"1 · Docker + Traefik (ELK VM)",
+            desc:"Docker CE + Traefik on the Prod ELK VM.",
+            fields:[ {k:"docker_ip", l:"Prod ELK VM IP", ph:"192.168.x.x"} ] },
+          { track:"prod_elk", action:"elk-stack-up", title:"2 · ELK",
+            desc:"Production ELK stack.",
+            fields:[ {k:"docker_ip", l:"Prod ELK VM IP", ph:"192.168.x.x"}, {k:"kibana_domain", l:"Kibana Domain", v:"kibana.example.com"} ] },
+          { track:"prod_rke2", action:"rke2-cluster-up", title:"3 · RKE2 cluster",
+            desc:"Prod cluster: 3 control planes + 5 workers, default CNI (Canal). Use a registration address/VIP.", fields: RKE2_PROD_FIELDS },
+          ...envK8s("prod", "prod-cluster"),
+          { track:"prod_db", action:"mssql-ag-up", title:"7 · Database (MSSQL AG)",
+            desc:"SQL Server 2022 on 3 nodes + read-scale Always On AG (first IP = primary, Ubuntu 22.04 VMs).",
             fields:[ {k:"mssql_ips", l:"AG Node IPs (first = primary)", t:"textarea", ph:"31\n32\n33"}, {k:"ag_name", l:"AG Name", v:"ag1"},
               {k:"sa_password", l:"SA Password (not saved)", t:"password"} ] },
+          { track:"prod_wso2_apim", action:"k8s-wso2-apim-up", title:"8 · WSO2 APIM",
+            desc:"Render the WSO2 repo with Prod hosts + MSSQL URL and apply CP + gateways.",
+            fields: WSO2_FIELDS("prod", "prod-cluster") },
+          { track:"prod_wso2_is", action:"k8s-wso2-is-up", title:"9 · WSO2 Identity Server",
+            desc:"Render + apply WSO2 IS for Prod.", fields: WSO2_FIELDS("prod", "prod-cluster") },
         ]},
         { label: "Certificates", tabs: [
           { track:"traefik_cert", action:"traefik-cert-apply", title:"Certificate — Traefik",

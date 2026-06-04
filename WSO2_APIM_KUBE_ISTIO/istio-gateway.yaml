@@ -1,0 +1,45 @@
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: wso2-gateway
+  namespace: istio-system
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+    - port:
+        number: 443
+        name: https-apim
+        protocol: HTTPS
+      tls:
+        mode: SIMPLE
+        credentialName: wso2-ingress-cert
+      hosts:
+        - "apim.example.com"
+    - port:
+        number: 443
+        name: https-internal-gw
+        protocol: HTTPS
+      tls:
+        mode: SIMPLE
+        credentialName: wso2-ingress-cert
+      hosts:
+        - "internal-gw.example.com"
+    - port:
+        number: 443
+        name: https-external-gw
+        protocol: HTTPS
+      tls:
+        mode: SIMPLE
+        credentialName: wso2-ingress-cert
+      hosts:
+        - "external-gw.example.com"
+    - port:
+        number: 443
+        name: https-is
+        protocol: HTTPS
+      tls:
+        mode: SIMPLE
+        credentialName: wso2-ingress-cert
+      hosts:
+        - "wso2is.example.com"

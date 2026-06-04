@@ -1,0 +1,85 @@
+# Deploy WSO2 (APIM control plane + gateways, or Identity Server) as IAC.
+#
+# Renders the WSO2_APIM_KUBE_ISTIO repo with environment values substituted (so you NEVER
+# hand-edit ConfigMaps), then kubectl apply against the target cluster. Runs on the JUMP HOST.
+#
+# Required: kubeconfig_path, wso2_src (repo dir), render_dir (per-cluster working copy),
+#           component (apim|is), and the hostnames + DB URL to inject:
+#   apim_host, internal_gw_host, external_gw_host, is_host, mssql_host
+#   tls_secret (default wso2-ingress-cert)
+#
+# Token substitution (exact strings only — WSO2 config keys like apim.gateway are untouched):
+#   apim.example.com -> apim_host        internal-gw.example.com -> internal_gw_host
+#   external-gw.example.com -> external_gw_host   wso2is.example.com -> is_host
+#   <MSSQL_DB_URL> -> mssql_host
+
+- name: Deploy WSO2 {{ component | default('?') | upper }} (IAC)
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    kubectl: "kubectl --kubeconfig {{ kubeconfig_path }}"
+    tls_secret: "{{ tls_secret | default('wso2-ingress-cert') }}"
+  tasks:
+    - name: Verify the cluster kubeconfig exists
+      stat: { path: "{{ kubeconfig_path }}" }
+      register: kc
+    - name: Fail if kubeconfig missing
+      fail: { msg: "kubeconfig not found at {{ kubeconfig_path }} — install the RKE2 cluster first." }
+      when: not kc.stat.exists
+
+    - name: Reset the render directory
+      file: { path: "{{ render_dir }}", state: absent }
+    - name: Create the render directory
+      file: { path: "{{ render_dir }}", state: directory, mode: "0755" }
+
+    - name: Copy the WSO2 repo into the render directory
+      shell: "cp -a {{ wso2_src }}/. {{ render_dir }}/"
+
+    - name: Substitute environment values into the rendered manifests (no manual CM edits)
+      shell: >
+        find {{ render_dir }} -type f \( -name '*.yaml' -o -name '*.yml' \) -exec sed -i
+          -e 's|apim\.example\.com|{{ apim_host }}|g'
+          -e 's|internal-gw\.example\.com|{{ internal_gw_host }}|g'
+          -e 's|external-gw\.example\.com|{{ external_gw_host }}|g'
+          -e 's|wso2is\.example\.com|{{ is_host }}|g'
+          -e 's|<MSSQL_DB_URL>|{{ mssql_host }}|g' {} +
+
+    - name: Ensure WSO2 namespaces exist with Istio sidecar injection
+      shell: |
+        for ns in {{ wso2_namespaces }}; do
+          {{ kubectl }} create ns $ns --dry-run=client -o yaml | {{ kubectl }} apply -f -
+          {{ kubectl }} label ns $ns istio-injection=enabled --overwrite
+        done
+      vars:
+        wso2_namespaces: "{{ 'wso2-cp wso2-internal-gw wso2-external-gw' if component == 'apim' else 'wso2-is' }}"
+
+    - name: Ensure the Istio ingress TLS secret exists (HTTPS for the WSO2 gateway)
+      shell: >
+        {{ kubectl }} -n istio-system create secret tls {{ tls_secret }}
+          --cert={{ render_dir }}/certificates/server.crt --key={{ render_dir }}/certificates/server.key
+          --dry-run=client -o yaml | {{ kubectl }} apply -f -
+
+    - name: Apply the shared Istio Gateway (HTTPS for all WSO2 hosts)
+      shell: "{{ kubectl }} apply -f {{ render_dir }}/istio-gateway.yaml"
+
+    # ── APIM: control plane + internal/external gateways ──
+    - name: Apply WSO2 APIM components
+      when: component == 'apim'
+      shell: |
+        {{ kubectl }} apply -f {{ render_dir }}/control-plane/
+        {{ kubectl }} apply -f {{ render_dir }}/internal-gw/
+        {{ kubectl }} apply -f {{ render_dir }}/external-gw/
+
+    # ── Identity Server ──
+    - name: Apply WSO2 Identity Server
+      when: component == 'is'
+      shell: "{{ kubectl }} apply -f {{ render_dir }}/wso2-is/"
+
+    - name: Report
+      debug:
+        msg: >-
+          WSO2 {{ component | upper }} applied to the cluster with substituted hosts
+          (apim={{ apim_host }}, internal-gw={{ internal_gw_host }}, external-gw={{ external_gw_host }},
+          is={{ is_host }}) and MSSQL={{ mssql_host }}. Point DNS for those hosts at the Istio ingress
+          gateway external IP. Check: {{ kubectl }} get pods -n {{ 'wso2-cp' if component == 'apim' else 'wso2-is' }}

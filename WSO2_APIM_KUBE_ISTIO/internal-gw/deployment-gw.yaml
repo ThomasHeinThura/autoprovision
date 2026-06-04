@@ -1,0 +1,157 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: apim-gw-wso2am-universal-gw-deployment
+  namespace: wso2-internal-gw
+spec:
+  progressDeadlineSeconds: 600
+  replicas: 2
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      deployment: apim-gw-wso2am-universal-gw
+  strategy:
+    rollingUpdate:
+      maxSurge: 2
+      maxUnavailable: 0
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        deployment: apim-gw-wso2am-universal-gw
+        product: apim
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: deployment
+                  operator: In
+                  values:
+                  - apim-gw-wso2am-universal-gw
+              topologyKey: topology.kubernetes.io/zone
+            weight: 100
+      initContainers:
+      - name: filebeat-sidecar
+        image: docker.elastic.co/beats/filebeat:8.19.0
+        args: [
+          "-c", "/etc/filebeat/filebeat.yml",
+          "-e",
+        ]
+        restartPolicy: Always
+        volumeMounts:
+        - name: shared-logs
+          mountPath: /home/wso2carbon/wso2am-universal-gw-4.7.0/repository/logs/
+        - name: filebeat-config
+          mountPath: /etc/filebeat/
+      containers:
+      - env:
+        - name: PROFILE_NAME
+          value: gateway-worker
+        - name: NODE_IP
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: status.podIP
+        - name: JVM_MEM_OPTS
+          value: -Xms2048m -Xmx2048m
+        image: docker.io/bimdevops/wso2-apim-gw-mssql@sha256:d07feb2d189d81c3629ade14b4b8ca9f22a44f624f9bb6320354e74fbec64e3f
+        imagePullPolicy: IfNotPresent
+        lifecycle:
+          preStop:
+            exec:
+              command:
+              - sh
+              - -c
+              - |
+                echo "Pre stop hook triggered"; sleep 10; echo "Shutdown APIM Server"; ${WSO2_SERVER_HOME}/bin/gateway.sh stop
+        livenessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /services/Version
+            port: 9763
+            scheme: HTTP
+          initialDelaySeconds: 60
+          periodSeconds: 10
+          successThreshold: 1
+          timeoutSeconds: 1
+        name: wso2am-gateway
+        ports:
+        - containerPort: 8280
+          protocol: TCP
+        - containerPort: 8243
+          protocol: TCP
+        - containerPort: 9763
+          protocol: TCP
+        - containerPort: 9443
+          protocol: TCP
+        - containerPort: 9099
+          protocol: TCP
+        - containerPort: 8099
+          protocol: TCP
+        - containerPort: 9021
+          protocol: TCP
+        - containerPort: 8021
+          protocol: TCP
+        readinessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /api/am/gateway/v2/server-startup-healthcheck
+            port: 9443
+            scheme: HTTPS
+          initialDelaySeconds: 60
+          periodSeconds: 10
+          successThreshold: 1
+          timeoutSeconds: 1
+        resources:
+          limits:
+            cpu: "3"
+            memory: 3Gi
+          requests:
+            cpu: "2"
+            memory: 2Gi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          runAsNonRoot: true
+          runAsUser: 10001
+        startupProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - timeout 1 bash -c "</dev/tcp/localhost/9443"
+          failureThreshold: 3
+          initialDelaySeconds: 120
+          periodSeconds: 10
+          successThreshold: 1
+          timeoutSeconds: 1
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /home/wso2carbon/wso2-config-volume/repository/conf/deployment.toml
+          name: wso2am-gateway-conf
+          subPath: deployment.toml
+        - name: shared-logs
+          mountPath: /home/wso2carbon/wso2am-universal-gw-4.7.0/repository/logs/
+      dnsPolicy: ClusterFirst
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      terminationGracePeriodSeconds: 30
+      volumes:
+      - configMap:
+          defaultMode: 263
+          name: apim-gw-wso2am-universal-gw-conf
+        name: wso2am-gateway-conf
+      - name: shared-logs
+        emptyDir: {}
+      - name: filebeat-config
+        configMap:
+          name: filebeat-sidecar-config

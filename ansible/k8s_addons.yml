@@ -1,0 +1,149 @@
+# In-cluster add-ons as IAC — MetalLB, Istio (+HTTPS), ArgoCD, Headlamp.
+#
+# Runs on the JUMP HOST (localhost) using kubectl/helm/istioctl against a cluster
+# kubeconfig that ansible/rke2_cluster.yml fetched to data/k8s/<cluster>/kubeconfig.
+# One component per run, selected by `component` (metallb|istio|argocd|headlamp).
+#
+# Required: kubeconfig_path, component.
+# Per component:
+#   metallb : metallb_ip_range   (e.g. "192.168.51.200-192.168.51.220")
+#   istio   : tls_secret (default wso2-ingress-cert), wso2_certs_dir (PEMs for the gateway TLS)
+#   argocd  : argocd_host, tls_secret
+#   headlamp: headlamp_host, tls_secret   (SKIPPED gracefully if the chart repo is blocked)
+
+- name: RKE2 in-cluster add-on ({{ component | default('?') }})
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    kubectl: "kubectl --kubeconfig {{ kubeconfig_path }}"
+    tls_secret: "{{ tls_secret | default('wso2-ingress-cert') }}"
+  tasks:
+    - name: Verify the cluster kubeconfig exists
+      stat: { path: "{{ kubeconfig_path }}" }
+      register: kc
+    - name: Fail if kubeconfig missing
+      fail:
+        msg: "kubeconfig not found at {{ kubeconfig_path }} — install the RKE2 cluster first."
+      when: not kc.stat.exists
+    - name: Verify the cluster is reachable
+      shell: "{{ kubectl }} version --request-timeout=15s >/dev/null 2>&1"
+      changed_when: false
+
+    # ── MetalLB (LoadBalancer IPs; install before Istio so the gateway gets an IP) ──
+    - name: MetalLB
+      when: component == 'metallb'
+      block:
+        - name: Apply MetalLB (FRR-K8s mode)
+          shell: "{{ kubectl }} apply -f https://raw.githubusercontent.com/metallb/metallb/v0.16.1/config/manifests/metallb-frr-k8s.yaml"
+        - name: Wait for the MetalLB controller
+          shell: "{{ kubectl }} -n metallb-system rollout status deploy/controller --timeout=180s"
+          changed_when: false
+        - name: Configure IP pool + L2 advertisement
+          shell: |
+            cat <<EOF | {{ kubectl }} apply -f -
+            apiVersion: metallb.io/v1beta1
+            kind: IPAddressPool
+            metadata: { name: lan-pool, namespace: metallb-system }
+            spec: { addresses: [ "{{ metallb_ip_range }}" ] }
+            ---
+            apiVersion: metallb.io/v1beta1
+            kind: L2Advertisement
+            metadata: { name: l2-adv, namespace: metallb-system }
+            spec: { ipAddressPools: [ lan-pool ] }
+            EOF
+
+    # ── Istio (default profile → ingressgateway in istio-system) + HTTPS TLS secret ──
+    - name: Istio
+      when: component == 'istio'
+      block:
+        - name: Install Istio (istioctl default profile)
+          shell: "istioctl install --set profile=default -y --kubeconfig {{ kubeconfig_path }}"
+        - name: Wait for istiod
+          shell: "{{ kubectl }} -n istio-system rollout status deploy/istiod --timeout=180s"
+          changed_when: false
+        - name: Create/refresh the ingress TLS secret in istio-system (enables HTTPS :443)
+          shell: >
+            {{ kubectl }} -n istio-system create secret tls {{ tls_secret }}
+              --cert={{ wso2_certs_dir }}/server.crt --key={{ wso2_certs_dir }}/server.key
+              --dry-run=client -o yaml | {{ kubectl }} apply -f -
+        - name: Show the ingress gateway (should get an EXTERNAL-IP from MetalLB)
+          shell: "{{ kubectl }} -n istio-system get svc istio-ingressgateway"
+          register: ig
+          changed_when: false
+        - debug: { msg: "{{ ig.stdout_lines }}" }
+
+    # ── ArgoCD (+ HTTPS exposure via Istio) ──
+    - name: ArgoCD
+      when: component == 'argocd'
+      block:
+        - name: Create argocd namespace
+          shell: "{{ kubectl }} create namespace argocd --dry-run=client -o yaml | {{ kubectl }} apply -f -"
+        - name: Install ArgoCD
+          shell: "{{ kubectl }} apply -n argocd --server-side --force-conflicts -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml"
+        - name: Run argocd-server in insecure mode (TLS terminates at the Istio gateway)
+          shell: |
+            {{ kubectl }} -n argocd patch configmap argocd-cmd-params-cm --type merge -p '{"data":{"server.insecure":"true"}}'
+            {{ kubectl }} -n argocd rollout restart deploy/argocd-server
+          changed_when: true
+        - name: Expose ArgoCD over HTTPS through Istio
+          shell: |
+            cat <<EOF | {{ kubectl }} apply -f -
+            apiVersion: networking.istio.io/v1
+            kind: Gateway
+            metadata: { name: argocd-gateway, namespace: argocd }
+            spec:
+              selector: { istio: ingressgateway }
+              servers:
+                - port: { number: 443, name: https, protocol: HTTPS }
+                  tls: { mode: SIMPLE, credentialName: {{ tls_secret }} }
+                  hosts: [ "{{ argocd_host }}" ]
+            ---
+            apiVersion: networking.istio.io/v1
+            kind: VirtualService
+            metadata: { name: argocd, namespace: argocd }
+            spec:
+              hosts: [ "{{ argocd_host }}" ]
+              gateways: [ argocd-gateway ]
+              http: [ { route: [ { destination: { host: argocd-server, port: { number: 80 } } } ] } ]
+            EOF
+        - debug: { msg: "ArgoCD installed + exposed at https://{{ argocd_host }} (admin password: kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d)" }
+
+    # ── Headlamp (SKIPPED gracefully when the chart repo is blocked) ──
+    - name: Headlamp
+      when: component == 'headlamp'
+      block:
+        - name: Check whether the Headlamp chart repo is reachable
+          shell: helm repo add headlamp https://kubernetes-sigs.github.io/headlamp/ && helm repo update headlamp
+          register: hl_repo
+          failed_when: false
+          changed_when: false
+        - name: Skip Headlamp when the repo is unreachable (e.g. blocked by firewall)
+          debug:
+            msg: >-
+              Headlamp chart repo unreachable (rc={{ hl_repo.rc }}) — SKIPPING Headlamp install.
+              This is expected when the repo is blocked. Re-run later or install from a mirror.
+          when: hl_repo.rc != 0
+        - name: Install + expose Headlamp (only if the repo is reachable)
+          when: hl_repo.rc == 0
+          shell: |
+            helm upgrade --install headlamp headlamp/headlamp -n kube-system --kubeconfig {{ kubeconfig_path }}
+            cat <<EOF | {{ kubectl }} apply -f -
+            apiVersion: networking.istio.io/v1
+            kind: Gateway
+            metadata: { name: headlamp-gateway, namespace: kube-system }
+            spec:
+              selector: { istio: ingressgateway }
+              servers:
+                - port: { number: 443, name: https, protocol: HTTPS }
+                  tls: { mode: SIMPLE, credentialName: {{ tls_secret }} }
+                  hosts: [ "{{ headlamp_host }}" ]
+            ---
+            apiVersion: networking.istio.io/v1
+            kind: VirtualService
+            metadata: { name: headlamp, namespace: kube-system }
+            spec:
+              hosts: [ "{{ headlamp_host }}" ]
+              gateways: [ headlamp-gateway ]
+              http: [ { route: [ { destination: { host: headlamp, port: { number: 80 } } } ] } ]
+            EOF

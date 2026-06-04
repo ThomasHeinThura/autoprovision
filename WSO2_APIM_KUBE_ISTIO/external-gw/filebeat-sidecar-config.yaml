@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: filebeat-sidecar-config
+  namespace: wso2-external-gw
+data:
+  filebeat.yml: |
+    filebeat.inputs:
+    - type: log
+      enabled: true
+      paths:
+        - /home/wso2carbon/wso2am-universal-gw-4.6.0/repository/logs/apim_metrics.log
+      include_lines: ['(apimMetrics):']
+
+    output.logstash:
+      hosts: ["<LOGSTASH_URL>:5044"]

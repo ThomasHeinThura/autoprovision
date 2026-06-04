@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: wso2-is-identity-server
+  namespace: wso2-is
+spec:
+  internalTrafficPolicy: Cluster
+  ipFamilies:
+  - IPv4
+  ipFamilyPolicy: SingleStack
+  ports:
+  - name: servlet-https
+    port: 9443
+    protocol: TCP
+    targetPort: 9443
+  selector:
+    app.kubernetes.io/instance: wso2-is
+    app.kubernetes.io/name: identity-server
+  sessionAffinity: None
+  type: ClusterIP

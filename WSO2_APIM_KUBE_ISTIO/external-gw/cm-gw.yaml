@@ -1,0 +1,164 @@
+apiVersion: v1
+data:
+  deployment.toml: |
+    [server]
+    hostname = "external-gw.example.com"
+    node_ip = "$env{NODE_IP}"
+    server_role = "gateway-worker"
+    offset = 0
+
+    [user_store]
+    type = "database_unique_id"
+    key = "value"
+
+    [super_admin]
+    username = "admin"
+    password = "admin"
+    create_admin_account = true
+
+    [database.shared_db]
+    type = "mssql"
+    url = "jdbc:sqlserver://<MSSQL_DB_URL>:1433;databaseName=WSO2AM_SHARED_DB;encrypt=true;trustServerCertificate=true;"
+    username = "wso2carbon"
+    password = "wso2carbon"
+    driver = "com.microsoft.sqlserver.jdbc.SQLServerDriver"
+    validationQuery = "SELECT 1"
+
+    [database.shared_db.pool_options]
+    defaultAutoCommit = "true"
+    maxActive = "100"
+    maxWait = "60000"
+    minIdle = "5"
+    testOnBorrow = "true"
+    testWhileIdle = "true"
+    validationInterval = "30000"
+    [keystore.tls]
+    type = "JKS"
+    file_name = "wso2carbon.jks"
+    alias = "wso2carbon"
+    password = "wso2carbon"
+    key_password = "wso2carbon"
+
+    [truststore]
+    type = "JKS"
+    file_name = "client-truststore.jks"
+    password = "wso2carbon"
+
+    [apim.ai]
+    enable = false
+
+    [transport.http]
+    properties.port = 9763
+    properties.proxyPort = 80
+
+    [transport.https]
+    properties.port = 9443
+    properties.proxyPort = 443
+
+    # key manager implementation
+    [apim.key_manager]
+    service_url = "https://apim-wso2am-acp-service.wso2-cp:9443/services/"
+    username= "$ref{super_admin.username}"
+    password= "$ref{super_admin.password}"
+
+    [apim.transaction_counter]
+    enable = false
+    server_id = "Gateway1"
+
+    # JWT Generation
+
+    [apim.sync_runtime_artifacts.gateway]
+    gateway_labels = ["External"]
+
+    # Traffic Manager configurations
+    [apim.throttling]
+    username= "$ref{super_admin.username}"
+    password= "$ref{super_admin.password}"
+    service_url = "https://apim-wso2am-acp-service.wso2-cp:9443/services/"
+    throttle_decision_endpoints = ["tcp://apim-wso2am-acp-1-service.wso2-cp:5672", "tcp://apim-wso2am-acp-2-service.wso2-cp:5672"]
+    enable_unlimited_tier = true
+    enable_header_based_throttling = false
+    enable_jwt_claim_based_throttling = false
+    enable_query_param_based_throttling = false
+
+    [[apim.throttling.url_group]]
+    traffic_manager_urls = ["tcp://apim-wso2am-acp-1-service.wso2-cp:9611"]
+    traffic_manager_auth_urls = ["ssl://apim-wso2am-acp-1-service.wso2-cp:9711"]
+    type = "loadbalance"
+    
+    [[apim.throttling.url_group]]
+    traffic_manager_urls = ["tcp://apim-wso2am-acp-2-service.wso2-cp:9611"]
+    traffic_manager_auth_urls = ["ssl://apim-wso2am-acp-2-service.wso2-cp:9711"]
+    type = "loadbalance"
+
+    [apim.event_hub]
+    enable = true
+    username = "$ref{super_admin.username}"
+    password = "$ref{super_admin.password}"
+    service_url = "https://apim-wso2am-acp-service.wso2-cp:9443/services/"
+    event_listening_endpoints = ["tcp://apim-wso2am-acp-1-service.wso2-cp:5672", "tcp://apim-wso2am-acp-2-service.wso2-cp:5672"]
+
+    [apim.analytics]
+    enable = true
+    type = "elk"
+
+    # Caches
+    [apim.cache.gateway_token]
+    enable = true
+    expiry_time = 15
+
+    [apim.cache.resource]
+    enable = true
+    expiry_time = 900
+
+    [apim.cache.jwt_claim]
+    enable = true
+    expiry_time = 900
+
+    [apim.oauth_config]
+    remove_outbound_auth_header = true
+    auth_header = "Authorization"
+    enable_token_encryption = false
+    enable_token_hashing = false
+
+    [apim.cors]
+    enable = true
+    allow_origins = ["*"]
+    allow_methods = ["GET","PUT","POST","DELETE","PATCH","OPTIONS"]
+    allow_headers = ["authorization","Access-Control-Allow-Origin","Content-Type","SOAPAction","apikey","Internal-Key"]
+    allow_credentials = false
+    enable_validation_for_ws = false
+
+    [transport.passthru_https.sender.parameters]
+    HostnameVerifier = "AllowAll"
+
+    [apim.gateway_notification]
+    enabled = true
+    gateway_id = ""
+
+    [apim.gateway_notification.heartbeat]
+    notify_interval = "1m"
+
+    [apim.gateway_notification.deployment_ack]
+    batch_size = 100
+    batch_interval = "2s"
+    max_retry_count = 5
+    retry_duration = "10s"
+    retry_progression_factor = 2
+    batch_processor_min_thread = 2
+    batch_processor_max_thread = 8
+    batch_processor_keep_alive = "1m"
+    batch_processor_queue_size = 50
+
+    [apim.gateway_notification.registration]
+    max_retry_count = 5
+    retry_duration = "10s"
+    retry_progression_factor = 2
+
+    [common.data_bridge.agent]
+    reconnection_interval = "10s"  # Stop the 1-second spam
+    max_idle_time = "30m"
+kind: ConfigMap
+metadata:
+  name: apim-gw-wso2am-universal-gw-conf
+  namespace: wso2-external-gw
