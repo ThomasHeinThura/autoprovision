@@ -385,6 +385,15 @@
       no_log: true
       changed_when: true
 
+    # Clear any leftover cluster state LOCALLY on each node (stale corosync.conf + running
+    # corosync/pacemaker from a prior/hand-rolled attempt). Doing it locally avoids `pcs cluster
+    # setup --force` having to remotely destroy each node via pcsd — that remote destroy times out
+    # (60s) when the old services are in a bad state. Idempotent: no-op on a clean node.
+    - name: Tear down any pre-existing cluster state (local, idempotent)
+      shell: pcs cluster destroy
+      failed_when: false
+      changed_when: true
+
     - name: Ensure pcsd is running on every node (pcs cluster setup connects to it)
       systemd: { name: pcsd, state: started, enabled: true }
 
@@ -414,8 +423,10 @@
       until: pcs_auth.rc == 0
       changed_when: true
 
-    - name: Create the cluster (--force overwrites any corosync.conf left by a failed run)
-      shell: "pcs cluster setup {{ cluster_name_eff }} {{ ag_node_names }} --force"
+    # Nodes were destroyed locally above, so --force has nothing to remote-destroy. Bigger
+    # request-timeout guards against slow pcsd responses on first contact.
+    - name: Create the cluster (fresh; nodes already cleaned locally)
+      shell: "pcs cluster setup {{ cluster_name_eff }} {{ ag_node_names }} --force --request-timeout=120"
       changed_when: true
 
     - name: Start + enable the cluster on all nodes
