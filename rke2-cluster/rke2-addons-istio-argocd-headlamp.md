@@ -26,6 +26,14 @@ RKE2 puts `kubectl`, `helm`, and config under `/var/lib/rancher/rke2/bin` and
 
 ---
 
+## MetalLB (LoadBalancer IPs) — install first
+
+RKE2 nodes have no cloud load balancer, so the Istio ingress gateway Service would stay
+`<pending>`. Install **MetalLB (FRR-K8s mode)** to hand out LAN IPs, and **disable RKE2 ServiceLB**
+(it conflicts with MetalLB): follow [metallb-install.md](metallb-install.md). In short: set
+`rke2_disable_servicelb: true` at cluster install, then apply MetalLB + an `IPAddressPool` +
+`L2Advertisement` (or BGP). Do this **before** Istio so the gateway gets an IP immediately.
+
 ## 1. Install Istio (ingress replaces Envoy Gateway)
 
 Two supported paths — pick one. Helm is preferred for repeatability.

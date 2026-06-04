@@ -102,6 +102,9 @@
     rke2_token_eff: "{{ rke2_token | default(cluster_name_eff ~ '-rke2-token') }}"
     registration_address_eff: "{{ registration_address | default(groups['rke2_servers'][0]) }}"
     disable_bundled_ingress_eff: "{{ rke2_disable_bundled_ingress | default(true) }}"
+    # Set true when using MetalLB for LoadBalancer IPs — RKE2's built-in ServiceLB (Klipper)
+    # conflicts with MetalLB. See rke2-cluster/metallb-install.md.
+    disable_servicelb_eff: "{{ rke2_disable_servicelb | default(false) }}"
   tasks:
     - name: Ensure RKE2 config directory exists
       file:
@@ -122,11 +125,15 @@
             - {{ registration_address_eff }}
           # Default CNI (Canal) is used — do NOT set `cni: none`.
           write-kubeconfig-mode: "0644"
-          {% if disable_bundled_ingress_eff | bool %}
-          # Istio owns ingress — disable the RKE2-bundled ingress controller(s).
+          {% set _disable = [] %}
+          {% if disable_bundled_ingress_eff | bool %}{% set _ = _disable.extend(['rke2-ingress-nginx', 'rke2-traefik']) %}{% endif %}
+          {% if disable_servicelb_eff | bool %}{% set _ = _disable.append('servicelb') %}{% endif %}
+          {% if _disable %}
+          # Istio owns ingress (and MetalLB owns LoadBalancer IPs when servicelb is disabled).
           disable:
-            - rke2-ingress-nginx
-            - rke2-traefik
+          {% for d in _disable %}
+            - {{ d }}
+          {% endfor %}
           {% endif %}
 
     - name: Install RKE2 server (idempotent via creates)
