@@ -11,7 +11,38 @@
 # It does NOT: uninstall SQL Server, drop user databases, or remove the pacemaker/admin logins.
 # After it finishes, re-run the 'MSSQL HA AG' workload (Force) to rebuild cleanly.
 #
+# It also (a) DIAGNOSES the split before tearing down — printing each node's corosync link status,
+# /etc/hosts 127.0.1.1 line, quorum, membership and uptime so you can see the cause from the
+# jumphost run; and (b) applies the DURABLE /etc/hosts fix (remove 127.0.1.1 + stop cloud-init
+# rewriting it) so a node reboot can't re-strand corosync on loopback again.
+#
 # Required: sa_password. Optional: ag_name (ag1), listener_ip (to flush a stranded VIP from the NIC).
+
+# ── Diagnose the split FIRST (capture each node's view before we wipe it) ──
+- name: Diagnose corosync/AG split (all AG nodes)
+  hosts: mssql_ag
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Collect per-node split diagnostics
+      shell: |
+        echo "===== $(hostname -s) | uptime:$(uptime -p 2>/dev/null) ====="
+        echo "--- /etc/hosts 127.0.1.1 (MUST be absent; if present, a reboot re-stranded corosync) ---"
+        grep -nE '127\.0\.1\.1' /etc/hosts || echo "(none — good)"
+        echo "--- corosync link status (peers should be 'connected', addr should be the LAN IP not 127.x) ---"
+        corosync-cfgtool -s 2>&1 || echo "(corosync not running)"
+        echo "--- quorum ---"
+        corosync-quorumtool -s 2>&1 | sed -n '1,12p' || true
+        echo "--- pacemaker node list ---"
+        pcs status nodes 2>&1 || true
+        echo "--- firewall 5405/udp (corosync) ---"
+        ufw status 2>/dev/null | grep -E 'Status:|5405' || echo "(ufw inactive/not installed — not blocking)"
+      register: split_diag
+      changed_when: false
+      failed_when: false
+    - name: Show this node's diagnostics
+      debug: { msg: "{{ split_diag.stdout_lines | default(['(no output)']) }}" }
+
 
 # ── Pacemaker/Corosync: destroy the cluster config locally on every node (FIRST) ──
 - name: Reset Pacemaker/Corosync (all AG nodes)
@@ -36,6 +67,22 @@
       when: listener_ip_eff | length > 0
       failed_when: false
       changed_when: false
+
+    # DURABLE fix for the recurring split: the Ubuntu 127.0.1.1 hostname line makes corosync bind
+    # the cluster link to loopback (split-brain). Remove it AND stop cloud-init from re-adding it on
+    # the next reboot — otherwise a node reboot silently re-strands corosync on 127.0.1.1.
+    - name: Remove the Ubuntu 127.0.1.1 loopback hostname mapping
+      lineinfile:
+        path: /etc/hosts
+        regexp: '^127\.0\.1\.1\s'
+        state: absent
+
+    - name: Stop cloud-init from rewriting /etc/hosts on reboot (persist the fix)
+      copy:
+        dest: /etc/cloud/cloud.cfg.d/99-disable-etc-hosts.cfg
+        content: "manage_etc_hosts: false\n"
+        mode: "0644"
+      failed_when: false
 
 
 # ── SQL Server: drop AG + endpoint + cert on EVERY node (works on a split/broken cluster) ──

@@ -172,6 +172,15 @@
         regexp: '^127\.0\.1\.1\s'
         state: absent
 
+    # Persist it: without this, cloud-init rewrites /etc/hosts on the next reboot and re-adds the
+    # 127.0.1.1 line → corosync rebinds loopback → split-brain returns after a node reboot.
+    - name: Stop cloud-init from rewriting /etc/hosts on reboot (durable corosync fix)
+      copy:
+        dest: /etc/cloud/cloud.cfg.d/99-disable-etc-hosts.cfg
+        content: "manage_etc_hosts: false\n"
+        mode: "0644"
+      failed_when: false
+
     - name: Open firewall ports (Pacemaker, SQL, AG endpoint)
       shell: |
         ufw allow 2224/tcp; ufw allow 3121/tcp; ufw allow 21064/tcp
