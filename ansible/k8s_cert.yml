@@ -7,7 +7,10 @@
 #
 # Required variables (passed by the web UI):
 #   kubeconfig_path  path to the target cluster's kubeconfig on the jump host
-#   namespace        target namespace (e.g. istio-system)
+#   namespace        target namespace(s) — ONE or a comma/space/newline-separated list
+#                    (e.g. "istio-system,argocd,wso2-cp,wso2-internal-gw,wso2-external-gw,wso2-is").
+#                    The same secret is created in EACH. NOTE: Istio gateways resolve credentialName
+#                    from istio-system only; extra namespaces are for apps that mount the cert directly.
 #   secret_name      TLS secret name (e.g. wso2-ingress-cert)
 #   cert_src         path on the jump host to the certificate PEM
 #   key_src          path on the jump host to the private key PEM
@@ -18,6 +21,8 @@
   gather_facts: false
   vars:
     kubectl: "kubectl --kubeconfig {{ kubeconfig_path }}"
+    # Accept one namespace or a comma/space/newline-separated list → clean Python list.
+    namespaces_list: "{{ (namespace | default('istio-system')).replace(',', ' ').split() }}"
   tasks:
     - name: Verify the cluster kubeconfig exists
       stat:
@@ -37,19 +42,22 @@
       changed_when: false
       failed_when: reachable.rc != 0
 
-    - name: Ensure the namespace exists
+    - name: Ensure each target namespace exists
       shell: >
-        {{ kubectl }} create namespace {{ namespace }} --dry-run=client -o yaml
-        | {{ kubectl }} apply -f -
+        {{ kubectl }} create namespace {{ ns }} --dry-run=client -o yaml | {{ kubectl }} apply -f -
+      loop: "{{ namespaces_list }}"
+      loop_control: { loop_var: ns }
       register: ns_apply
       changed_when: "'created' in ns_apply.stdout"
 
-    # ── Path A: a PEM was provided → create/replace the secret directly (idempotent rotate) ──
+    # ── Path A: a PEM was provided → create/replace the secret in EACH namespace ──
     # One physical line: a folded scalar (`>`/`>-`) turns more-indented continuation lines into
     # literal newlines, which would split `--cert/--key` off and break `create secret tls`.
-    - name: Create or update the TLS secret from the provided PEM
+    - name: Create or update the TLS secret from the provided PEM (per namespace)
       shell: >-
-        {{ kubectl }} -n {{ namespace }} create secret tls {{ secret_name }} --cert={{ cert_src }} --key={{ key_src }} --dry-run=client -o yaml | {{ kubectl }} apply -f -
+        {{ kubectl }} -n {{ ns }} create secret tls {{ secret_name }} --cert={{ cert_src }} --key={{ key_src }} --dry-run=client -o yaml | {{ kubectl }} apply -f -
+      loop: "{{ namespaces_list }}"
+      loop_control: { loop_var: ns }
       register: secret_apply
       changed_when: "'configured' in secret_apply.stdout or 'created' in secret_apply.stdout"
       when: not (use_certmanager | default(false) | bool)
@@ -73,12 +81,12 @@
         - use_certmanager | default(false) | bool
         - ca_issuer_ready.stdout | default('') != 'True'
 
-    - name: Issue the TLS secret via cert-manager (auto-renewing Certificate)
+    - name: Issue the TLS secret via cert-manager in each namespace (auto-renewing Certificate)
       shell: |
         cat <<EOF | {{ kubectl }} apply -f -
         apiVersion: cert-manager.io/v1
         kind: Certificate
-        metadata: { name: {{ secret_name }}, namespace: {{ namespace }} }
+        metadata: { name: {{ secret_name }}, namespace: {{ ns }} }
         spec:
           secretName: {{ secret_name }}
           duration: 8760h
@@ -87,11 +95,15 @@
           dnsNames: [{% for d in (cert_dns | default('*.example.com')).split(',') %}"{{ d | trim }}"{{ "," if not loop.last else "" }}{% endfor %}]
           issuerRef: { name: {{ ca_issuer | default('ca-issuer') }}, kind: ClusterIssuer, group: cert-manager.io }
         EOF
+      loop: "{{ namespaces_list }}"
+      loop_control: { loop_var: ns }
       changed_when: true
       when: use_certmanager | default(false) | bool
 
-    - name: Wait until cert-manager has written the secret
-      shell: "{{ kubectl }} -n {{ namespace }} get secret {{ secret_name }} -o name"
+    - name: Wait until cert-manager has written the secret in each namespace
+      shell: "{{ kubectl }} -n {{ ns }} get secret {{ secret_name }} -o name"
+      loop: "{{ namespaces_list }}"
+      loop_control: { loop_var: ns }
       register: cm_secret
       retries: 18
       delay: 10
@@ -102,7 +114,8 @@
     - name: Report
       debug:
         msg: >-
-          TLS secret '{{ secret_name }}' is set in namespace '{{ namespace }}'
+          TLS secret '{{ secret_name }}' is set in namespaces {{ namespaces_list }}
           ({{ 'cert-manager / internal CA, auto-renewing, dnsNames=' ~ (cert_dns | default('*.example.com'))
               if (use_certmanager | default(false) | bool) else 'from provided PEM' }}).
-          Istio gateways using credentialName reload via SDS automatically — no restart needed.
+          Istio gateways resolve credentialName from istio-system; the other namespaces are for apps
+          that mount the cert directly. Gateways reload via SDS automatically — no restart needed.
