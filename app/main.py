@@ -430,6 +430,8 @@ ALL_TRACKS = [
     "prod_headlamp", "prod_db", "prod_wso2_apim", "prod_wso2_is",
     # Certificates (manual cert ops)
     "traefik_cert", "k8s_cert", "k8s_certmanager",
+    # Maintenance
+    "mssql_clean",
 ]
 
 
@@ -715,6 +717,22 @@ def _track_plan(action: str, body: dict) -> dict:
                 "playbook": "ansible/mssql_ag.yml",
                 "extra_vars": ag_extra,
                 "label": "MSSQL HA AG (native + Pacemaker)",
+            }],
+        }
+
+    if action == "mssql-ag-clean":
+        ips = _parse_ip_list(body.get("mssql_ips"))
+        if len(ips) < 2:
+            raise ValueError("at least two MSSQL AG node IPs are required")
+        clean_extra = {"sa_password": body.get("sa_password", ""), "ag_name": body.get("ag_name") or "ag1"}
+        if body.get("listener_ip"):
+            clean_extra["listener_ip"] = body.get("listener_ip")
+        return {
+            "inventory": {"mssql_ag": ips},
+            "steps": [{
+                "playbook": "ansible/mssql_ag_clean.yml",
+                "extra_vars": clean_extra,
+                "label": "MSSQL AG cleanup / reset (then re-run MSSQL HA AG)",
             }],
         }
 

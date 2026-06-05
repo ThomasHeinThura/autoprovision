@@ -1,0 +1,106 @@
+# Cleanup / RESET the MSSQL HA AG so mssql_ag.yml can rebuild from a CLEAN state.
+#
+# Use this when the cluster + AG drift out of sync (e.g. one node thinks another failed, the VIP
+# is stranded on the wrong node, replicas disagree). It removes BOTH layers that mssql_ag.yml builds:
+#   - Pacemaker/Corosync: the cluster config (destroyed locally on every node) + a stranded VIP.
+#     Done FIRST so the ocf:mssql:ag agent stops managing the AG before we drop it in SQL.
+#   - SQL Server: the availability group, the Hadr mirroring endpoint, and the AG certificate
+#     (dropped on EVERY node IF EXISTS, so it works even on a split/half-built cluster).
+#   - Jump host: the staged certificate copies, so the rebuild fetches a fresh, matching cert.
+#
+# It does NOT: uninstall SQL Server, drop user databases, or remove the pacemaker/admin logins.
+# After it finishes, re-run the 'MSSQL HA AG' workload (Force) to rebuild cleanly.
+#
+# Required: sa_password. Optional: ag_name (ag1), listener_ip (to flush a stranded VIP from the NIC).
+
+# ── Pacemaker/Corosync: destroy the cluster config locally on every node (FIRST) ──
+- name: Reset Pacemaker/Corosync (all AG nodes)
+  hosts: mssql_ag
+  become: true
+  gather_facts: false
+  vars:
+    listener_ip_eff: "{{ listener_ip | default('') }}"
+  tasks:
+    # `pcs cluster destroy` stops corosync/pacemaker locally and wipes corosync.conf + the CIB.
+    # Per-node so it works even when the cluster has no quorum / pcsd is unreachable cluster-wide.
+    - name: Destroy the local Pacemaker/Corosync config
+      shell: pcs cluster destroy
+      failed_when: false
+      changed_when: true
+
+    - name: Flush a stranded AG virtual IP from this node's NIC (if it lingered after destroy)
+      shell: |
+        ip -o -4 addr show | awk '$4 ~ /^{{ listener_ip_eff }}\// {print $4, $2}' | while read cidr ifc; do
+          ip addr del "$cidr" dev "$ifc" || true
+        done
+      when: listener_ip_eff | length > 0
+      failed_when: false
+      changed_when: false
+
+
+# ── SQL Server: drop AG + endpoint + cert on EVERY node (works on a split/broken cluster) ──
+- name: Reset SQL Server AG objects (all AG nodes)
+  hosts: mssql_ag
+  become: true
+  gather_facts: false
+  vars:
+    sa_password_eff: "{{ sa_password | default('') }}"
+    ag_name_eff: "{{ ag_name | default('ag1') }}"
+    # Cleanup always uses sa (the named admin may itself be part of the mismatch).
+    sqlcmd: "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"{{ sa_password | default('') }}\" -C"
+  tasks:
+    - name: Fail early if SA password is not provided
+      fail: { msg: "sa_password is required to drop the AG/endpoint/cert." }
+      when: sa_password_eff | length == 0
+
+    - name: Drop the availability group (IF EXISTS) — on every replica to clear split state
+      shell: >
+        {{ sqlcmd }} -Q
+        "IF EXISTS (SELECT 1 FROM sys.availability_groups WHERE name='{{ ag_name_eff }}')
+           DROP AVAILABILITY GROUP [{{ ag_name_eff }}];"
+      failed_when: false
+      changed_when: false
+
+    - name: Drop the Hadr mirroring endpoint (IF EXISTS)
+      shell: >
+        {{ sqlcmd }} -Q
+        "IF EXISTS (SELECT 1 FROM sys.endpoints WHERE name='Hadr_endpoint') DROP ENDPOINT [Hadr_endpoint];"
+      failed_when: false
+      changed_when: false
+
+    - name: Drop the AG certificate (regenerated fresh on rebuild → fixes cert mismatch between nodes)
+      shell: >
+        {{ sqlcmd }} -Q
+        "IF EXISTS (SELECT 1 FROM sys.certificates WHERE name='dbm_certificate') DROP CERTIFICATE dbm_certificate;"
+      failed_when: false
+      changed_when: false
+
+    - name: Remove the AG certificate files on the node
+      file: { path: "/var/opt/mssql/data/{{ item }}", state: absent }
+      loop: [ dbm_certificate.cer, dbm_certificate.pvk ]
+
+
+# ── Jump host: drop the staged certificate copies so the rebuild fetches a fresh, matching cert ──
+- name: Remove staged AG certs on the jump host
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    ag_name_eff: "{{ ag_name | default('ag1') }}"
+  tasks:
+    - name: Delete /tmp/mssql-ag-<ag>
+      file: { path: "/tmp/mssql-ag-{{ ag_name_eff }}", state: absent }
+
+
+- name: Report
+  hosts: mssql_ag[0]
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Cleanup summary
+      debug:
+        msg:
+          - "MSSQL AG cleanup complete on all nodes."
+          - "Removed: Pacemaker cluster config, stranded VIP, SQL AG + Hadr endpoint + dbm_certificate, staged certs."
+          - "Left intact: SQL Server, user databases, pacemaker/admin logins, /etc/hosts entries."
+          - "Now re-run the 'MSSQL HA AG' workload (Force) to rebuild from a clean state."

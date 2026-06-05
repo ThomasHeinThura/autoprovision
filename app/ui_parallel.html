@@ -246,6 +246,11 @@
               {k:"secret_name", l:"Secret Name", v:"wso2-ingress-cert"},
               {k:"cert_pem", l:"Certificate PEM (empty → cert-manager)", t:"textarea", ph:"-----BEGIN CERTIFICATE-----"},
               {k:"key_pem", l:"Private Key PEM (empty → cert-manager)", t:"textarea", ph:"-----BEGIN PRIVATE KEY-----"} ] },
+          { track:"mssql_clean", action:"mssql-ag-clean", title:"MSSQL AG — Cleanup / Reset",
+            desc:"DESTRUCTIVE: tears down the Pacemaker cluster + SQL AG/endpoint/cert on all nodes so 'MSSQL HA AG' can rebuild from a clean state. Use when nodes/listener drift out of sync. Does NOT uninstall SQL Server or drop user databases. After this, re-run 'MSSQL HA AG' with Force.",
+            fields:[ {k:"mssql_ips", l:"AG Node IPs (all nodes)", t:"textarea", ph:"192.168.51.31\n192.168.51.32\n192.168.51.33"}, {k:"ag_name", l:"AG Name", v:"prodag"},
+              {k:"listener_ip", l:"Listener / Virtual IP (to flush stranded VIP)", ph:"192.168.51.40"},
+              {k:"sa_password", l:"SA Password (not saved)", t:"password"} ] },
         ]},
       ];
       const TABS = {}; GROUPS.forEach(g => g.tabs.forEach(t => TABS[t.track] = t));
