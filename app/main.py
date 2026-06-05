@@ -477,7 +477,7 @@ def _read_targets() -> dict:
     return out
 
 
-_SECRET_KEYS = ("ssh_pass", "sa_password", "rke2_token", "gitlab_runner_token", "cert_pem", "key_pem")
+_SECRET_KEYS = ("ssh_pass", "sa_password", "db_admin_password", "rke2_token", "gitlab_runner_token", "cert_pem", "key_pem")
 
 
 def _save_target(track: str, data: dict) -> None:
@@ -696,6 +696,11 @@ def _track_plan(action: str, body: dict) -> dict:
             "ag_name": body.get("ag_name") or "ag1",
             "mssql_pid": body.get("mssql_pid") or "Enterprise",
         }
+        # Optional named sysadmin: sa still installs + creates this login on every node, then the
+        # AG/cert/endpoint SQL runs as it. Both must be set to take effect; else everything uses sa.
+        if (body.get("db_admin_user") or "").strip() and (body.get("db_admin_password") or "").strip():
+            ag_extra["db_admin_user"] = body.get("db_admin_user").strip()
+            ag_extra["db_admin_password"] = body.get("db_admin_password")
         if body.get("listener_ip"):
             ag_extra["listener_ip"] = body.get("listener_ip")
         if body.get("enable_fencing"):

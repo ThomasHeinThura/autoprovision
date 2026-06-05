@@ -12,7 +12,9 @@
 # managed by Pacemaker/Corosync with automatic failover + a virtual IP. (Read-scale CLUSTER_TYPE=NONE
 # is NOT used here.) Target inventory group: [mssql_ag]; the FIRST host is the initial primary.
 #
-# Required: sa_password. Optional: ag_name (ag1), mssql_pid (Enterprise), endpoint_port (5022),
+# Required: sa_password. Optional: db_admin_user + db_admin_password (a NAMED sysadmin login — sa
+#   still installs the instance and creates this login on every node, then Phases 2–10 run their SQL
+#   as it; leave blank to use sa for everything). Also: ag_name (ag1), mssql_pid (Enterprise), endpoint_port (5022),
 #   listener_ip (virtual IP for the AG — recommended), mssql_version (2025), ubuntu_release (24.04),
 #   pacemaker_password / hacluster_password / cert_password / master_key_password (derived if unset),
 #   enable_fencing (default false — LAB ONLY; production MUST configure a real fencing/STONITH device),
@@ -37,7 +39,9 @@
     ubuntu_release_eff: "{{ ubuntu_release | default('24.04') }}"
     pacemaker_password_eff: "{{ pacemaker_password | default((ag_name | default('ag1')) ~ '-Pacemaker-Pa55!') }}"
     endpoint_port_eff: "{{ endpoint_port | default(5022) }}"
-    sqlcmd: "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"{{ sa_password | default('') }}\" -C"
+    # Phase 1 ALWAYS uses sa: this play installs SQL Server and CREATES the optional named admin
+    # login (below). The named login can't authenticate until it exists, so bootstrap as sa here.
+    sqlcmd: "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"{{ sa_password_eff }}\" -C"
   tasks:
     - name: Fail early if SA password is not provided
       fail: { msg: "sa_password is required (strong password)." }
@@ -183,6 +187,20 @@
          IF IS_SRVROLEMEMBER('sysadmin','pacemakerLogin') = 0 ALTER SERVER ROLE [sysadmin] ADD MEMBER [pacemakerLogin];"
       changed_when: false
 
+    # Optional named sysadmin (web UI db_admin_user/db_admin_password). sa creates it as a sysadmin
+    # on EVERY node here so the later phases can connect as it. CHECK_POLICY=OFF so a lab password
+    # isn't rejected by the OS policy. Skipped when no db_admin_user is given (everything stays sa).
+    - name: Create the named SQL admin login (sysadmin) on every instance — sa bootstraps it
+      shell: >
+        {{ sqlcmd }} -Q
+        "IF SUSER_ID('{{ db_admin_user }}') IS NULL CREATE LOGIN [{{ db_admin_user }}] WITH PASSWORD = N'{{ db_admin_password }}', CHECK_POLICY = OFF;
+         IF IS_SRVROLEMEMBER('sysadmin','{{ db_admin_user }}') = 0 ALTER SERVER ROLE [sysadmin] ADD MEMBER [{{ db_admin_user }}];"
+      when:
+        - (db_admin_user | default('')) | length > 0
+        - db_admin_user != 'sa'
+      no_log: true
+      changed_when: false
+
     - name: Save the Pacemaker login credentials for the resource agent
       copy:
         dest: /var/opt/mssql/secrets/passwd
@@ -206,7 +224,9 @@
     ag_name_eff: "{{ ag_name | default('ag1') }}"
     master_key_password_eff: "{{ master_key_password | default((ag_name | default('ag1')) ~ '-Master-Pa55!') }}"
     cert_password_eff: "{{ cert_password | default((ag_name | default('ag1')) ~ '-Cert-Pa55!') }}"
-    sqlcmd: "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"{{ sa_password | default('') }}\" -C"
+    # Use the named sysadmin login when db_admin_user is provided (created in Phase 1 by sa);
+    # otherwise fall back to sa. Both must be set in the web UI for the named login to take effect.
+    sqlcmd: "/opt/mssql-tools18/bin/sqlcmd -S localhost -U {{ (db_admin_user | default('')) | ternary(db_admin_user | default(''), 'sa') }} -P \"{{ (db_admin_user | default('')) | ternary(db_admin_password | default(''), sa_password | default('')) }}\" -C"
   tasks:
     - name: Create master key + certificate
       shell: >
@@ -242,7 +262,9 @@
     ag_name_eff: "{{ ag_name | default('ag1') }}"
     master_key_password_eff: "{{ master_key_password | default((ag_name | default('ag1')) ~ '-Master-Pa55!') }}"
     cert_password_eff: "{{ cert_password | default((ag_name | default('ag1')) ~ '-Cert-Pa55!') }}"
-    sqlcmd: "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"{{ sa_password | default('') }}\" -C"
+    # Use the named sysadmin login when db_admin_user is provided (created in Phase 1 by sa);
+    # otherwise fall back to sa. Both must be set in the web UI for the named login to take effect.
+    sqlcmd: "/opt/mssql-tools18/bin/sqlcmd -S localhost -U {{ (db_admin_user | default('')) | ternary(db_admin_user | default(''), 'sa') }} -P \"{{ (db_admin_user | default('')) | ternary(db_admin_password | default(''), sa_password | default('')) }}\" -C"
   tasks:
     - name: Copy certificate files to the secondary
       copy: { src: "/tmp/mssql-ag-{{ ag_name_eff }}/{{ item }}", dest: "/var/opt/mssql/data/{{ item }}", owner: mssql, group: mssql, mode: "0660" }
@@ -270,7 +292,9 @@
   vars:
     sa_password_eff: "{{ sa_password | default('') }}"
     endpoint_port_eff: "{{ endpoint_port | default(5022) }}"
-    sqlcmd: "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"{{ sa_password | default('') }}\" -C"
+    # Use the named sysadmin login when db_admin_user is provided (created in Phase 1 by sa);
+    # otherwise fall back to sa. Both must be set in the web UI for the named login to take effect.
+    sqlcmd: "/opt/mssql-tools18/bin/sqlcmd -S localhost -U {{ (db_admin_user | default('')) | ternary(db_admin_user | default(''), 'sa') }} -P \"{{ (db_admin_user | default('')) | ternary(db_admin_password | default(''), sa_password | default('')) }}\" -C"
   tasks:
     - name: Create + start the Hadr_endpoint (certificate auth)
       shell: >
@@ -294,7 +318,9 @@
     sa_password_eff: "{{ sa_password | default('') }}"
     ag_name_eff: "{{ ag_name | default('ag1') }}"
     endpoint_port_eff: "{{ endpoint_port | default(5022) }}"
-    sqlcmd: "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"{{ sa_password | default('') }}\" -C"
+    # Use the named sysadmin login when db_admin_user is provided (created in Phase 1 by sa);
+    # otherwise fall back to sa. Both must be set in the web UI for the named login to take effect.
+    sqlcmd: "/opt/mssql-tools18/bin/sqlcmd -S localhost -U {{ (db_admin_user | default('')) | ternary(db_admin_user | default(''), 'sa') }} -P \"{{ (db_admin_user | default('')) | ternary(db_admin_password | default(''), sa_password | default('')) }}\" -C"
   tasks:
     - name: Build FOR REPLICA ON clause (replica name = node hostname; endpoint = node IP)
       set_fact:
@@ -348,7 +374,9 @@
     listener_name_eff: "{{ listener_name | default((ag_name | default('ag1')) ~ '-listener') }}"
     listener_port_eff: "{{ listener_port | default(1433) }}"
     listener_subnet_mask_eff: "{{ listener_subnet_mask | default('255.255.255.255' if (mssql_version | default('2025')) in ['2017','2019'] else '0.0.0.0') }}"
-    sqlcmd: "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"{{ sa_password | default('') }}\" -C"
+    # Use the named sysadmin login when db_admin_user is provided (created in Phase 1 by sa);
+    # otherwise fall back to sa. Both must be set in the web UI for the named login to take effect.
+    sqlcmd: "/opt/mssql-tools18/bin/sqlcmd -S localhost -U {{ (db_admin_user | default('')) | ternary(db_admin_user | default(''), 'sa') }} -P \"{{ (db_admin_user | default('')) | ternary(db_admin_password | default(''), sa_password | default('')) }}\" -C"
   tasks:
     - name: Note when no listener is requested
       debug: { msg: "listener_ip not set — skipping AG listener. Set listener_ip (= the Pacemaker VIP) to enable." }
@@ -392,7 +420,9 @@
   vars:
     sa_password_eff: "{{ sa_password | default('') }}"
     ag_name_eff: "{{ ag_name | default('ag1') }}"
-    sqlcmd: "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"{{ sa_password | default('') }}\" -C"
+    # Use the named sysadmin login when db_admin_user is provided (created in Phase 1 by sa);
+    # otherwise fall back to sa. Both must be set in the web UI for the named login to take effect.
+    sqlcmd: "/opt/mssql-tools18/bin/sqlcmd -S localhost -U {{ (db_admin_user | default('')) | ternary(db_admin_user | default(''), 'sa') }} -P \"{{ (db_admin_user | default('')) | ternary(db_admin_password | default(''), sa_password | default('')) }}\" -C"
   tasks:
     - name: Join the AG (CLUSTER_TYPE = EXTERNAL) + grant permissions
       shell: >
@@ -647,7 +677,9 @@
     sa_password_eff: "{{ sa_password | default('') }}"
     ag_name_eff: "{{ ag_name | default('ag1') }}"
     listener_ip_eff: "{{ listener_ip | default('') }}"
-    sqlcmd: "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"{{ sa_password | default('') }}\" -C"
+    # Use the named sysadmin login when db_admin_user is provided (created in Phase 1 by sa);
+    # otherwise fall back to sa. Both must be set in the web UI for the named login to take effect.
+    sqlcmd: "/opt/mssql-tools18/bin/sqlcmd -S localhost -U {{ (db_admin_user | default('')) | ternary(db_admin_user | default(''), 'sa') }} -P \"{{ (db_admin_user | default('')) | ternary(db_admin_password | default(''), sa_password | default('')) }}\" -C"
   tasks:
     - name: AG replica health
       shell: >
