@@ -66,8 +66,25 @@
                    '). Continuing anyway — SQL Server may fail to start due to a missing OpenLDAP runtime; the real '
                    ~ 'start error (sqlservr/ldd) is surfaced below if it fails. Use a supported Ubuntu release.') }}
 
+    # Some mirrors / caching proxies corrupt .deb downloads with HTTP pipelining, causing the
+    # intermittent "Hash Sum mismatch" / "incorrect response from server/proxy" failures seen when
+    # fetching unixodbc/msodbcsql. Turn pipelining + proxy caching off so each package is re-fetched
+    # fresh and re-verified. (All the apt installs below also retry to ride out transient mirror hiccups.)
+    - name: Harden apt against caching-proxy "Hash Sum mismatch" (disable pipelining + cache)
+      copy:
+        dest: /etc/apt/apt.conf.d/99-autoprovision-no-pipeline
+        mode: "0644"
+        content: |
+          Acquire::http::Pipeline-Depth "0";
+          Acquire::http::No-Cache "true";
+          Acquire::BrokenProxy "true";
+
     - name: Install prerequisites
       apt: { name: [curl, gnupg, apt-transport-https, ca-certificates, ufw], state: present, update_cache: yes }
+      register: r_prereq
+      retries: 3
+      delay: 15
+      until: r_prereq is succeeded
 
     - name: Add Microsoft GPG key
       get_url: { url: "https://packages.microsoft.com/keys/microsoft.asc", dest: /etc/apt/trusted.gpg.d/microsoft.asc, mode: "0644" }
@@ -90,6 +107,10 @@
 
     - name: Install mssql-server
       apt: { name: mssql-server, state: present, update_cache: yes }
+      register: r_mssql
+      retries: 3
+      delay: 15
+      until: r_mssql is succeeded
 
     # SQL Server 2022 links OpenLDAP 2.5 (liblber-2.5); 2025 links OpenLDAP 2.6 (liblber-2.6).
     # The matching runtime ships by default on the supported Ubuntu release; install best-effort.
@@ -98,8 +119,12 @@
       failed_when: false
 
     - name: Install mssql-tools18 + unixodbc-dev (sqlcmd)
-      apt: { name: [mssql-tools18, unixodbc-dev], state: present }
+      apt: { name: [mssql-tools18, unixodbc-dev], state: present, update_cache: yes }
       environment: { ACCEPT_EULA: "Y" }
+      register: r_tools
+      retries: 3
+      delay: 15
+      until: r_tools is succeeded
 
     - name: Run mssql-conf setup (non-interactive, Enterprise edition)
       shell: /opt/mssql/bin/mssql-conf -n setup accept-eula
