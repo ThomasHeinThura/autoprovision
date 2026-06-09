@@ -114,39 +114,57 @@
       register: hadr
       changed_when: hadr.rc == 0
 
-    - name: Restart SQL Server to apply hadr
-      systemd: { name: mssql-server, state: restarted, enabled: true, daemon_reload: true }
-      register: mssql_restart
-      failed_when: false
-
-    - name: Capture diagnostics if SQL Server failed to start
-      when: mssql_restart.status.ActiveState | default('') != 'active'
-      shell: |
-        echo "== sqlservr direct run (the REAL crash reason) =="
-        timeout 10 /opt/mssql/bin/sqlservr 2>&1 | head -15 || true
-        echo "== ldd missing shared libraries =="
-        ldd /opt/mssql/bin/sqlservr 2>&1 | grep -i "not found" || echo "(no missing libs reported by ldd)"
-        echo "== OS / libldap present =="
-        echo "OS: $(. /etc/os-release; echo $PRETTY_NAME)"
-        ls -1 /usr/lib/x86_64-linux-gnu/liblber-2.* /usr/lib/x86_64-linux-gnu/libldap-2.* 2>/dev/null || echo "(no liblber/libldap 2.x found)"
-        echo "== journal (systemd loop, least useful) =="
-        journalctl -xeu mssql-server.service --no-pager 2>&1 | tail -20
-      register: mssql_diag
-      changed_when: false
-    - name: Fail with the real start error
-      when: mssql_restart.status.ActiveState | default('') != 'active'
-      fail:
-        msg: |
-          SQL Server {{ mssql_version_eff }} failed to start on {{ inventory_hostname }}.
-          If you see "liblber-2.X.so.0: cannot open shared object file", the OS is unsupported:
-            - SQL Server 2022 needs OpenLDAP 2.5  -> Ubuntu 20.04 / 22.04
-            - SQL Server 2025 needs OpenLDAP 2.6  -> Ubuntu 22.04 / 24.04
-          Ubuntu 26.04 is not supported by any SQL Server release. Rebuild this node on a supported
-          Ubuntu (recommended: 24.04 for SQL Server 2025).
-          {{ mssql_diag.stdout }}
-
-    - name: Wait for SQL Server on 1433
-      wait_for: { port: 1433, host: 127.0.0.1, timeout: 120 }
+    # SQL Server 2025's FIRST start — right after `mssql-conf setup` + enabling hadr — initializes
+    # the system databases and can take MANY minutes to accept connections. During the restart a
+    # slow-shutting-down previous process also leaves the unit briefly non-active ("Found left-over
+    # process ... in control group"). So we must NOT judge success on the instantaneous
+    # post-restart ActiveState — that produced false "failed to start" errors while SQL was in fact
+    # still coming up (and the old diagnostic then ran sqlservr directly while systemd already had
+    # it running, yielding the red-herring "Another instance ... is already running"). Instead:
+    # restart, then POLL for real readiness with a generous timeout; only on genuine timeout do we
+    # stop the unit, capture the real crash reason, and fail. Tunable via mssql_start_timeout.
+    - name: Bring SQL Server up after enabling hadr (wait for real readiness)
+      block:
+        - name: Restart SQL Server to apply hadr
+          systemd: { name: mssql-server, state: restarted, enabled: true, daemon_reload: true }
+        - name: Wait for SQL Server to accept TCP connections on 1433 (first start can take many minutes)
+          wait_for: { port: 1433, host: 127.0.0.1, timeout: "{{ mssql_start_timeout | default(1800) }}" }
+        - name: Wait until SQL Server answers a query (engine fully online, not just listening)
+          shell: '{{ sqlcmd }} -l 5 -Q "SELECT 1;"'
+          register: mssql_select1
+          changed_when: false
+          retries: 60
+          delay: 10
+          until: mssql_select1.rc == 0
+      rescue:
+        - name: Capture the real start error (service is genuinely down here)
+          shell: |
+            echo "== unit status =="
+            systemctl is-active mssql-server || true
+            systemctl --no-pager -l status mssql-server 2>&1 | tail -8 || true
+            echo "== sqlservr direct run (stop the unit first so this isn't a false 'already running') =="
+            systemctl stop mssql-server 2>/dev/null || true
+            sleep 2
+            timeout 20 /opt/mssql/bin/sqlservr 2>&1 | head -20 || true
+            echo "== ldd missing shared libraries =="
+            ldd /opt/mssql/bin/sqlservr 2>&1 | grep -i "not found" || echo "(no missing libs reported by ldd)"
+            echo "== OS / libldap present =="
+            echo "OS: $(. /etc/os-release; echo $PRETTY_NAME)"
+            ls -1 /usr/lib/x86_64-linux-gnu/liblber-2.* /usr/lib/x86_64-linux-gnu/libldap-2.* 2>/dev/null || echo "(no liblber/libldap 2.x found)"
+            echo "== journal =="
+            journalctl -xeu mssql-server.service --no-pager 2>&1 | tail -25
+          register: mssql_diag
+          changed_when: false
+        - name: Fail with the real start error
+          fail:
+            msg: |
+              SQL Server {{ mssql_version_eff }} did not accept connections on {{ inventory_hostname }} within {{ mssql_start_timeout | default(1800) }}s.
+              If you see "liblber-2.X.so.0: cannot open shared object file", the OS is unsupported:
+                - SQL Server 2022 needs OpenLDAP 2.5  -> Ubuntu 20.04 / 22.04
+                - SQL Server 2025 needs OpenLDAP 2.6  -> Ubuntu 22.04 / 24.04
+              Ubuntu 26.04 is not supported by any SQL Server release. Rebuild this node on a supported
+              Ubuntu (recommended: 24.04 for SQL Server 2025).
+              {{ mssql_diag.stdout }}
 
     - name: Enable AlwaysOn_health extended event session
       shell: '{{ sqlcmd }} -Q "ALTER EVENT SESSION AlwaysOn_health ON SERVER WITH (STARTUP_STATE=ON);"'
