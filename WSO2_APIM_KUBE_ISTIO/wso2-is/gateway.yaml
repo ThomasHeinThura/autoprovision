@@ -1,0 +1,39 @@
+# Identity Server ingress under ambient — Gateway API HTTPRoute + Istio DestinationRule.
+#
+# Routes wso2is.example.com to the IS Service HTTPS servlet port 9443. The ingress Gateway Envoy
+# re-originates TLS to 9443 (DestinationRule); ztunnel adds mTLS because wso2-is is enrolled in the
+# ambient mesh. IS is single-replica, so no session affinity is needed.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: wso2is-route
+  namespace: wso2-is
+spec:
+  parentRefs:
+    - name: wso2-gateway
+      namespace: istio-system
+      sectionName: https
+  hostnames:
+    - "wso2is.example.com"
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - group: ""
+          kind: Service
+          name: wso2-is-identity-server
+          port: 9443
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: wso2is-backend-tls-settings
+  namespace: wso2-is
+spec:
+  host: wso2-is-identity-server.wso2-is.svc.cluster.local
+  trafficPolicy:
+    tls:
+      mode: SIMPLE
+      insecureSkipVerify: true

@@ -1,0 +1,39 @@
+# External gateway ingress under ambient — Gateway API HTTPRoute + Istio DestinationRule.
+#
+# Routes external-gw.example.com to the universal-gw Service HTTPS pass-through port 8243. The
+# ingress Gateway Envoy re-originates TLS to 8243 (DestinationRule); ztunnel adds mTLS because
+# wso2-external-gw is enrolled in the ambient mesh. No session affinity: API traffic is stateless.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: external-gw-route
+  namespace: wso2-external-gw
+spec:
+  parentRefs:
+    - name: wso2-gateway
+      namespace: istio-system
+      sectionName: https
+  hostnames:
+    - "external-gw.example.com"
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - group: ""
+          kind: Service
+          name: apim-gw-wso2am-universal-gw-service
+          port: 8243
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: external-gw-backend-tls-settings
+  namespace: wso2-external-gw
+spec:
+  host: apim-gw-wso2am-universal-gw-service.wso2-external-gw.svc.cluster.local
+  trafficPolicy:
+    tls:
+      mode: SIMPLE
+      insecureSkipVerify: true

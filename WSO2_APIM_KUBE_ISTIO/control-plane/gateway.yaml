@@ -1,0 +1,51 @@
+# Control-plane ingress under ambient — Gateway API HTTPRoute + Istio DestinationRule.
+#
+# The HTTPRoute attaches to the shared `wso2-gateway` (istio-system) by host and routes to the
+# control-plane Service on its HTTPS port 9443. The Gateway proxy (an Envoy) re-originates TLS to
+# 9443 via the DestinationRule below; ztunnel additionally wraps the hop in mTLS because wso2-cp is
+# enrolled in the ambient mesh (istio.io/dataplane-mode=ambient).
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: apim-route
+  namespace: wso2-cp
+spec:
+  parentRefs:
+    - name: wso2-gateway
+      namespace: istio-system
+      sectionName: https
+  hostnames:
+    - "apim.example.com"
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - group: ""
+          kind: Service
+          name: apim-wso2am-acp-service
+          port: 9443
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: apim-backend-tls-settings
+  namespace: wso2-cp
+spec:
+  host: apim-wso2am-acp-service.wso2-cp.svc.cluster.local
+  trafficPolicy:
+    # Backend TLS origination: route to the WSO2 HTTPS servlet port (9443). insecureSkipVerify
+    # because the backend serves WSO2's self-signed cert. Applied by the ingress Gateway Envoy.
+    tls:
+      mode: SIMPLE
+      insecureSkipVerify: true
+    # Session affinity: apim-wso2am-acp-service fronts BOTH control-plane pods (acp-1 + acp-2).
+    # Without affinity the Carbon console / Publisher / DevPortal round-robins and logins/CSRF
+    # break. consistentHash pins each client to one pod via a gateway-issued SERVERID cookie.
+    # The ingress Gateway is the L7 proxy here, so this applies without an in-mesh waypoint.
+    loadBalancer:
+      consistentHash:
+        httpCookie:
+          name: SERVERID
+          ttl: 0s   # session cookie (cleared when the browser closes)
