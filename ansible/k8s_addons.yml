@@ -9,8 +9,8 @@
 #   metallb : metallb_ip_range   (e.g. "192.168.51.200-192.168.51.220")
 #   istio   : tls_secret (default wso2-ingress-cert), wso2_certs_dir (PEMs for the gateway TLS),
 #             gateway_api_version (default v1.5.1, STANDARD channel — only installed when missing),
-#             cni_conf_dir / cni_bin_dir (RKE2 CNI paths; defaults
-#             /var/lib/rancher/rke2/agent/etc/cni/net.d and /opt/cni/bin). Installs the AMBIENT
+#             cni_conf_dir / cni_bin_dir (RKE2 CNI paths; defaults /etc/cni/net.d and
+#             /opt/cni/bin — RKE2 uses the standard locations, unlike K3s). Installs the AMBIENT
 #             profile (istiod + istio-cni + ztunnel); uninstalls any pre-existing sidecar Istio
 #             first. There is NO istio-ingressgateway — ingress is a Gateway API Gateway applied later.
 #   argocd  : argocd_host, tls_secret   (exposed via a Gateway API Gateway + HTTPRoute)
@@ -170,14 +170,16 @@
           failed_when: false
           changed_when: istio_uninstall.rc == 0
 
-        # RKE2 is NOT in istioctl's built-in platform list, and (like K3s) it stores CNI config and
-        # binaries in non-standard locations. Without these overrides istio-cni-node can't find the
-        # CNI conf/bin dirs, the chained plugin is never written, and the ambient data plane never
-        # captures pods. Defaults below are the RKE2 paths; override cni_conf_dir/cni_bin_dir for
-        # a custom CNI layout. Keep on ONE physical line (folded-scalar continuation = literal NL).
+        # RKE2 is NOT in istioctl's built-in platform list. Unlike K3s (which uses
+        # /var/lib/rancher/k3s/... paths), RKE2's Canal writes its CNI config to the STANDARD
+        # /etc/cni/net.d and installs binaries in /opt/cni/bin — which are also istio's defaults.
+        # We set them explicitly (overridable) so the intent is documented. NB: pointing cniConfDir
+        # at the rancher path /var/lib/rancher/rke2/agent/etc/cni/net.d makes istio-cni hang on
+        # "no networks found in /host/etc/cni/net.d" because Canal's conflist isn't there.
+        # Keep on ONE physical line (folded-scalar continuation = literal NL).
         - name: Install Istio (ambient profile → istiod + istio-cni + ztunnel) with RKE2 CNI paths
           shell: >-
-            istioctl install --set profile=ambient -y --kubeconfig {{ kubeconfig_path }} --set values.cni.cniConfDir={{ cni_conf_dir | default('/var/lib/rancher/rke2/agent/etc/cni/net.d') }} --set values.cni.cniBinDir={{ cni_bin_dir | default('/opt/cni/bin') }}
+            istioctl install --set profile=ambient -y --kubeconfig {{ kubeconfig_path }} --set values.cni.cniConfDir={{ cni_conf_dir | default('/etc/cni/net.d') }} --set values.cni.cniBinDir={{ cni_bin_dir | default('/opt/cni/bin') }}
         - name: Wait for istiod
           shell: "{{ kubectl }} -n istio-system rollout status deploy/istiod --timeout=180s"
           changed_when: false
