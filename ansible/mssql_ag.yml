@@ -126,6 +126,19 @@
       delay: 15
       until: r_tools is succeeded
 
+    # `mssql-conf setup` starts its OWN sqlservr to initialize the system DBs and fails with
+    # "Another instance of the application is already running" if one is up. A truly fresh install
+    # leaves the service stopped, but a re-used/snapshot node may have mssql-server enabled and
+    # running (uninitialized) — so stop it and clear any stray sqlservr before setup. Only matters
+    # when setup actually runs (instance_id absent); harmless otherwise (hadr restart starts it again).
+    - name: Stop SQL Server + clear any stray sqlservr before initial setup
+      shell: |
+        systemctl stop mssql-server 2>/dev/null || true
+        pkill -9 -x sqlservr 2>/dev/null || true
+        sleep 2
+        exit 0
+      changed_when: false
+
     - name: Run mssql-conf setup (non-interactive, Enterprise edition)
       shell: /opt/mssql/bin/mssql-conf -n setup accept-eula
       environment:
