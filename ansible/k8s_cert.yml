@@ -2,18 +2,30 @@
 #
 # Runs on the JUMP HOST (localhost) using the cluster kubeconfig that
 # ansible/rke2_cluster.yml fetched to data/k8s/<cluster>/kubeconfig. Used to install
-# the TLS cert that Istio / WSO2 serve (e.g. secret `wso2-ingress-cert` in istio-system).
+# the TLS cert that the Istio ambient shared Gateway serves (secret `wso2-ingress-cert`).
 # Idempotent: re-running replaces the secret with the new cert (apply).
+#
+# WHERE THE CERT MUST LIVE (ambient + Kubernetes Gateway API):
+#   The single shared Gateway 'shared-gateway' is a gateway.networking.k8s.io/Gateway in
+#   istio-system; its listener references the Secret via `certificateRefs:{name,namespace}`.
+#   Gateway API only allows a Gateway to read Secrets in ITS OWN namespace unless a ReferenceGrant
+#   exists — so the gateway TLS secret MUST be in istio-system (default below). There is NO
+#   `credentialName`/Gateway selector anymore (that was sidecar-era istio.networking Gateways).
+#   Creating the secret in other namespaces is ONLY for apps that mount the PEM directly; the
+#   shared gateway never looks there. One catch-all listener serves this one cert for ALL hosts,
+#   so the cert should be a wildcard (or multi-SAN) covering every shared-gateway hostname.
 #
 # Required variables (passed by the web UI):
 #   kubeconfig_path  path to the target cluster's kubeconfig on the jump host
-#   namespace        target namespace(s) — ONE or a comma/space/newline-separated list
-#                    (e.g. "istio-system,argocd,wso2-cp,wso2-internal-gw,wso2-external-gw,wso2-is").
-#                    The same secret is created in EACH. NOTE: Istio gateways resolve credentialName
-#                    from istio-system only; extra namespaces are for apps that mount the cert directly.
-#   secret_name      TLS secret name (e.g. wso2-ingress-cert)
-#   cert_src         path on the jump host to the certificate PEM
-#   key_src          path on the jump host to the private key PEM
+#   namespace        target namespace(s) for the secret. For the shared gateway use just
+#                    "istio-system" (default). A comma/space/newline list is still accepted for the
+#                    rare app that mounts the cert itself (e.g. "istio-system,wso2-cp").
+#   secret_name      TLS secret name (default/expected by the shared gateway: wso2-ingress-cert)
+#   cert_src         path on the jump host to the certificate PEM   (PEM path)
+#   key_src          path on the jump host to the private key PEM   (PEM path)
+#   use_certmanager  true → issue + AUTO-RENEW from the internal CA instead of a PEM (Path B below)
+#   cert_dns         CSV of dnsNames for the cert-manager cert. For the shared catch-all gateway use
+#                    ONE wildcard that covers all hosts, e.g. "*.prod.example.com" (default *.example.com).
 
 - name: Create/update a Kubernetes TLS secret
   hosts: localhost
@@ -117,5 +129,8 @@
           TLS secret '{{ secret_name }}' is set in namespaces {{ namespaces_list }}
           ({{ 'cert-manager / internal CA, auto-renewing, dnsNames=' ~ (cert_dns | default('*.example.com'))
               if (use_certmanager | default(false) | bool) else 'from provided PEM' }}).
-          Istio gateways resolve credentialName from istio-system; the other namespaces are for apps
-          that mount the cert directly. Gateways reload via SDS automatically — no restart needed.
+          The ambient shared Gateway reads its cert from istio-system ONLY (Gateway API
+          certificateRefs, same namespace as the Gateway) — any other namespaces here are just for
+          apps that mount the PEM directly. The gateway reloads the cert via SDS — no restart needed.
+          To use the internal CA for the gateway, re-run with: use_certmanager=true
+          namespace=istio-system secret_name=wso2-ingress-cert cert_dns='*.<your-domain>'.
