@@ -21,6 +21,9 @@
 #   listener_name (<ag>-listener), listener_port (1433), listener_subnet_mask
 #     (auto: 0.0.0.0 for SQL 2022/2025, 255.255.255.255 for 2017/2019 — the listener IP is owned by
 #      the Pacemaker VIP, so this is metadata only). The listener is created only when listener_ip is set.
+#   mssql_memory_limit_mb (default 70% of node RAM) — SQL Server memory cap; prevents OOM/D-Bus loss
+#     during the first hadr-enabled restart on small VMs. mssql_start_timeout (default 1800s) — how
+#     long to wait for SQL to accept connections after the restart before failing with diagnostics.
 #
 # Node names: the SQL replica name must equal SERVERPROPERTY('ServerName') (= the node hostname,
 # <=15 chars, unique). Endpoint URLs use node IPs so they resolve regardless of /etc/hosts.
@@ -152,45 +155,56 @@
       register: hadr
       changed_when: hadr.rc == 0
 
-    # SQL Server 2025's FIRST start — right after `mssql-conf setup` + enabling hadr — initializes
-    # the system databases and can take MANY minutes to accept connections. During the restart a
-    # slow-shutting-down previous process also leaves the unit briefly non-active ("Found left-over
-    # process ... in control group"). So we must NOT judge success on the instantaneous
-    # post-restart ActiveState — that produced false "failed to start" errors while SQL was in fact
-    # still coming up (and the old diagnostic then ran sqlservr directly while systemd already had
-    # it running, yielding the red-herring "Another instance ... is already running"). Instead:
-    # restart, then POLL for real readiness with a generous timeout; only on genuine timeout do we
-    # stop the unit, capture the real crash reason, and fail. Tunable via mssql_start_timeout.
-    - name: Bring SQL Server up after enabling hadr (wait for real readiness)
+    # Cap SQL Server's memory. By default SQL grabs ~80% of RAM; on small VMs the first
+    # hadr-enabled start (which rebuilds model_replicatedmaster) then spikes and can OOM the box —
+    # that's what kills systemd-logind/D-Bus and makes the restart fail with "D-Bus connection
+    # terminated / Connection reset by peer". Leaving headroom keeps the node (and D-Bus) alive.
+    - name: Cap SQL Server memory to leave OS headroom (prevents OOM/D-Bus loss on small VMs)
+      shell: /opt/mssql/bin/mssql-conf set memory.memorylimitmb {{ mssql_memory_limit_mb | default((ansible_facts['memtotal_mb'] * 0.7) | int) }}
+      changed_when: true
+
+    # SQL Server 2025's FIRST hadr-enabled start does a slow one-time model_replicatedmaster build,
+    # so it can take minutes to accept connections. CRITICAL: restart NON-BLOCKING. The systemd
+    # module (and a plain `systemctl restart`) wait synchronously on D-Bus for the job to finish;
+    # on a small/loaded VM that long wait gets reset ("D-Bus connection terminated"), the task
+    # fails, and the box is left needing a manual `systemctl kill`. `--no-block` enqueues the
+    # restart and returns immediately — then OUR readiness poll (port 1433 + a real query) decides
+    # when SQL is actually up. No D-Bus wait to drop, no hang, no manual intervention. The poll
+    # caps at mssql_start_timeout but returns the moment SQL answers, so a healthy node is fast.
+    - name: Bring SQL Server up after enabling hadr (non-blocking restart + readiness poll)
       block:
-        - name: Restart SQL Server to apply hadr
-          systemd: { name: mssql-server, state: restarted, enabled: true, daemon_reload: true }
-        - name: Wait for SQL Server to accept TCP connections on 1433 (first start can take many minutes)
+        - name: Ensure mssql-server is enabled at boot
+          shell: systemctl enable mssql-server
+          changed_when: false
+        - name: Restart SQL Server (non-blocking — readiness handled by the poll below)
+          shell: |
+            systemctl restart --no-block mssql-server
+            sleep 8
+          changed_when: true
+        - name: Wait for SQL Server to accept TCP connections on 1433 (first start can take minutes)
           wait_for: { port: 1433, host: 127.0.0.1, timeout: "{{ mssql_start_timeout | default(1800) }}" }
         - name: Wait until SQL Server answers a query (engine fully online, not just listening)
           shell: '{{ sqlcmd }} -l 5 -Q "SELECT 1;"'
           register: mssql_select1
           changed_when: false
-          retries: 60
+          retries: 90
           delay: 10
           until: mssql_select1.rc == 0
       rescue:
-        - name: Capture the real start error (service is genuinely down here)
+        # Read the truth from the SQL errorlog — do NOT run sqlservr directly (that would start a
+        # second first-init and leave a stray process). The errorlog states the real failure.
+        - name: Capture the real start error from the SQL errorlog
           shell: |
             echo "== unit status =="
             systemctl is-active mssql-server || true
-            systemctl --no-pager -l status mssql-server 2>&1 | tail -8 || true
-            echo "== sqlservr direct run (stop the unit first so this isn't a false 'already running') =="
-            systemctl stop mssql-server 2>/dev/null || true
-            sleep 2
-            timeout 20 /opt/mssql/bin/sqlservr 2>&1 | head -20 || true
+            systemctl --no-pager -l status mssql-server 2>&1 | tail -10 || true
+            echo "== /var/opt/mssql/log/errorlog (tail 40) =="
+            tail -n 40 /var/opt/mssql/log/errorlog 2>/dev/null || echo "(no errorlog yet)"
             echo "== ldd missing shared libraries =="
             ldd /opt/mssql/bin/sqlservr 2>&1 | grep -i "not found" || echo "(no missing libs reported by ldd)"
             echo "== OS / libldap present =="
             echo "OS: $(. /etc/os-release; echo $PRETTY_NAME)"
             ls -1 /usr/lib/x86_64-linux-gnu/liblber-2.* /usr/lib/x86_64-linux-gnu/libldap-2.* 2>/dev/null || echo "(no liblber/libldap 2.x found)"
-            echo "== journal =="
-            journalctl -xeu mssql-server.service --no-pager 2>&1 | tail -25
           register: mssql_diag
           changed_when: false
         - name: Fail with the real start error
