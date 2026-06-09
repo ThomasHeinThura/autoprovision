@@ -26,8 +26,8 @@ The deployment consists of:
 - **Kubernetes Gateway API** - North-south ingress (`Gateway` + per-component `HTTPRoute`)
 - **Microsoft SQL Server** - Database backend for WSO2 API Manager
 
-Each component directory ships a `gateway.yaml` = an `HTTPRoute` (attaches to the shared
-`wso2-gateway` by host) plus a `DestinationRule` that re-originates TLS to the backend HTTPS port
+Each component directory ships a `gateway.yaml` = an `HTTPRoute` (attaches to the single cluster-wide
+`shared-gateway` by host) plus a `DestinationRule` that re-originates TLS to the backend HTTPS port
 (CP/IS `9443`, gateways `8243`, `insecureSkipVerify` for WSO2's self-signed certs). The control
 plane's `DestinationRule` also pins a `consistentHash` `SERVERID` cookie for session affinity across
 the two CP replicas.
@@ -94,7 +94,7 @@ Note: The script automatically downloads the MsSQL JDBC driver and includes it i
 ### 7. Deploy the ingress Gateway and WSO2 Components
 
 ```bash
-# Shared Gateway API Gateway (provisions svc wso2-gateway-istio in istio-system, MetalLB EXTERNAL-IP)
+# Shared Gateway API Gateway (provisions svc shared-gateway-istio in istio-system, MetalLB EXTERNAL-IP)
 kubectl apply -f istio-gateway.yaml
 
 # Deploy Control Plane (HTTPRoute + DestinationRule live in control-plane/gateway.yaml)
@@ -114,7 +114,7 @@ Point DNS / `/etc/hosts` for `apim.example.com`, `internal-gw.example.com`,
 `external-gw.example.com`, `wso2is.example.com` at the ingress IP:
 
 ```bash
-kubectl -n istio-system get svc wso2-gateway-istio   # EXTERNAL-IP from MetalLB
+kubectl -n istio-system get svc shared-gateway-istio   # EXTERNAL-IP from MetalLB
 ```
 
 ## Customization

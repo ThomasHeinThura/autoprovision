@@ -10,7 +10,7 @@ metadata:
   namespace: wso2-external-gw
 spec:
   parentRefs:
-    - name: wso2-gateway
+    - name: shared-gateway
       namespace: istio-system
       sectionName: https
   hostnames:

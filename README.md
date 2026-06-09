@@ -218,7 +218,7 @@ kubectl -n istio-system create secret tls wso2-ingress-cert \
   --cert=certificates/server.crt --key=certificates/server.key --dry-run=client -o yaml | kubectl apply -f -
 
 # (optional) build images with MSSQL JDBC baked in: ./scripts/build-apim-images.sh
-kubectl apply -f istio-gateway.yaml            # Gateway API Gateway → svc wso2-gateway-istio
+kubectl apply -f istio-gateway.yaml            # single shared ingress Gateway → svc shared-gateway-istio
 kubectl apply -f control-plane/ -f internal-gw/ -f external-gw/ -f wso2-is/
 ```
 
@@ -229,7 +229,7 @@ or the **single instance** in UAT. Details: [planning/news/wso2-rke2.md](plannin
 WSO2 ingress hosts (from the repo's `istio-gateway.yaml`, all TLS on 443 →
 secret `wso2-ingress-cert` in `istio-system`): `apim.example.com`, `internal-gw.example.com`,
 `external-gw.example.com`, `wso2is.example.com`. Point DNS / `/etc/hosts` at the Gateway API
-ingress IP (`kubectl -n istio-system get svc wso2-gateway-istio`).
+ingress IP (`kubectl -n istio-system get svc shared-gateway-istio`).
 
 ## Step 6 — Observability, migration, validation
 
@@ -245,7 +245,7 @@ ElastAlert2 rules. See [planning/news/installation-steps-rke2.md](planning/news/
 # Kubernetes (per cluster)
 kubectl get nodes -o wide                                   # Ready, CNI = Canal
 kubectl get pods -A
-kubectl get svc -n istio-system wso2-gateway-istio          # EXTERNAL-IP populated (Gateway API)
+kubectl get svc -n istio-system shared-gateway-istio          # EXTERNAL-IP populated (Gateway API)
 kubectl get gateway,httproute -A                            # Gateway API ingress objects
 kubectl get pods -n istio-system                            # istiod, ztunnel, istio-cni (ambient)
 kubectl get pods -n wso2-cp; kubectl get pods -n wso2-is
@@ -348,7 +348,7 @@ SELECT @daysleft AS DaysLeft;
 | ------- | --- |
 | RKE2 node `NotReady` | Check `rke2-server`/`rke2-agent` service + token; Canal pods in `kube-system`. |
 | Two ingress controllers fighting for 80/443 | Confirm the RKE2 bundled ingress was disabled (`disable:` in `/etc/rancher/rke2/config.yaml`). |
-| `wso2-gateway-istio` has no EXTERNAL-IP | MetalLB must back the `LoadBalancer` (apply `istio-gateway.yaml` to create it); production uses a VIP. |
+| `shared-gateway-istio` has no EXTERNAL-IP | MetalLB must back the `LoadBalancer` (apply `istio-gateway.yaml` to create it); production uses a VIP. |
 | WSO2 TLS errors | Secret `wso2-ingress-cert` must be in **`istio-system`**; the Gateway API `Gateway` reloads it automatically (no restart needed). |
 | HTTPRoute not routing | Gateway API CRDs must be installed and pods must carry the `istio.io/dataplane-mode=ambient` namespace label (`istioctl ztunnel-config workloads`). |
 | AG replica not HEALTHY | Re-check cert exchange + `Hadr_endpoint` on all nodes (see `mssql_ag.yml` checklist). |

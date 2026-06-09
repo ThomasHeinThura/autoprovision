@@ -1,6 +1,6 @@
 # Control-plane ingress under ambient — Gateway API HTTPRoute + Istio DestinationRule.
 #
-# The HTTPRoute attaches to the shared `wso2-gateway` (istio-system) by host and routes to the
+# The HTTPRoute attaches to the cluster-wide `shared-gateway` (istio-system) by host and routes to the
 # control-plane Service on its HTTPS port 9443. The Gateway proxy (an Envoy) re-originates TLS to
 # 9443 via the DestinationRule below; ztunnel additionally wraps the hop in mTLS because wso2-cp is
 # enrolled in the ambient mesh (istio.io/dataplane-mode=ambient).
@@ -11,7 +11,7 @@ metadata:
   namespace: wso2-cp
 spec:
   parentRefs:
-    - name: wso2-gateway
+    - name: shared-gateway
       namespace: istio-system
       sectionName: https
   hostnames:

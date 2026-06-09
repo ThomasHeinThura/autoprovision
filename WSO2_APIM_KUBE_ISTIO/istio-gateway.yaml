@@ -1,17 +1,18 @@
-# Ambient ingress — Kubernetes Gateway API Gateway (gatewayClassName: istio).
+# Single shared ambient ingress — Kubernetes Gateway API Gateway (gatewayClassName: istio).
 #
-# Under Istio ambient there is NO `istio-ingressgateway` Deployment. Applying this Gateway
-# makes Istio auto-provision a dedicated ingress proxy + a LoadBalancer Service named
-# `wso2-gateway-istio` in istio-system (MetalLB assigns its EXTERNAL-IP). All WSO2 HTTPRoutes
-# (control-plane/, internal-gw/, external-gw/, wso2-is/) attach to this one Gateway by host.
+# This is the ONE reverse proxy for the whole cluster (the ambient equivalent of a single Ingress
+# controller): it provisions exactly ONE LoadBalancer Service 'shared-gateway-istio' in
+# istio-system → ONE MetalLB EXTERNAL-IP. Every app (WSO2 CP/gateways/IS, ArgoCD, Headlamp, …)
+# attaches its own HTTPRoute by hostname, so they ALL share this single IP — no per-app IPs.
 #
-# TLS terminates here with the `wso2-ingress-cert` Secret (created in istio-system by the
-# k8s_addons / k8s_wso2 playbooks). A single wildcard listener covers every WSO2 host
-# (*.example.com is rewritten to the real domain at render time).
+# The single catch-all HTTPS listener (no hostname) terminates TLS with `wso2-ingress-cert` and
+# serves it for every SNI, so any hostname works without a per-host listener. allowedRoutes: All
+# lets HTTPRoutes in any namespace attach. (k8s_addons.yml also creates this same Gateway in the
+# istio step so it exists cluster-wide before any app deploys; re-applying here is idempotent.)
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
-  name: wso2-gateway
+  name: shared-gateway
   namespace: istio-system
 spec:
   gatewayClassName: istio
@@ -19,7 +20,6 @@ spec:
     - name: https
       port: 443
       protocol: HTTPS
-      hostname: "*.example.com"
       tls:
         mode: Terminate
         certificateRefs:

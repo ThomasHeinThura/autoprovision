@@ -79,6 +79,9 @@
         done
         {{ kubectl }} -n wso2-cp delete destinationrule apim-dr --ignore-not-found
         {{ kubectl }} -n istio-system delete gateway.networking.istio.io wso2-gateway --ignore-not-found
+        # Old per-app Gateway API gateway from the previous layout (each took its own MetalLB IP).
+        # Superseded by the single cluster-wide 'shared-gateway'. Remove so it frees its IP.
+        {{ kubectl }} -n istio-system delete gateway.gateway.networking.k8s.io wso2-gateway --ignore-not-found
       vars:
         wso2_namespaces: "{{ 'wso2-cp wso2-internal-gw wso2-external-gw' if component == 'apim' else 'wso2-is' }}"
       changed_when: false
@@ -87,9 +90,10 @@
       shell: >-
         {{ kubectl }} -n istio-system create secret tls {{ tls_secret }} --cert={{ render_dir }}/certificates/server.crt --key={{ render_dir }}/certificates/server.key --dry-run=client -o yaml | {{ kubectl }} apply -f -
 
-    # Gateway API Gateway (gatewayClassName: istio). Istio reconciles it into an ingress proxy +
-    # a LoadBalancer Service 'wso2-gateway-istio' in istio-system (MetalLB assigns the EXTERNAL-IP).
-    - name: Apply the shared Gateway API Gateway (HTTPS for all WSO2 hosts)
+    # The single cluster-wide ingress Gateway 'shared-gateway' (one MetalLB IP for ALL hosts). It's
+    # normally already created by k8s_addons.yml (istio step); re-applying here is idempotent and
+    # keeps this repo deployable on its own. Istio backs it with svc 'shared-gateway-istio'.
+    - name: Apply the shared ingress Gateway (one IP for all WSO2 + other hosts)
       shell: "{{ kubectl }} apply -f {{ render_dir }}/istio-gateway.yaml"
 
     # ── APIM: control plane + internal/external gateways (each dir has its HTTPRoute + DR) ──
@@ -122,6 +126,6 @@
         msg: >-
           WSO2 {{ component | upper }} applied to the cluster with substituted hosts
           (apim={{ apim_host }}, internal-gw={{ internal_gw_host }}, external-gw={{ external_gw_host }},
-          is={{ is_host }}) and MSSQL={{ mssql_host }}. Point DNS for those hosts at the Gateway API
-          ingress IP — get it with: {{ kubectl }} -n istio-system get svc wso2-gateway-istio
+          is={{ is_host }}) and MSSQL={{ mssql_host }}. Point DNS for ALL those hosts at the SINGLE
+          shared ingress IP — get it with: {{ kubectl }} -n istio-system get svc shared-gateway-istio
           Check pods: {{ kubectl }} get pods -n {{ 'wso2-cp' if component == 'apim' else 'wso2-is' }}
