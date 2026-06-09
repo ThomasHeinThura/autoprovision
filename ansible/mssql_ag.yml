@@ -156,38 +156,60 @@
       changed_when: hadr.rc == 0
 
     # Cap SQL Server's memory. By default SQL grabs ~80% of RAM; on small VMs the first
-    # hadr-enabled start (which rebuilds model_replicatedmaster) then spikes and can OOM the box —
-    # that's what kills systemd-logind/D-Bus and makes the restart fail with "D-Bus connection
-    # terminated / Connection reset by peer". Leaving headroom keeps the node (and D-Bus) alive.
-    - name: Cap SQL Server memory to leave OS headroom (prevents OOM/D-Bus loss on small VMs)
-      shell: /opt/mssql/bin/mssql-conf set memory.memorylimitmb {{ mssql_memory_limit_mb | default((ansible_facts['memtotal_mb'] * 0.7) | int) }}
+    # hadr-enabled start (which rebuilds model_replicatedmaster) then spikes, the box swaps itself
+    # unresponsive (SSH drops → "UNREACHABLE") or OOMs (kills D-Bus → "D-Bus connection terminated").
+    # 60% leaves real headroom for the OS, Pacemaker/Corosync, and the ssh/python ansible needs.
+    - name: Cap SQL Server memory to leave OS headroom (prevents swap-storm/OOM on small VMs)
+      shell: /opt/mssql/bin/mssql-conf set memory.memorylimitmb {{ mssql_memory_limit_mb | default((ansible_facts['memtotal_mb'] * 0.6) | int) }}
       changed_when: true
 
-    # SQL Server 2025's FIRST hadr-enabled start does a slow one-time model_replicatedmaster build,
-    # so it can take minutes to accept connections. CRITICAL: restart NON-BLOCKING. The systemd
-    # module (and a plain `systemctl restart`) wait synchronously on D-Bus for the job to finish;
-    # on a small/loaded VM that long wait gets reset ("D-Bus connection terminated"), the task
-    # fails, and the box is left needing a manual `systemctl kill`. `--no-block` enqueues the
-    # restart and returns immediately — then OUR readiness poll (port 1433 + a real query) decides
-    # when SQL is actually up. No D-Bus wait to drop, no hang, no manual intervention. The poll
-    # caps at mssql_start_timeout but returns the moment SQL answers, so a healthy node is fast.
-    - name: Bring SQL Server up after enabling hadr (non-blocking restart + readiness poll)
+    # Disable systemd's start rate-limit for mssql-server. A few failed first-starts otherwise trip
+    # "Start request repeated too quickly", after which systemctl REFUSES to start it until a manual
+    # `systemctl reset-failed` — that's the "it fails a lot / I have to kill it by hand" loop.
+    - name: Disable systemd start rate-limit for mssql-server (no "repeated too quickly" dead-end)
+      copy:
+        dest: /etc/systemd/system/mssql-server.service.d/10-no-startlimit.conf
+        mode: "0644"
+        content: |
+          [Unit]
+          StartLimitIntervalSec=0
+      register: sl_dropin
+
+    # SQL Server 2025's FIRST hadr-enabled start does a slow one-time model_replicatedmaster build.
+    # Two hard-won robustness rules:
+    #  (1) Restart NON-BLOCKING (`systemctl restart --no-block`). The systemd module / plain
+    #      `systemctl restart` wait synchronously on D-Bus; on a small VM that wait gets reset
+    #      ("D-Bus connection terminated"), failing the task and leaving the box needing a manual kill.
+    #  (2) Probe readiness from the CONTROLLER (jump host) against the node's 1433 — NOT on the node.
+    #      During the rebuild the node can swap so hard it drops its ssh control connection
+    #      ("UNREACHABLE"); a controller-side TCP probe rides straight through that. We open 1433 +
+    #      reset-failed first so the probe can connect and systemd will actually (re)start the unit.
+    - name: Bring SQL Server up after enabling hadr (non-blocking restart + controller-side probe)
       block:
-        - name: Ensure mssql-server is enabled at boot
-          shell: systemctl enable mssql-server
-          changed_when: false
-        - name: Restart SQL Server (non-blocking — readiness handled by the poll below)
+        - name: Reload systemd, allow 1433 for the controller probe, clear any start rate-limit
           shell: |
+            systemctl daemon-reload
+            (command -v ufw >/dev/null && ufw allow 1433/tcp) 2>/dev/null || true
+            systemctl reset-failed mssql-server 2>/dev/null || true
+            systemctl enable mssql-server 2>/dev/null || true
+            exit 0
+          changed_when: false
+        - name: Restart SQL Server (non-blocking — readiness handled by the probe below)
+          shell: |
+            systemctl reset-failed mssql-server 2>/dev/null || true
             systemctl restart --no-block mssql-server
-            sleep 8
           changed_when: true
-        - name: Wait for SQL Server to accept TCP connections on 1433 (first start can take minutes)
-          wait_for: { port: 1433, host: 127.0.0.1, timeout: "{{ mssql_start_timeout | default(1800) }}" }
-        - name: Wait until SQL Server answers a query (engine fully online, not just listening)
+        - name: Wait for SQL Server to accept connections on 1433 (probed from the controller, survives node ssh blips)
+          wait_for:
+            host: "{{ inventory_hostname }}"
+            port: 1433
+            timeout: "{{ mssql_start_timeout | default(1800) }}"
+          delegate_to: localhost
+        - name: Confirm the engine answers a query (node is responsive again once SQL is up)
           shell: '{{ sqlcmd }} -l 5 -Q "SELECT 1;"'
           register: mssql_select1
           changed_when: false
-          retries: 90
+          retries: 30
           delay: 10
           until: mssql_select1.rc == 0
       rescue:
