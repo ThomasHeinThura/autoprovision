@@ -1,3 +1,8 @@
+# Internal gateway ingress under ambient — Gateway API HTTPRoute + Istio DestinationRule.
+#
+# Routes internal-gw.example.com to the universal-gw Service HTTPS pass-through port 8243. The
+# ingress Gateway Envoy re-originates TLS to 8243 (DestinationRule); ztunnel adds mTLS because
+# wso2-internal-gw is enrolled in the ambient mesh. No session affinity: API traffic is stateless.
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
@@ -6,7 +11,7 @@ metadata:
 spec:
   parentRefs:
     - name: wso2-gateway
-      namespace: envoy-gateway-system
+      namespace: istio-system
       sectionName: https
   hostnames:
     - "internal-gw.example.com"
@@ -16,21 +21,19 @@ spec:
             type: PathPrefix
             value: /
       backendRefs:
-      - group: gateway.envoyproxy.io
-        kind: Backend
-        name: internal-gw-backend
-        port: 8243
+        - group: ""
+          kind: Service
+          name: apim-gw-wso2am-universal-gw-service
+          port: 8243
 ---
-apiVersion: gateway.envoyproxy.io/v1alpha1
-kind: Backend
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
 metadata:
-  name: internal-gw-backend
+  name: internal-gw-backend-tls-settings
   namespace: wso2-internal-gw
 spec:
-  type: Endpoints
-  endpoints:
-  - fqdn:
-      hostname: apim-gw-wso2am-universal-gw-service.wso2-internal-gw.svc.cluster.local
-      port: 8243
-  tls:
-    insecureSkipVerify: true
+  host: apim-gw-wso2am-universal-gw-service.wso2-internal-gw.svc.cluster.local
+  trafficPolicy:
+    tls:
+      mode: SIMPLE
+      insecureSkipVerify: true

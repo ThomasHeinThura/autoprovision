@@ -7,9 +7,12 @@
 # Required: kubeconfig_path, component.
 # Per component:
 #   metallb : metallb_ip_range   (e.g. "192.168.51.200-192.168.51.220")
-#   istio   : tls_secret (default wso2-ingress-cert), wso2_certs_dir (PEMs for the gateway TLS)
-#   argocd  : argocd_host, tls_secret
-#   headlamp: headlamp_host, tls_secret   (SKIPPED gracefully if the chart repo is blocked)
+#   istio   : tls_secret (default wso2-ingress-cert), wso2_certs_dir (PEMs for the gateway TLS),
+#             gateway_api_version (default v1.5.1). Installs the AMBIENT profile (istiod + istio-cni
+#             + ztunnel) and the Gateway API CRDs; uninstalls any pre-existing sidecar Istio first.
+#             There is NO istio-ingressgateway — ingress is a Gateway API Gateway applied later.
+#   argocd  : argocd_host, tls_secret   (exposed via a Gateway API Gateway + HTTPRoute)
+#   headlamp: headlamp_host, tls_secret (Gateway API; SKIPPED gracefully if the chart repo is blocked)
 
 - name: RKE2 in-cluster add-on ({{ component | default('?') }})
   hosts: localhost
@@ -130,26 +133,59 @@
               The 'Certificate — Kubernetes' workload with EMPTY PEM fields will now auto-issue
               and auto-renew that secret.
 
-    # ── Istio (default profile → ingressgateway in istio-system) + HTTPS TLS secret ──
-    - name: Istio
+    # ── Istio AMBIENT (istiod + istio-cni + ztunnel; ingress via the Kubernetes Gateway API) ──
+    # Ambient has NO istio-ingressgateway. North-south ingress is a Gateway API `Gateway`
+    # (gatewayClassName: istio) that Istio reconciles into an ingress proxy + LoadBalancer Service
+    # — that Gateway is applied by k8s_wso2.yml (and per-app for ArgoCD/Headlamp below). Workload
+    # pods join the mesh by the namespace label istio.io/dataplane-mode=ambient (set in k8s_wso2.yml).
+    - name: Istio (ambient)
       when: component == 'istio'
       block:
-        - name: Install Istio (istioctl default profile)
-          shell: "istioctl install --set profile=default -y --kubeconfig {{ kubeconfig_path }}"
+        # Gateway API CRDs are a hard prerequisite for ambient ingress. Experimental channel because
+        # gatewayClassName: istio + some Istio route features live there. Idempotent (apply).
+        - name: Install/upgrade the Kubernetes Gateway API CRDs (experimental channel)
+          shell: >-
+            {{ kubectl }} apply --server-side -f https://github.com/kubernetes-sigs/gateway-api/releases/download/{{ gateway_api_version | default('v1.5.1') }}/experimental-install.yaml
+
+        # The user asked to remove any pre-existing SIDECAR install before going ambient. --purge
+        # tears down istiod + the legacy istio-ingressgateway + CRDs. Safe/no-op on a clean cluster.
+        - name: Detect an existing Istio install
+          shell: "{{ kubectl }} -n istio-system get deploy istiod -o name 2>/dev/null || true"
+          register: istiod_present
+          changed_when: false
+        - name: Uninstall any existing (sidecar) Istio before installing ambient
+          shell: "istioctl uninstall --purge -y --kubeconfig {{ kubeconfig_path }}"
+          when: istiod_present.stdout | length > 0
+          register: istio_uninstall
+          failed_when: false
+          changed_when: istio_uninstall.rc == 0
+
+        - name: Install Istio (ambient profile → istiod + istio-cni + ztunnel)
+          shell: "istioctl install --set profile=ambient -y --kubeconfig {{ kubeconfig_path }}"
         - name: Wait for istiod
           shell: "{{ kubectl }} -n istio-system rollout status deploy/istiod --timeout=180s"
           changed_when: false
+        - name: Wait for the ambient data plane (istio-cni + ztunnel DaemonSets)
+          shell: "{{ kubectl }} -n istio-system rollout status ds/{{ item }} --timeout=180s"
+          loop: [istio-cni-node, ztunnel]
+          changed_when: false
+
         # Keep the whole pipeline on ONE physical line. With a YAML folded scalar (`>`/`>-`), a
         # more-indented continuation line becomes a literal newline (not a space), which split
         # `--cert=… --key=…` off into separate commands → "key and cert must be specified".
-        - name: Create/refresh the ingress TLS secret in istio-system (enables HTTPS :443)
+        - name: Create/refresh the ingress TLS secret in istio-system (consumed by the Gateway API Gateway)
           shell: >-
             {{ kubectl }} -n istio-system create secret tls {{ tls_secret }} --cert={{ wso2_certs_dir }}/server.crt --key={{ wso2_certs_dir }}/server.key --dry-run=client -o yaml | {{ kubectl }} apply -f -
-        - name: Show the ingress gateway (should get an EXTERNAL-IP from MetalLB)
-          shell: "{{ kubectl }} -n istio-system get svc istio-ingressgateway"
+        - name: Show ambient control plane (the ingress LoadBalancer Service appears once a Gateway is applied)
+          shell: "{{ kubectl }} -n istio-system get pods,svc"
           register: ig
           changed_when: false
-        - debug: { msg: "{{ ig.stdout_lines }}" }
+        - debug:
+            msg: >-
+              Istio ambient installed. There is NO istio-ingressgateway — apply WSO2 (k8s_wso2.yml)
+              to create the Gateway API Gateway 'wso2-gateway', which provisions svc
+              'wso2-gateway-istio' (MetalLB EXTERNAL-IP). Current istio-system:
+              {{ ig.stdout_lines }}
 
     # ── ArgoCD (+ HTTPS exposure via Istio) ──
     - name: ArgoCD
@@ -164,26 +200,38 @@
             {{ kubectl }} -n argocd patch configmap argocd-cmd-params-cm --type merge -p '{"data":{"server.insecure":"true"}}'
             {{ kubectl }} -n argocd rollout restart deploy/argocd-server
           changed_when: true
-        - name: Expose ArgoCD over HTTPS through Istio
+        # Ambient ingress: a Gateway API Gateway (gatewayClassName: istio) lives in istio-system so
+        # it can reuse the {{ tls_secret }} there (Gateway API reads certs from its own namespace).
+        # The HTTPRoute lives in the argocd namespace and attaches cross-namespace (allowedRoutes
+        # from: All). Istio provisions svc 'argocd-gateway-istio' in istio-system (MetalLB IP).
+        - name: Expose ArgoCD over HTTPS through the Gateway API (ambient)
           shell: |
             cat <<EOF | {{ kubectl }} apply -f -
-            apiVersion: networking.istio.io/v1
+            apiVersion: gateway.networking.k8s.io/v1
             kind: Gateway
-            metadata: { name: argocd-gateway, namespace: argocd }
+            metadata: { name: argocd-gateway, namespace: istio-system }
             spec:
-              selector: { istio: ingressgateway }
-              servers:
-                - port: { number: 443, name: https, protocol: HTTPS }
-                  tls: { mode: SIMPLE, credentialName: {{ tls_secret }} }
-                  hosts: [ "{{ argocd_host }}" ]
+              gatewayClassName: istio
+              listeners:
+                - name: https
+                  port: 443
+                  protocol: HTTPS
+                  hostname: "{{ argocd_host }}"
+                  tls:
+                    mode: Terminate
+                    certificateRefs:
+                      - { group: "", kind: Secret, name: {{ tls_secret }}, namespace: istio-system }
+                  allowedRoutes: { namespaces: { from: All } }
             ---
-            apiVersion: networking.istio.io/v1
-            kind: VirtualService
+            apiVersion: gateway.networking.k8s.io/v1
+            kind: HTTPRoute
             metadata: { name: argocd, namespace: argocd }
             spec:
-              hosts: [ "{{ argocd_host }}" ]
-              gateways: [ argocd-gateway ]
-              http: [ { route: [ { destination: { host: argocd-server, port: { number: 80 } } } ] } ]
+              parentRefs: [ { name: argocd-gateway, namespace: istio-system, sectionName: https } ]
+              hostnames: [ "{{ argocd_host }}" ]
+              rules:
+                - matches: [ { path: { type: PathPrefix, value: / } } ]
+                  backendRefs: [ { group: "", kind: Service, name: argocd-server, port: 80 } ]
             EOF
         - debug: { msg: "ArgoCD installed + exposed at https://{{ argocd_host }} (admin password: kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d)" }
 
@@ -207,21 +255,29 @@
           shell: |
             helm upgrade --install headlamp headlamp/headlamp -n kube-system --kubeconfig {{ kubeconfig_path }}
             cat <<EOF | {{ kubectl }} apply -f -
-            apiVersion: networking.istio.io/v1
+            apiVersion: gateway.networking.k8s.io/v1
             kind: Gateway
-            metadata: { name: headlamp-gateway, namespace: kube-system }
+            metadata: { name: headlamp-gateway, namespace: istio-system }
             spec:
-              selector: { istio: ingressgateway }
-              servers:
-                - port: { number: 443, name: https, protocol: HTTPS }
-                  tls: { mode: SIMPLE, credentialName: {{ tls_secret }} }
-                  hosts: [ "{{ headlamp_host }}" ]
+              gatewayClassName: istio
+              listeners:
+                - name: https
+                  port: 443
+                  protocol: HTTPS
+                  hostname: "{{ headlamp_host }}"
+                  tls:
+                    mode: Terminate
+                    certificateRefs:
+                      - { group: "", kind: Secret, name: {{ tls_secret }}, namespace: istio-system }
+                  allowedRoutes: { namespaces: { from: All } }
             ---
-            apiVersion: networking.istio.io/v1
-            kind: VirtualService
+            apiVersion: gateway.networking.k8s.io/v1
+            kind: HTTPRoute
             metadata: { name: headlamp, namespace: kube-system }
             spec:
-              hosts: [ "{{ headlamp_host }}" ]
-              gateways: [ headlamp-gateway ]
-              http: [ { route: [ { destination: { host: headlamp, port: { number: 80 } } } ] } ]
+              parentRefs: [ { name: headlamp-gateway, namespace: istio-system, sectionName: https } ]
+              hostnames: [ "{{ headlamp_host }}" ]
+              rules:
+                - matches: [ { path: { type: PathPrefix, value: / } } ]
+                  backendRefs: [ { group: "", kind: Service, name: headlamp, port: 80 } ]
             EOF

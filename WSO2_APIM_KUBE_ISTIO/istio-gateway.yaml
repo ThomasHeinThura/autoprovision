@@ -1,45 +1,32 @@
-apiVersion: networking.istio.io/v1beta1
+# Ambient ingress — Kubernetes Gateway API Gateway (gatewayClassName: istio).
+#
+# Under Istio ambient there is NO `istio-ingressgateway` Deployment. Applying this Gateway
+# makes Istio auto-provision a dedicated ingress proxy + a LoadBalancer Service named
+# `wso2-gateway-istio` in istio-system (MetalLB assigns its EXTERNAL-IP). All WSO2 HTTPRoutes
+# (control-plane/, internal-gw/, external-gw/, wso2-is/) attach to this one Gateway by host.
+#
+# TLS terminates here with the `wso2-ingress-cert` Secret (created in istio-system by the
+# k8s_addons / k8s_wso2 playbooks). A single wildcard listener covers every WSO2 host
+# (*.example.com is rewritten to the real domain at render time).
+apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
   name: wso2-gateway
   namespace: istio-system
 spec:
-  selector:
-    istio: ingressgateway
-  servers:
-    - port:
-        number: 443
-        name: https-apim
-        protocol: HTTPS
+  gatewayClassName: istio
+  listeners:
+    - name: https
+      port: 443
+      protocol: HTTPS
+      hostname: "*.example.com"
       tls:
-        mode: SIMPLE
-        credentialName: wso2-ingress-cert
-      hosts:
-        - "apim.example.com"
-    - port:
-        number: 443
-        name: https-internal-gw
-        protocol: HTTPS
-      tls:
-        mode: SIMPLE
-        credentialName: wso2-ingress-cert
-      hosts:
-        - "internal-gw.example.com"
-    - port:
-        number: 443
-        name: https-external-gw
-        protocol: HTTPS
-      tls:
-        mode: SIMPLE
-        credentialName: wso2-ingress-cert
-      hosts:
-        - "external-gw.example.com"
-    - port:
-        number: 443
-        name: https-is
-        protocol: HTTPS
-      tls:
-        mode: SIMPLE
-        credentialName: wso2-ingress-cert
-      hosts:
-        - "wso2is.example.com"
+        mode: Terminate
+        certificateRefs:
+          - group: ""
+            kind: Secret
+            name: wso2-ingress-cert
+            namespace: istio-system
+      allowedRoutes:
+        namespaces:
+          from: All

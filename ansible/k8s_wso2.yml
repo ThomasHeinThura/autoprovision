@@ -52,23 +52,47 @@
         find {{ render_dir }} -type f \( -name '*.yaml' -o -name '*.yml' \) -exec sed -i -e 's|<LOGSTASH_URL>|{{ logstash_host }}|g' {} +
       when: (logstash_host | default('')) | length > 0
 
-    - name: Ensure WSO2 namespaces exist with Istio sidecar injection
+    # Ambient: enroll each namespace in the mesh with istio.io/dataplane-mode=ambient (ztunnel L4
+    # mTLS, no sidecars). Also strip any leftover istio-injection label from a prior sidecar install
+    # so a stale label can't re-inject sidecars when pods are recreated.
+    - name: Ensure WSO2 namespaces exist and are enrolled in the Istio ambient mesh
       shell: |
         for ns in {{ wso2_namespaces }}; do
           {{ kubectl }} create ns $ns --dry-run=client -o yaml | {{ kubectl }} apply -f -
-          {{ kubectl }} label ns $ns istio-injection=enabled --overwrite
+          {{ kubectl }} label ns $ns istio-injection- --overwrite 2>/dev/null || true
+          {{ kubectl }} label ns $ns istio.io/dataplane-mode=ambient --overwrite
         done
       vars:
         wso2_namespaces: "{{ 'wso2-cp wso2-internal-gw wso2-external-gw' if component == 'apim' else 'wso2-is' }}"
+
+    # Migration cleanup: if this cluster previously ran the SIDECAR layout, the old istio
+    # VirtualServices and the istio.networking Gateway still exist (kubectl apply does not prune
+    # objects that were removed from the manifests). Delete them so they don't shadow the new
+    # Gateway API HTTPRoutes / Gateway. Idempotent — --ignore-not-found on a clean cluster.
+    # The ambient layout has NO VirtualServices, so deleting them all is safe. Only the sidecar-era
+    # session-affinity DR (apim-dr in wso2-cp) is name-scoped — the new DRs (apim-backend-tls-settings
+    # etc.) are reconciled in place by the apply below, so we must NOT blanket-delete DestinationRules.
+    - name: Remove stale sidecar-era Istio VirtualServices + Gateway + DR (migration to ambient)
+      shell: |
+        for ns in {{ wso2_namespaces }}; do
+          {{ kubectl }} -n $ns delete virtualservice --all --ignore-not-found
+        done
+        {{ kubectl }} -n wso2-cp delete destinationrule apim-dr --ignore-not-found
+        {{ kubectl }} -n istio-system delete gateway.networking.istio.io wso2-gateway --ignore-not-found
+      vars:
+        wso2_namespaces: "{{ 'wso2-cp wso2-internal-gw wso2-external-gw' if component == 'apim' else 'wso2-is' }}"
+      changed_when: false
 
     - name: Ensure the Istio ingress TLS secret exists (HTTPS for the WSO2 gateway)
       shell: >-
         {{ kubectl }} -n istio-system create secret tls {{ tls_secret }} --cert={{ render_dir }}/certificates/server.crt --key={{ render_dir }}/certificates/server.key --dry-run=client -o yaml | {{ kubectl }} apply -f -
 
-    - name: Apply the shared Istio Gateway (HTTPS for all WSO2 hosts)
+    # Gateway API Gateway (gatewayClassName: istio). Istio reconciles it into an ingress proxy +
+    # a LoadBalancer Service 'wso2-gateway-istio' in istio-system (MetalLB assigns the EXTERNAL-IP).
+    - name: Apply the shared Gateway API Gateway (HTTPS for all WSO2 hosts)
       shell: "{{ kubectl }} apply -f {{ render_dir }}/istio-gateway.yaml"
 
-    # ── APIM: control plane + internal/external gateways ──
+    # ── APIM: control plane + internal/external gateways (each dir has its HTTPRoute + DR) ──
     - name: Apply WSO2 APIM components
       when: component == 'apim'
       shell: |
@@ -81,10 +105,23 @@
       when: component == 'is'
       shell: "{{ kubectl }} apply -f {{ render_dir }}/wso2-is/"
 
+    # Recreate the workload pods so they drop any sidecar from a prior install and are captured by
+    # ztunnel under the ambient label. On a fresh install the pods are already ambient-only, so this
+    # is a harmless restart. Best-effort: a not-yet-created Deployment just reports "not found".
+    - name: Restart WSO2 deployments so pods join the ambient mesh (shed any old sidecar)
+      shell: |
+        for ns in {{ wso2_namespaces }}; do
+          {{ kubectl }} -n $ns rollout restart deployment --all 2>/dev/null || true
+        done
+      vars:
+        wso2_namespaces: "{{ 'wso2-cp wso2-internal-gw wso2-external-gw' if component == 'apim' else 'wso2-is' }}"
+      changed_when: true
+
     - name: Report
       debug:
         msg: >-
           WSO2 {{ component | upper }} applied to the cluster with substituted hosts
           (apim={{ apim_host }}, internal-gw={{ internal_gw_host }}, external-gw={{ external_gw_host }},
-          is={{ is_host }}) and MSSQL={{ mssql_host }}. Point DNS for those hosts at the Istio ingress
-          gateway external IP. Check: {{ kubectl }} get pods -n {{ 'wso2-cp' if component == 'apim' else 'wso2-is' }}
+          is={{ is_host }}) and MSSQL={{ mssql_host }}. Point DNS for those hosts at the Gateway API
+          ingress IP — get it with: {{ kubectl }} -n istio-system get svc wso2-gateway-istio
+          Check pods: {{ kubectl }} get pods -n {{ 'wso2-cp' if component == 'apim' else 'wso2-is' }}

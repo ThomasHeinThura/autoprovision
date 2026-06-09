@@ -20,7 +20,7 @@ that installs **RKE2 Kubernetes clusters, Docker platform stacks (GitLab + ELK),
 | ----- | --- |
 | RKE2 | **v1.36.1+rke2r2** (Kubernetes v1.36.1) |
 | CNI | **Canal** (default, bundled with RKE2) — kube-proxy kept |
-| K8s ingress | **Istio 1.30** (istioctl default profile, gateway in `istio-system`) |
+| K8s ingress | **Istio 1.30 ambient** (`profile=ambient`; ingress via Kubernetes Gateway API) |
 | SQL Server | **2022** — Prod read-scale AG (3 nodes), UAT single instance |
 | WSO2 | APIM 4.7.0 / IS 7.3.0 via [`WSO2_APIM_KUBE_ISTIO/`](WSO2_APIM_KUBE_ISTIO/README.md) |
 | Docker platform | GitLab CE 19.0.1, ELK 9.1.4, PostgreSQL 17.10, Traefik v3.7.1, SonarQube, ElastAlert2 |
@@ -185,13 +185,17 @@ For **each** cluster, follow the runbook. Production:
 Order (per cluster, `KUBECONFIG` pointed at it):
 
 ```bash
-# 1. Istio 1.30 — istioctl default profile (ingressgateway lands in istio-system, as WSO2 expects)
+# 1. Istio 1.30 — AMBIENT profile (no ingressgateway; ingress via the Kubernetes Gateway API).
+#    Install the Gateway API CRDs, uninstall any old sidecar install, then install ambient.
+kubectl get crd gateways.gateway.networking.k8s.io &> /dev/null || \
+  kubectl apply --server-side -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.5.1/experimental-install.yaml
 curl -L https://istio.io/downloadIstio | ISTIO_VERSION=1.30.0 TARGET_ARCH=x86_64 sh -
 export PATH=$PWD/istio-1.30.0/bin:$PATH
-istioctl install --set profile=default -y
+istioctl uninstall --purge -y                 # only if a sidecar Istio was previously installed
+istioctl install --set profile=ambient -y     # istiod + istio-cni + ztunnel
 
 # 2. cert-manager  3. ArgoCD  4. Headlamp  5. OpenTelemetry Collector
-#    (Helm commands in rke2-addons-istio-argocd-headlamp.md; ArgoCD/Headlamp exposed via Istio)
+#    (Helm commands in rke2-addons-istio-argocd-headlamp.md; ArgoCD/Headlamp exposed via Gateway API)
 ```
 
 ## Step 5 — WSO2 (team's repo — her steps)
@@ -203,19 +207,18 @@ and Istio already installed:
 ```bash
 cd WSO2_APIM_KUBE_ISTIO
 
-# namespaces + sidecar injection
+# namespaces + ambient mesh enrollment (no sidecars)
 kubectl create ns wso2-cp; kubectl create ns wso2-is
 kubectl create ns wso2-internal-gw; kubectl create ns wso2-external-gw
-for ns in wso2-cp wso2-is wso2-internal-gw wso2-external-gw; do kubectl label ns $ns istio-injection=enabled --overwrite; done
+for ns in wso2-cp wso2-is wso2-internal-gw wso2-external-gw; do kubectl label ns $ns istio.io/dataplane-mode=ambient --overwrite; done
 
-# certs + Istio ingress TLS secret in istio-system, then restart the gateway
+# certs + ingress TLS secret in istio-system (the Gateway API Gateway picks it up automatically)
 ./scripts/generate-local-certificates.sh
 kubectl -n istio-system create secret tls wso2-ingress-cert \
   --cert=certificates/server.crt --key=certificates/server.key --dry-run=client -o yaml | kubectl apply -f -
-kubectl -n istio-system rollout restart deploy/istio-ingressgateway
 
 # (optional) build images with MSSQL JDBC baked in: ./scripts/build-apim-images.sh
-kubectl apply -f istio-gateway.yaml
+kubectl apply -f istio-gateway.yaml            # Gateway API Gateway → svc wso2-gateway-istio
 kubectl apply -f control-plane/ -f internal-gw/ -f external-gw/ -f wso2-is/
 ```
 
@@ -225,8 +228,8 @@ or the **single instance** in UAT. Details: [planning/news/wso2-rke2.md](plannin
 
 WSO2 ingress hosts (from the repo's `istio-gateway.yaml`, all TLS on 443 →
 secret `wso2-ingress-cert` in `istio-system`): `apim.example.com`, `internal-gw.example.com`,
-`external-gw.example.com`, `wso2is.example.com`. Point DNS / `/etc/hosts` at the Istio ingress
-gateway external IP.
+`external-gw.example.com`, `wso2is.example.com`. Point DNS / `/etc/hosts` at the Gateway API
+ingress IP (`kubectl -n istio-system get svc wso2-gateway-istio`).
 
 ## Step 6 — Observability, migration, validation
 
@@ -242,8 +245,9 @@ ElastAlert2 rules. See [planning/news/installation-steps-rke2.md](planning/news/
 # Kubernetes (per cluster)
 kubectl get nodes -o wide                                   # Ready, CNI = Canal
 kubectl get pods -A
-kubectl get svc -n istio-system istio-ingressgateway        # EXTERNAL-IP populated
-kubectl get gateway,virtualservice -A
+kubectl get svc -n istio-system wso2-gateway-istio          # EXTERNAL-IP populated (Gateway API)
+kubectl get gateway,httproute -A                            # Gateway API ingress objects
+kubectl get pods -n istio-system                            # istiod, ztunnel, istio-cni (ambient)
 kubectl get pods -n wso2-cp; kubectl get pods -n wso2-is
 
 # SQL Server read-scale AG (on the primary)
@@ -344,8 +348,9 @@ SELECT @daysleft AS DaysLeft;
 | ------- | --- |
 | RKE2 node `NotReady` | Check `rke2-server`/`rke2-agent` service + token; Canal pods in `kube-system`. |
 | Two ingress controllers fighting for 80/443 | Confirm the RKE2 bundled ingress was disabled (`disable:` in `/etc/rancher/rke2/config.yaml`). |
-| Istio gateway has no EXTERNAL-IP | RKE2 ServiceLB or MetalLB must back the `LoadBalancer`; production uses a VIP. |
-| WSO2 TLS errors | Secret `wso2-ingress-cert` must be in **`istio-system`** and the gateway restarted. |
+| `wso2-gateway-istio` has no EXTERNAL-IP | MetalLB must back the `LoadBalancer` (apply `istio-gateway.yaml` to create it); production uses a VIP. |
+| WSO2 TLS errors | Secret `wso2-ingress-cert` must be in **`istio-system`**; the Gateway API `Gateway` reloads it automatically (no restart needed). |
+| HTTPRoute not routing | Gateway API CRDs must be installed and pods must carry the `istio.io/dataplane-mode=ambient` namespace label (`istioctl ztunnel-config workloads`). |
 | AG replica not HEALTHY | Re-check cert exchange + `Hadr_endpoint` on all nodes (see `mssql_ag.yml` checklist). |
 | GitLab Runner `404/403` on job request | Create a new instance runner token in GitLab UI, paste into the GitLab card, re-run. |
 | Kibana Fleet `encrypted saved object api key` | Set a 32+ char `xpack.encryptedSavedObjects.encryptionKey` in `docker/elk/kibana/config/kibana.yml`. |
