@@ -8,9 +8,11 @@
 # Per component:
 #   metallb : metallb_ip_range   (e.g. "192.168.51.200-192.168.51.220")
 #   istio   : tls_secret (default wso2-ingress-cert), wso2_certs_dir (PEMs for the gateway TLS),
-#             gateway_api_version (default v1.5.1). Installs the AMBIENT profile (istiod + istio-cni
-#             + ztunnel) and the Gateway API CRDs; uninstalls any pre-existing sidecar Istio first.
-#             There is NO istio-ingressgateway — ingress is a Gateway API Gateway applied later.
+#             gateway_api_version (default v1.5.1, STANDARD channel — only installed when missing),
+#             cni_conf_dir / cni_bin_dir (RKE2 CNI paths; defaults
+#             /var/lib/rancher/rke2/agent/etc/cni/net.d and /opt/cni/bin). Installs the AMBIENT
+#             profile (istiod + istio-cni + ztunnel); uninstalls any pre-existing sidecar Istio
+#             first. There is NO istio-ingressgateway — ingress is a Gateway API Gateway applied later.
 #   argocd  : argocd_host, tls_secret   (exposed via a Gateway API Gateway + HTTPRoute)
 #   headlamp: headlamp_host, tls_secret (Gateway API; SKIPPED gracefully if the chart repo is blocked)
 
@@ -141,14 +143,19 @@
     - name: Istio (ambient)
       when: component == 'istio'
       block:
-        # Gateway API CRDs are a hard prerequisite for ambient ingress. Experimental channel because
-        # gatewayClassName: istio + some Istio route features live there. Idempotent (apply).
-        # --force-conflicts: the standard-channel CRDs may already exist under another field manager
-        # (e.g. a Helm chart shipped by RKE2). force-conflicts makes us co-own those fields and
-        # upgrades them to the experimental channel rather than failing on the SSA conflict.
-        - name: Install/upgrade the Kubernetes Gateway API CRDs (experimental channel)
+        # Gateway API CRDs are a hard prerequisite for ambient ingress. We only use STANDARD-channel
+        # kinds (Gateway + HTTPRoute), so install the standard channel — NOT experimental. RKE2 may
+        # already ship the standard CRDs via Helm, and the experimental bundle carries a
+        # ValidatingAdmissionPolicy (safe-upgrades.gateway.networking.k8s.io) that forbids layering
+        # experimental on top of standard CRDs. So: install only when the CRDs are missing.
+        - name: Check whether the Gateway API CRDs are already present
+          shell: "{{ kubectl }} get crd gateways.gateway.networking.k8s.io -o name 2>/dev/null || true"
+          register: gwapi_crd
+          changed_when: false
+        - name: Install the Kubernetes Gateway API CRDs (standard channel) when missing
           shell: >-
-            {{ kubectl }} apply --server-side --force-conflicts -f https://github.com/kubernetes-sigs/gateway-api/releases/download/{{ gateway_api_version | default('v1.5.1') }}/experimental-install.yaml
+            {{ kubectl }} apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/{{ gateway_api_version | default('v1.5.1') }}/standard-install.yaml
+          when: gwapi_crd.stdout | length == 0
 
         # The user asked to remove any pre-existing SIDECAR install before going ambient. --purge
         # tears down istiod + the legacy istio-ingressgateway + CRDs. Safe/no-op on a clean cluster.
@@ -163,8 +170,14 @@
           failed_when: false
           changed_when: istio_uninstall.rc == 0
 
-        - name: Install Istio (ambient profile → istiod + istio-cni + ztunnel)
-          shell: "istioctl install --set profile=ambient -y --kubeconfig {{ kubeconfig_path }}"
+        # RKE2 is NOT in istioctl's built-in platform list, and (like K3s) it stores CNI config and
+        # binaries in non-standard locations. Without these overrides istio-cni-node can't find the
+        # CNI conf/bin dirs, the chained plugin is never written, and the ambient data plane never
+        # captures pods. Defaults below are the RKE2 paths; override cni_conf_dir/cni_bin_dir for
+        # a custom CNI layout. Keep on ONE physical line (folded-scalar continuation = literal NL).
+        - name: Install Istio (ambient profile → istiod + istio-cni + ztunnel) with RKE2 CNI paths
+          shell: >-
+            istioctl install --set profile=ambient -y --kubeconfig {{ kubeconfig_path }} --set values.cni.cniConfDir={{ cni_conf_dir | default('/var/lib/rancher/rke2/agent/etc/cni/net.d') }} --set values.cni.cniBinDir={{ cni_bin_dir | default('/opt/cni/bin') }}
         - name: Wait for istiod
           shell: "{{ kubectl }} -n istio-system rollout status deploy/istiod --timeout=180s"
           changed_when: false
