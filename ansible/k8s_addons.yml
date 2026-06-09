@@ -143,9 +143,12 @@
       block:
         # Gateway API CRDs are a hard prerequisite for ambient ingress. Experimental channel because
         # gatewayClassName: istio + some Istio route features live there. Idempotent (apply).
+        # --force-conflicts: the standard-channel CRDs may already exist under another field manager
+        # (e.g. a Helm chart shipped by RKE2). force-conflicts makes us co-own those fields and
+        # upgrades them to the experimental channel rather than failing on the SSA conflict.
         - name: Install/upgrade the Kubernetes Gateway API CRDs (experimental channel)
           shell: >-
-            {{ kubectl }} apply --server-side -f https://github.com/kubernetes-sigs/gateway-api/releases/download/{{ gateway_api_version | default('v1.5.1') }}/experimental-install.yaml
+            {{ kubectl }} apply --server-side --force-conflicts -f https://github.com/kubernetes-sigs/gateway-api/releases/download/{{ gateway_api_version | default('v1.5.1') }}/experimental-install.yaml
 
         # The user asked to remove any pre-existing SIDECAR install before going ambient. --purge
         # tears down istiod + the legacy istio-ingressgateway + CRDs. Safe/no-op on a clean cluster.
