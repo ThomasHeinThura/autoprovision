@@ -219,6 +219,10 @@
             port: 1433
             timeout: "{{ mssql_start_timeout | default(1800) }}"
           delegate_to: localhost
+          # This probe runs on the JUMP HOST, not the SQL node. The play sets become:true for the
+          # remote nodes, but a TCP port probe needs no privileges — and sudo on the jump host may
+          # require a password (failing with "sudo: a password is required"). Never become here.
+          become: false
         - name: Confirm the engine answers a query (node is responsive again once SQL is up)
           shell: '{{ sqlcmd }} -l 5 -Q "SELECT 1;"'
           register: mssql_select1
