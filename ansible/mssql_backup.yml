@@ -1,0 +1,190 @@
+# SQL Server scheduled backups — FULL daily + LOG every 15 min, with retention pruning.
+#
+# HA (the AG) protects against NODE loss; it does NOT protect against data corruption,
+# accidental DELETE, or ransomware — only backups give point-in-time recovery. This workload
+# installs a root-only backup script + cron on EVERY node passed in:
+#   - the script asks the instance for its AG role and only backs up on the PRIMARY
+#     (a standalone/UAT instance reports no AG and is treated as primary), so it is safe
+#     to install on all 3 AG nodes — after a failover the new primary takes over backups;
+#   - FULL backup of master/msdb + every online user DB, daily (cron, default 01:30);
+#   - LOG backup every 15 min for user DBs in FULL recovery (point-in-time restore);
+#   - prunes backup files older than retention_days (default 7).
+# It then runs one FULL backup immediately to prove the chain works.
+#
+# Target inventory group: mssql_backup (the web UI writes the node IPs you select;
+# pass ALL AG nodes for prod, the single VM for UAT).
+#
+# Required variables:
+#   sa_password       SQL login password (or set db_admin_user/db_admin_password pair)
+# Optional:
+#   db_admin_user / db_admin_password   named sysadmin instead of sa
+#   backup_dir        default /var/opt/mssql/backup  (mount NFS/NAS here for off-box copies —
+#                     a backup on the same disk as the data files is NOT a real backup)
+#   retention_days    default 7
+#   full_backup_cron  default "30 1 * * *"
+#   log_backup_cron   default "*/15 * * * *"
+#
+# RESTORE (one-liner reference):
+#   sqlcmd -S localhost -U sa -C -Q "RESTORE DATABASE [db] FROM DISK='/var/opt/mssql/backup/db_FULL_<ts>.bak' WITH NORECOVERY"
+#   then each LOG in order WITH NORECOVERY, finishing WITH RECOVERY (STOPAT='<time>' for PITR).
+
+- name: SQL Server scheduled backups (FULL + LOG + retention)
+  hosts: mssql_backup
+  become: true
+  gather_facts: false
+  vars:
+    sql_user_eff: "{{ db_admin_user | default('sa') }}"
+    sql_pass_eff: "{{ db_admin_password | default(sa_password | default('')) }}"
+    backup_dir_eff: "{{ backup_dir | default('/var/opt/mssql/backup') }}"
+    retention_days_eff: "{{ retention_days | default(7) }}"
+    full_cron_eff: "{{ full_backup_cron | default('30 1 * * *') }}"
+    log_cron_eff: "{{ log_backup_cron | default('*/15 * * * *') }}"
+  tasks:
+    - name: Fail early if no SQL password is provided
+      fail:
+        msg: "sa_password (or db_admin_user + db_admin_password) is required."
+      when: sql_pass_eff | length == 0
+
+    # A malformed cron string would otherwise fail at the cron task with an opaque index error
+    # (or worse: silently schedule nothing).
+    - name: Validate the cron schedules (must be exactly 5 fields)
+      assert:
+        that:
+          - full_cron_eff.split() | length == 5
+          - log_cron_eff.split() | length == 5
+        fail_msg: >-
+          full_backup_cron/log_backup_cron must be standard 5-field cron expressions
+          (got '{{ full_cron_eff }}' / '{{ log_cron_eff }}').
+
+    - name: Verify SQL Server is installed on this node
+      stat:
+        path: /opt/mssql-tools18/bin/sqlcmd
+      register: sqlcmd_bin
+
+    - name: Fail clearly if SQL Server tools are missing
+      fail:
+        msg: "sqlcmd not found on {{ inventory_hostname }} — run the MSSQL workload first."
+      when: not sqlcmd_bin.stat.exists
+
+    - name: Create the backup directory (owned by mssql — the engine writes the .bak files)
+      file:
+        path: "{{ backup_dir_eff }}"
+        state: directory
+        owner: mssql
+        group: mssql
+        mode: "0700"
+
+    - name: Create the script directory
+      file:
+        path: /opt/mssql-backup
+        state: directory
+        mode: "0700"
+
+    # Credentials live in a root-only env file, NOT on the cron command line (visible in ps)
+    # and NOT inside the script (readable in backups of /opt).
+    # `| quote` produces a fully shell-quoted value, so passwords containing quotes/spaces/$
+    # survive being sourced by the script.
+    - name: Write the SQL credentials file (root-only)
+      copy:
+        dest: /opt/mssql-backup/backup.env
+        mode: "0600"
+        content: |
+          SQL_USER={{ sql_user_eff | quote }}
+          SQL_PASS={{ sql_pass_eff | quote }}
+      no_log: true
+
+    - name: Install the backup script
+      copy:
+        dest: /opt/mssql-backup/mssql_backup.sh
+        mode: "0700"
+        content: |
+          #!/usr/bin/env bash
+          # Usage: mssql_backup.sh full|log  — installed by ansible/mssql_backup.yml
+          set -euo pipefail
+          MODE="${1:-full}"
+          . /opt/mssql-backup/backup.env
+          # A function (not a string variable) so the quoted "$SQL_PASS" survives word splitting
+          # even when the password contains spaces or shell metacharacters.
+          run_sql() { /opt/mssql-tools18/bin/sqlcmd -S localhost -U "$SQL_USER" -P "$SQL_PASS" -C -h -1 -W -b "$@"; }
+          BACKUP_DIR={{ backup_dir_eff | quote }}
+          RETENTION_DAYS={{ retention_days_eff | quote }}
+          TS="$(date +%Y%m%d_%H%M%S)"
+
+          # Only the AG PRIMARY runs backups; a standalone instance (no AG rows) counts as primary.
+          ROLE=$(run_sql -Q "SET NOCOUNT ON; SELECT ISNULL(MAX(rs.role_desc),'PRIMARY') FROM sys.dm_hadr_availability_replica_states rs WHERE rs.is_local=1;")
+          ROLE="$(echo "$ROLE" | tr -d '[:space:]')"
+          if [ "$ROLE" != "PRIMARY" ]; then
+            echo "[skip] $(hostname) is $ROLE — backups run on the primary only."
+            exit 0
+          fi
+
+          if [ "$MODE" = "full" ]; then
+            DBS=$(run_sql -Q "SET NOCOUNT ON; SELECT name FROM sys.databases WHERE state_desc='ONLINE' AND name NOT IN ('tempdb','model');")
+            for DB in $DBS; do
+              echo "[full] $DB"
+              run_sql -Q "BACKUP DATABASE [$DB] TO DISK='$BACKUP_DIR/${DB}_FULL_${TS}.bak' WITH COMPRESSION, CHECKSUM, INIT;"
+            done
+          else
+            # LOG backups need FULL recovery model AND an existing full backup; user DBs only.
+            DBS=$(run_sql -Q "SET NOCOUNT ON; SELECT name FROM sys.databases WHERE state_desc='ONLINE' AND recovery_model_desc='FULL' AND database_id > 4;")
+            for DB in $DBS; do
+              echo "[log] $DB"
+              run_sql -Q "BACKUP LOG [$DB] TO DISK='$BACKUP_DIR/${DB}_LOG_${TS}.trn' WITH COMPRESSION, CHECKSUM;" \
+                || echo "[warn] log backup failed for $DB (no full backup yet?) — continuing"
+            done
+          fi
+
+          find "$BACKUP_DIR" -type f \( -name '*.bak' -o -name '*.trn' \) -mtime +"$RETENTION_DAYS" -delete
+          echo "[done] $MODE backup finished at $(date -Is)"
+
+    # The LOG cron writes ~100 lines/day forever — rotate so /var/log never fills.
+    - name: Rotate the backup log (logrotate)
+      copy:
+        dest: /etc/logrotate.d/mssql-backup
+        mode: "0644"
+        content: |
+          /var/log/mssql-backup.log {
+              weekly
+              rotate 8
+              maxsize 50M
+              compress
+              missingok
+              notifempty
+              copytruncate
+          }
+
+    - name: Schedule the FULL backup (cron)
+      cron:
+        name: mssql-full-backup
+        user: root
+        job: "/opt/mssql-backup/mssql_backup.sh full >> /var/log/mssql-backup.log 2>&1"
+        minute: "{{ full_cron_eff.split()[0] }}"
+        hour: "{{ full_cron_eff.split()[1] }}"
+        day: "{{ full_cron_eff.split()[2] }}"
+        month: "{{ full_cron_eff.split()[3] }}"
+        weekday: "{{ full_cron_eff.split()[4] }}"
+
+    - name: Schedule the LOG backup (cron)
+      cron:
+        name: mssql-log-backup
+        user: root
+        job: "/opt/mssql-backup/mssql_backup.sh log >> /var/log/mssql-backup.log 2>&1"
+        minute: "{{ log_cron_eff.split()[0] }}"
+        hour: "{{ log_cron_eff.split()[1] }}"
+        day: "{{ log_cron_eff.split()[2] }}"
+        month: "{{ log_cron_eff.split()[3] }}"
+        weekday: "{{ log_cron_eff.split()[4] }}"
+
+    - name: Run one FULL backup now to prove the chain works (primary only; secondaries skip)
+      shell: /opt/mssql-backup/mssql_backup.sh full
+      register: first_backup
+      changed_when: "'[done]' in first_backup.stdout"
+
+    - name: Report
+      debug:
+        msg: >-
+          Backups installed on {{ inventory_hostname }}: FULL '{{ full_cron_eff }}',
+          LOG '{{ log_cron_eff }}', retention {{ retention_days_eff }}d, dir {{ backup_dir_eff }}.
+          First run: {{ first_backup.stdout_lines | default([]) }}
+          NOTE — point {{ backup_dir_eff }} at NFS/NAS storage for real DR; a backup on the same
+          disk as the data files does not survive the VM.

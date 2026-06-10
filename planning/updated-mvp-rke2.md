@@ -1,6 +1,6 @@
 # Updated MVP — RKE2 / Istio (New)
 
-Supersedes [planning/updated-mvp.md](../updated-mvp.md) for the new requirement. The old MVP
+Supersedes the original Talos-era MVP doc (removed in cleanup). The old MVP
 remains valid as the previous record.
 
 ## Objective
@@ -14,8 +14,9 @@ The MVP proves:
 
 1. Core infrastructure provisioned reliably from a single jump host.
 2. Docker services deployed once via Ansible in a fixed sequence (per Docker VM).
-3. **RKE2 clusters** installed via Ansible; in-cluster services deployed via runbooks
-   (Istio → cert-manager → ArgoCD → Headlamp → WSO2) and ArgoCD GitOps.
+3. **RKE2 clusters** installed via Ansible; in-cluster services (MetalLB → Istio **ambient** +
+   shared Gateway → cert-manager → ArgoCD → Headlamp → WSO2) deployed via web-UI workloads
+   (`k8s_addons.yml` / `k8s_wso2.yml`), with the runbooks as the manual CLI reference.
 4. **MSSQL** installed via Ansible (Prod AG, UAT single).
 5. Observability and migration paths functional.
 6. **Parallel** operations triggered and monitored from the Python web UI.
@@ -89,14 +90,19 @@ For each cluster (Prod and UAT, in parallel):
 3. Join **agents** (workers).
 4. Fetch kubeconfig back to the jump host.
 
-### Phase E — In-cluster add-ons (via runbooks, not Ansible)
-Per cluster, following [rke2-cluster/](../../rke2-cluster/):
-1. Istio (base, istiod, ingress gateway).
-2. cert-manager.
-3. ArgoCD (+ expose via Istio).
-4. Headlamp (+ expose via Istio).
-5. OpenTelemetry Collector.
-6. WSO2 APIM + IS via ArgoCD (manifests in GitLab), exposed via Istio `Gateway`/`VirtualService`.
+### Phase E — In-cluster add-ons (via Ansible web-UI workloads; runbooks = manual reference)
+Per cluster, via [ansible/k8s_addons.yml](../ansible/k8s_addons.yml) /
+[ansible/k8s_wso2.yml](../ansible/k8s_wso2.yml) (runbook: [rke2-cluster/](../rke2-cluster/)):
+1. MetalLB (LoadBalancer IPs) — RKE2 ServiceLB disabled.
+2. Istio **1.30 ambient** (istiod + istio-cni + ztunnel; no sidecars, no ingressgateway) +
+   **one shared Gateway API `Gateway`** in `istio-system` (one MetalLB IP for ALL hosts; TLS
+   secret `wso2-ingress-cert` in `istio-system`).
+3. cert-manager + internal CA (`ca-issuer`) — the Certificate workload auto-issues/renews.
+4. ArgoCD (exposed via `HTTPRoute` on the shared gateway).
+5. Headlamp (same; skipped gracefully if the chart repo is blocked).
+6. WSO2 APIM + IS — rendered from `WSO2_APIM_KUBE_ISTIO/` and applied; namespaces enrolled in
+   ambient (`istio.io/dataplane-mode=ambient`); exposed via the shared gateway.
+7. OpenTelemetry Collector (runbook).
 
 ### Phase F — Observability, migration, validation
 Same as old MVP: ILM/retention, ELK 8.14 → 9.1.4 snapshot/restore, WSO2 key migration,
@@ -108,24 +114,37 @@ ElastAlert2 rules, end-to-end alert validation.
 
 | Step | Automation |
 | ---- | ---------- |
-| Docker platform (GitLab, SonarQube, ELK, ElastAlert2) | **Ansible** (existing playbooks) |
-| MSSQL (single + AG) | **Ansible** (new playbooks) |
-| RKE2 cluster install | **Ansible** (new playbook) |
-| Istio, cert-manager, ArgoCD, Headlamp, OTel | **Runbook** (markdown, manual/scripted) |
-| WSO2 APIM/IS | **GitOps via ArgoCD** (manifests in GitLab) |
+| Docker platform (GitLab, SonarQube, ELK, ElastAlert2) | **Ansible** (web UI tracks) |
+| MSSQL (single + HA AG + cleanup/reset) | **Ansible** (web UI tracks) |
+| RKE2 cluster install + scale | **Ansible** (web UI tracks) |
+| MetalLB, Istio ambient + shared Gateway, cert-manager + internal CA, ArgoCD, Headlamp | **Ansible** (`k8s_addons.yml`, web UI cards; runbook = manual reference) |
+| WSO2 APIM/IS | **Ansible** (`k8s_wso2.yml` renders the team repo, web UI cards); ArgoCD GitOps as follow-up |
+| TLS certs (Traefik VMs + K8s secret, PEM or cert-manager auto-renew) | **Ansible** (web UI cards) |
+| Backups (RKE2 etcd snapshots, MSSQL FULL/LOG) | **Ansible** (`k8s_etcd_backup.yml`, `mssql_backup.yml`, web UI cards) |
+| OTel collector | **Runbook** |
 
 ---
 
-## Definition of Done
+## Definition of Done — status as of 2026-06-10 (lab)
 
-1. Jump host triggers Docker, MSSQL, and RKE2 tracks **in parallel** from the web UI.
-2. All Docker services running on the GitLab VM and both ELK VMs.
-3. Prod MSSQL AG healthy with a working listener; UAT MSSQL reachable.
-4. Both RKE2 clusters running with default CNI; nodes Ready.
-5. Istio, cert-manager, ArgoCD, Headlamp installed per runbook in both clusters.
-6. WSO2 APIM/IS deployed via ArgoCD and connected to SQL Server (AG listener / UAT instance).
-7. Elasticsearch, Kibana, alerting, lifecycle policies functional in both ELK stacks.
-8. Migration steps documented and at least one dry run validated.
+1. ✅ Jump host triggers Docker, MSSQL, and RKE2 tracks **in parallel** from the web UI.
+2. ✅ All Docker services running on the GitLab VM and the ELK VM(s) (GitLab, SonarQube,
+   Dockhand, ELK behind Traefik — verified in [service-status.md](../service-status.md)).
+3. ✅ MSSQL **HA AG** (Pacemaker, `CLUSTER_TYPE=EXTERNAL`) healthy; Pacemaker VIP is the
+   working endpoint (T-SQL listener registration still flaky on Linux — VIP covers it).
+   UAT single instance reachable.
+4. ✅ RKE2 cluster(s) running with default CNI (Canal); nodes Ready on v1.36.1+rke2r2.
+5. ✅ MetalLB, Istio **ambient** + shared Gateway, cert-manager + internal CA, ArgoCD,
+   Headlamp installed via the web-UI workloads.
+6. ✅ WSO2 APIM/IS deployed (web-UI workloads rendering `WSO2_APIM_KUBE_ISTIO/`) on Istio
+   ambient, connected to MSSQL — **tested working in the lab**. (ArgoCD-GitOps handover is a
+   follow-up, not a blocker.)
+7. ✅ Elasticsearch, Kibana functional behind Traefik; alerting/ILM baseline in place.
+8. ⬜ Migration steps documented and at least one dry run validated (**pending** — next lab
+   cycle: full reroll from restore point, then migration rehearsal).
+
+Production-grade additions now available (run them in the next cycle): RKE2 **etcd snapshot**
+workload and **MSSQL FULL/LOG backup** workload (web UI → "Backups & DR").
 
 ---
 

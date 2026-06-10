@@ -1,12 +1,12 @@
 # Version Matrix — RKE2 / Istio (New)
 
 Version delta for the new requirement. This document **replaces only the Kubernetes layer**
-of [planning/version.md](../version.md) and **adds** SQL Server. Everything not listed here
+of the original version matrix (removed in cleanup) and **adds** SQL Server. Everything not listed here
 keeps the pinned version from the old version matrix.
 
-> Treat the old `planning/version.md` as the source of truth for ELK, GitLab, WSO2, SonarQube,
-> PostgreSQL, ElastAlert2, Dockhand, Traefik, cert-manager, ArgoCD, Headlamp, OpenTelemetry,
-> and the Python/Ansible runtime. This file overrides the cluster + ingress + database rows.
+> This file is the source of truth for the full stack: the "Unchanged" section below carries
+> the ELK, GitLab, WSO2, SonarQube, PostgreSQL, ElastAlert2, Dockhand, Traefik, cert-manager,
+> ArgoCD, Headlamp, OpenTelemetry, and Python/Ansible pins.
 
 ---
 
@@ -56,20 +56,21 @@ this by default (`rke2_disable_bundled_ingress: true` → adds
 
 | Component | Version | Helm/Install | Notes |
 | --------- | ------- | ------------ | ----- |
-| Istio | **1.30** | `istioctl` (default profile) — installs `istio-ingressgateway` in `istio-system` | Replaces Envoy Gateway. The team's `WSO2_APIM_KUBE_ISTIO` repo expects the ingress gateway + TLS secret in **`istio-system`**, so use the istioctl default profile. Routes via `Gateway`/`VirtualService` on a `LoadBalancer` service (RKE2 ServiceLB / external LB / MetalLB). |
+| Istio | **1.30 ambient** | `istioctl install --set profile=ambient` (istiod + istio-cni + ztunnel; RKE2 CNI paths `/etc/cni/net.d` + `/opt/cni/bin`) | Replaces Envoy Gateway. **No sidecars, no istio-ingressgateway.** Ingress = ONE shared Kubernetes Gateway API `Gateway` (`shared-gateway` in `istio-system`, svc `shared-gateway-istio` → one MetalLB IP for all hosts); TLS secret `wso2-ingress-cert` in `istio-system` (`certificateRefs`). Apps attach `HTTPRoute`s by hostname. |
+| Gateway API CRDs | **v1.5.1** (standard channel) | `kubectl apply -f .../standard-install.yaml` | Hard prerequisite for ambient ingress (Gateway + HTTPRoute only — not experimental). |
 
 ### Database
 
 | Component | Version | Image/Package | Notes |
 | --------- | ------- | ------------- | ----- |
-| SQL Server | 2022 (16.x) | `mssql-server` apt package (Ubuntu 22.04) | Prod = 3-node Always On AG; UAT = single instance. Installed by Ansible. |
+| SQL Server | **2025** default, 2022 selectable | `mssql-server` apt package (2025: Ubuntu 22.04/24.04 · 2022: 20.04/22.04) | Prod = 3-node Always On HA AG (Pacemaker); UAT = single instance. Installed by Ansible (`mssql_version` var). |
 | MSSQL JDBC Driver | 13.4.0 | `mssql-jdbc-13.4.0.jre11.jar` | Unchanged from old matrix — baked into the WSO2 custom image. |
 
 ---
 
 ## Unchanged (carried from old version matrix)
 
-These keep their old pins (see [planning/old/version.md](../old/version.md)):
+These keep their original pins:
 
 - WSO2 API Manager 4.7.0, WSO2 Identity Server 7.3.0.
 - Elasticsearch / Kibana / Logstash / Fleet / APM / Elastic Agent — all 9.1.4.
@@ -77,7 +78,7 @@ These keep their old pins (see [planning/old/version.md](../old/version.md)):
 - SonarQube 26.4.0.121862 (community branch plugin).
 - PostgreSQL 17.10 (shared platform DB on the GitLab/Docker VM).
 - ElastAlert2 2.29.0, Dockhand v0.29.4, Traefik v3.7.1.
-- cert-manager v1.20.2, ArgoCD v3.4.2, Headlamp v1.7.3.
+- cert-manager v1.16.2 (as installed by `k8s_addons.yml`), ArgoCD v3.4.2, Headlamp v1.7.3.
 - OpenTelemetry Collector v0.152.0.
 - ansible-core 2.20.6, ansible-runner 2.4.3, Python 3.13.13.
 
@@ -86,7 +87,7 @@ These keep their old pins (see [planning/old/version.md](../old/version.md)):
 ## Compatibility rules (updated)
 
 1. Elastic stack components all remain on 9.1.4.
-2. WSO2 APIM 4.7.0 / IS 7.3.0 remain compatible with MSSQL JDBC 13.4.0 and **SQL Server 2022**.
+2. WSO2 APIM 4.7.0 / IS 7.3.0 remain compatible with MSSQL JDBC 13.4.0 and **SQL Server 2025/2022**.
 3. RKE2 default CNI (Canal) is used — do not layer a second CNI.
 4. **Istio** is the only Kubernetes ingress. **Traefik** remains the Docker-platform ingress.
    Do not mix their responsibilities.

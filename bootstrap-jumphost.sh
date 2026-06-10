@@ -105,40 +105,6 @@ install_istioctl() {
   fi
 }
 
-# ── DISABLED: Talos + Cilium (replaced by RKE2 + Canal CNI) ─────────────────────
-# Kept commented for reference only. The stack moved from Talos+Cilium to RKE2
-# (default Canal CNI). RKE2 is installed on the cluster nodes by Ansible
-# (ansible/rke2_cluster.yml), so the jump host no longer needs these CLIs.
-# Re-enable by uncommenting the function and its call in main() if you revert.
-#
-# install_talosctl() {
-#   if command -v talosctl >/dev/null 2>&1 && talosctl version >/dev/null 2>&1; then
-#     info "talosctl already installed. Skipping."; return 0
-#   fi
-#   info "Installing talosctl..."
-#   local arch; arch="$(linux_arch)"
-#   if curl "${CURL_OPTS[@]}" -o /tmp/talosctl \
-#       "https://github.com/siderolabs/talos/releases/latest/download/talosctl-linux-${arch}"; then
-#     chmod +x /tmp/talosctl && sudo mv /tmp/talosctl /usr/local/bin/talosctl
-#   else
-#     warn "talosctl download failed."
-#   fi
-# }
-#
-# install_cilium_cli() {
-#   if command -v cilium >/dev/null 2>&1; then info "cilium CLI already installed. Skipping."; return 0; fi
-#   info "Installing cilium CLI..."
-#   local ver arch; arch="$(linux_arch)"
-#   ver="$(curl "${CURL_OPTS[@]}" -s https://raw.githubusercontent.com/cilium/cilium-cli/main/stable.txt || true)"
-#   [ -z "$ver" ] && { warn "Could not resolve cilium CLI version."; return 0; }
-#   if curl "${CURL_OPTS[@]}" -o "/tmp/cilium.tar.gz" \
-#       "https://github.com/cilium/cilium-cli/releases/download/${ver}/cilium-linux-${arch}.tar.gz"; then
-#     sudo tar xzf "/tmp/cilium.tar.gz" -C /usr/local/bin && rm -f "/tmp/cilium.tar.gz"
-#   else
-#     warn "cilium CLI download failed."
-#   fi
-# }
-
 create_venv() {
   if [ ! -d "$VENV_DIR" ]; then
     info "Creating Python virtual environment in $VENV_DIR..."

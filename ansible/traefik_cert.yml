@@ -31,11 +31,11 @@
           Run the 'Docker + Traefik' workload for this VM first, then apply the certificate.
       when: traefik_present.rc != 0
 
-    - name: Ensure Traefik certs directory exists
+    - name: Ensure Traefik certs directory exists (owner-only — holds the private key)
       file:
         path: "{{ certs_dir }}"
         state: directory
-        mode: "0755"
+        mode: "0700"
 
     - name: Copy the certificate (PEM) from the jump host
       copy:

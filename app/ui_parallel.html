@@ -96,7 +96,7 @@
     <header class="top">
       <div>
         <h1>Autoprovision — Workloads</h1>
-        <div class="sub">RKE2 + Istio · each workload runs independently in parallel · <a href="/docker" style="color:var(--brand)">legacy page</a></div>
+        <div class="sub">RKE2 + Istio ambient · each workload runs independently in parallel</div>
       </div>
       <div class="top-right">
         <div class="fld"><label>SSH User (all)</label><input id="g-user" value="autoprovision" /></div>
@@ -242,8 +242,9 @@
           { track:"k8s_cert", action:"k8s-cert-secret", title:"Certificate — Kubernetes",
             desc:"Create/update a TLS secret in a specific RKE2 cluster (e.g. wso2-ingress-cert in istio-system for Istio/WSO2). PASTE a PEM to use your own cert (re-run yearly to rotate). LEAVE PEMs EMPTY to have cert-manager issue + auto-renew it from the internal CA (run the cert-manager workload first).",
             fields:[ {k:"cluster_name", l:"Cluster (kubeconfig name)", v:"uat-cluster"},
-              {k:"namespace", l:"Namespace(s) — comma-separated", v:"istio-system,argocd,wso2-cp,wso2-internal-gw,wso2-external-gw,wso2-is"},
+              {k:"namespace", l:"Namespace — istio-system for the shared ambient Gateway (comma-list only for apps mounting the PEM)", v:"istio-system"},
               {k:"secret_name", l:"Secret Name", v:"wso2-ingress-cert"},
+              {k:"cert_dns", l:"DNS names for cert-manager (CSV — use ONE wildcard covering all hosts)", v:"*.example.com"},
               {k:"cert_pem", l:"Certificate PEM (empty → cert-manager)", t:"textarea", ph:"-----BEGIN CERTIFICATE-----"},
               {k:"key_pem", l:"Private Key PEM (empty → cert-manager)", t:"textarea", ph:"-----BEGIN PRIVATE KEY-----"} ] },
           { track:"mssql_clean", action:"mssql-ag-clean", title:"MSSQL AG — Cleanup / Reset",
@@ -251,6 +252,20 @@
             fields:[ {k:"mssql_ips", l:"AG Node IPs (all nodes)", t:"textarea", ph:"192.168.51.31\n192.168.51.32\n192.168.51.33"}, {k:"ag_name", l:"AG Name", v:"prodag"},
               {k:"listener_ip", l:"Listener / Virtual IP (to flush stranded VIP)", ph:"192.168.51.40"},
               {k:"sa_password", l:"SA Password (not saved)", t:"password"} ] },
+        ]},
+        { label: "Backups & DR", tabs: [
+          { track:"k8s_etcd_backup", action:"k8s-etcd-backup", title:"RKE2 etcd Snapshots",
+            desc:"Production-grade cluster state backup: schedules a daily etcd snapshot on every RKE2 server (drop-in config, rolling restart — API stays up on HA clusters), takes one snapshot NOW, and prunes by retention. etcd holds ALL Kubernetes state; without this a lost etcd means rebuilding the cluster from scratch.",
+            fields:[ {k:"control_plane_ips", l:"RKE2 Server (control plane) IPs", t:"textarea", ph:"192.168.51.21\n192.168.51.22\n192.168.51.23"},
+              {k:"cluster_name", l:"Cluster (kubeconfig name)", v:"prod-cluster"},
+              {k:"snapshot_cron", l:"Snapshot schedule (cron)", v:"0 2 * * *"},
+              {k:"snapshot_retention", l:"Snapshots to keep", v:"14"} ] },
+          { track:"mssql_backup", action:"mssql-backup-setup", title:"MSSQL Scheduled Backups",
+            desc:"FULL backup daily + LOG backup every 15 min + retention pruning, via root-only script + cron. Safe to install on ALL AG nodes — only the current PRIMARY actually backs up (a standalone/UAT instance counts as primary), so backups follow failover. The AG protects against node loss; only backups protect against corruption/accidental DELETE/ransomware. Point Backup Dir at NFS/NAS for real DR.",
+            fields:[ {k:"mssql_ips", l:"MSSQL node IPs (all AG nodes, or the single VM)", t:"textarea", ph:"192.168.51.31\n192.168.51.32\n192.168.51.33"},
+              {k:"sa_password", l:"SA Password (not saved)", t:"password"},
+              {k:"backup_dir", l:"Backup Dir (mount NFS/NAS here)", v:"/var/opt/mssql/backup"},
+              {k:"retention_days", l:"Retention (days)", v:"7"} ] },
         ]},
       ];
       const TABS = {}; GROUPS.forEach(g => g.tabs.forEach(t => TABS[t.track] = t));

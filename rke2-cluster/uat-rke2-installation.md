@@ -3,9 +3,8 @@
 ## Scope
 
 UAT topology: **1 RKE2 control-plane (server) node + 2 RKE2 worker (agent) nodes**, with the
-**default CNI (Canal)** and **Istio** ingress. New-requirement replacement for
-[talos-cluster/uat-talos-installation.md](../talos-cluster/uat-talos-installation.md) (kept
-unchanged as the old record).
+**default CNI (Canal)** and **Istio ambient** ingress (this replaced the original Talos-based
+guide, removed in cleanup).
 
 > RKE2 ships Canal CNI and kube-proxy by default. No separate CNI install. The cluster install is
 > Ansible-automated via `ansible/rke2_cluster.yml`; in-cluster add-ons follow the shared runbook.
@@ -86,17 +85,18 @@ kubectl get nodes -o wide      # 1 server + 2 agents, all Ready
 Follow [rke2-addons-istio-argocd-headlamp.md](rke2-addons-istio-argocd-headlamp.md) with UAT
 choices:
 
-1. **Istio 1.30** — istioctl default profile (`istio-ingressgateway` in `istio-system`). Single
-   replica is acceptable for UAT.
-2. **cert-manager** — install.
-3. **ArgoCD** — expose via Istio (`argocd.uat.example.com` or `argocd.uat.local`).
-4. **Headlamp** — expose via Istio (`headlamp.uat.local`).
+1. **Istio 1.30 ambient** — `profile=ambient` (no sidecars, no ingressgateway) + the single
+   shared Gateway API `Gateway` in `istio-system`. One MetalLB IP serves all UAT hosts.
+2. **cert-manager** — install (+ internal CA `ca-issuer`).
+3. **ArgoCD** — `HTTPRoute` on the shared gateway (`argocd.uat.example.com` or `argocd.uat.local`).
+4. **Headlamp** — `HTTPRoute` on the shared gateway (`headlamp.uat.local`).
 5. **OpenTelemetry Collector** — export to the **UAT ELK** VM.
 6. **WSO2 APIM/IS** — deploy with the team's repo
-   [WSO2_APIM_KUBE_ISTIO](../WSO2_APIM_KUBE_ISTIO/README.md) (namespaces + sidecar injection,
-   certs, `istio-system` TLS secret, then `kubectl apply -f` of the component folders). UAT
+   [WSO2_APIM_KUBE_ISTIO](../WSO2_APIM_KUBE_ISTIO/README.md) (namespaces enrolled in **ambient**
+   via `istio.io/dataplane-mode=ambient`, certs, `istio-system` TLS secret, then
+   `kubectl apply -f` of the component folders — or just run the web UI's WSO2 cards). UAT
    replica topology (1 CP + 1 internal GW + 1 external GW); WSO2 JDBC URL points at the
-   **UAT single MSSQL instance**. See [planning/news/wso2-rke2.md](../planning/news/wso2-rke2.md).
+   **UAT single MSSQL instance**. See [planning/wso2-rke2.md](../planning/wso2-rke2.md).
 
 ---
 
@@ -105,10 +105,10 @@ choices:
 ```bash
 kubectl get nodes -o wide
 kubectl get pods -A
-kubectl get svc -n istio-system istio-ingressgateway
-kubectl get gateway,virtualservice -A
+kubectl get svc -n istio-system shared-gateway-istio
+kubectl get gateway,httproute -A
 kubectl get applications -n argocd
 ```
 
 UAT runs **in parallel** with production on execution day — see
-[planning/news/parallel-installation.md](../planning/news/parallel-installation.md).
+[planning/parallel-installation.md](../planning/parallel-installation.md).

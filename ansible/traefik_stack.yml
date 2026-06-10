@@ -47,11 +47,21 @@
         state: directory
         mode: "0755"
 
-    - name: Ensure Traefik certs directory exists
+    - name: Ensure Traefik certs directory exists (owner-only — holds the private key)
       file:
         path: "{{ traefik_certs_dir }}"
         state: directory
-        mode: "0755"
+        mode: "0700"
+
+    # Certs are NOT in git (private keys never are; the dir is gitignored, so the generated
+    # files survive repo updates). First deploy gets a self-signed default so HTTPS works
+    # immediately; rotate to a real cert with the 'Certificate — Traefik' workload
+    # (ansible/traefik_cert.yml), which overwrites these files.
+    - name: Generate a self-signed default certificate when none exists yet
+      shell: >-
+        openssl req -x509 -nodes -newkey rsa:2048 -sha256 -days 365 -subj "/CN={{ traefik_default_cert_cn | default('*.example.com') }}" -keyout {{ traefik_certs_dir }}/local-dev-tls.key -out {{ traefik_certs_dir }}/local-dev-tls.crt
+      args:
+        creates: "{{ traefik_certs_dir }}/local-dev-tls.crt"
 
     - name: Ensure Traefik acme file exists with strict permissions
       file:

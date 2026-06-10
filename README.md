@@ -6,11 +6,10 @@ that installs **RKE2 Kubernetes clusters, Docker platform stacks (GitLab + ELK),
 **WSO2** are deployed from the team's repo.
 
 > **What changed from the original design:** the Kubernetes layer moved from
-> **Talos + Cilium + Envoy Gateway** to **RKE2 + default CNI (Canal) + Istio**. SQL Server now
-> runs on dedicated VMs installed by Ansible. The control plane now runs multiple stacks at once.
-> Old docs are preserved under [`planning/old/`](planning/old/) and [`talos-cluster/`](talos-cluster/);
-> the new requirement docs are under [`planning/news/`](planning/news/). Start with
-> [planning/news/00-old-vs-new.md](planning/news/00-old-vs-new.md).
+> **Talos + Cilium + Envoy Gateway** to **RKE2 + default CNI (Canal) + Istio ambient**. SQL Server
+> runs on dedicated VMs installed by Ansible, and the control plane runs multiple stacks at once.
+> The requirement docs are under [`planning/`](planning/) — start with
+> [planning/00-old-vs-new.md](planning/00-old-vs-new.md) for the old-vs-new summary.
 
 ---
 
@@ -21,11 +20,11 @@ that installs **RKE2 Kubernetes clusters, Docker platform stacks (GitLab + ELK),
 | RKE2 | **v1.36.1+rke2r2** (Kubernetes v1.36.1) |
 | CNI | **Canal** (default, bundled with RKE2) — kube-proxy kept |
 | K8s ingress | **Istio 1.30 ambient** (`profile=ambient`; ingress via Kubernetes Gateway API) |
-| SQL Server | **2022** — Prod read-scale AG (3 nodes), UAT single instance |
+| SQL Server | **2025** (default; 2022 selectable per card) — Prod HA AG (3 nodes, Pacemaker), UAT single instance |
 | WSO2 | APIM 4.7.0 / IS 7.3.0 via [`WSO2_APIM_KUBE_ISTIO/`](WSO2_APIM_KUBE_ISTIO/README.md) |
 | Docker platform | GitLab CE 19.0.1, ELK 9.1.4, PostgreSQL 17.10, Traefik v3.7.1, SonarQube, ElastAlert2 |
 
-Full matrix: [planning/news/version-rke2.md](planning/news/version-rke2.md).
+Full matrix: [planning/version-rke2.md](planning/version-rke2.md).
 
 > **RKE2 v1.36 note:** the RKE2-bundled ingress is now Traefik (ingress-nginx retired upstream).
 > Because **Istio** owns Kubernetes ingress, the RKE2 server config disables the bundled ingress
@@ -42,17 +41,20 @@ Full matrix: [planning/news/version-rke2.md](planning/news/version-rke2.md).
 | **UAT (5)** | 1 RKE2 control plane + 2 RKE2 workers · 1 MSSQL (single) · 1 ELK |
 | **Shared (2)** | 1 GitLab (Docker) · 1 jump host |
 
-Sizing: [planning/news/vm-requirements-rke2.md](planning/news/vm-requirements-rke2.md).
+Sizing: [planning/vm-requirements-rke2.md](planning/vm-requirements-rke2.md).
 
 ## What is automated vs documented
 
 | Step | How |
 | ---- | --- |
 | Docker base + GitLab + SonarQube + ELK | **Ansible** (web UI tracks) |
-| SQL Server (single + read-scale AG) | **Ansible** (web UI tracks) |
-| RKE2 cluster install (servers + agents) | **Ansible** (web UI tracks) |
-| Istio, cert-manager, ArgoCD, Headlamp, OTel | **Runbook** ([rke2-cluster/](rke2-cluster/)) |
-| WSO2 APIM + IS | **Team repo** [WSO2_APIM_KUBE_ISTIO](WSO2_APIM_KUBE_ISTIO/README.md) |
+| SQL Server (single + HA AG + cleanup/reset) | **Ansible** (web UI tracks) |
+| RKE2 cluster install + scale (servers + agents) | **Ansible** (web UI tracks) |
+| MetalLB, Istio **ambient** + shared Gateway, cert-manager + internal CA, ArgoCD, Headlamp | **Ansible** (web UI cards → `k8s_addons.yml`); runbook = manual reference ([rke2-cluster/](rke2-cluster/)) |
+| WSO2 APIM + IS | **Ansible** (web UI cards → `k8s_wso2.yml`, renders the team repo [WSO2_APIM_KUBE_ISTIO](WSO2_APIM_KUBE_ISTIO/README.md)) |
+| TLS certs (Traefik VMs + K8s secret, PEM or cert-manager auto-renew) | **Ansible** (web UI Certificates cards) |
+| Backups — RKE2 etcd snapshots + MSSQL FULL/LOG | **Ansible** (web UI Backups & DR cards) |
+| OpenTelemetry Collector | **Runbook** ([rke2-cluster/](rke2-cluster/)) |
 
 ---
 
@@ -118,7 +120,6 @@ own log (`data/logs/<job_id>.log`), so parallel runs never collide.
 
 - Set the **Default SSH User/Password** at the top and click **Apply Defaults To Cards** to
   prefill all cards (default user `autoprovision`).
-- Legacy single-Docker page is still at `http://<jump-host-ip>:3000/docker`.
 
 ## Step 3 — Run the tracks in parallel
 
@@ -132,8 +133,10 @@ Click **Run All Configured** to launch every card that has its target filled in.
 | **UAT RKE2 Cluster** | RKE2 on 1 server + 2 agents | cluster name, 1 CP IP, 2 worker IPs, RKE2 token |
 | **Prod ELK** | Docker base → **Traefik** → Elasticsearch/Logstash/Kibana/Fleet/APM (Kibana via Traefik) | ELK VM IP, Kibana domain |
 | **UAT ELK** | same, UAT ELK VM | ELK VM IP, Kibana domain |
-| **Prod MSSQL AG** | SQL Server 2022 on 3 nodes + read-scale Always On AG (first IP = primary) | 3 node IPs, SA password, AG name |
-| **UAT MSSQL** | SQL Server 2022 single instance | VM IP, SA password |
+| **Prod MSSQL AG** | SQL Server 2025 (or 2022) on 3 nodes + Always On HA AG with Pacemaker (first IP = primary) | 3 node IPs, SA password, AG name, listener/VIP |
+| **UAT MSSQL** | SQL Server 2025 (or 2022) single instance | VM IP, SA password |
+| **Istio / ArgoCD / Headlamp / WSO2 / cert cards** | Per-cluster add-ons + WSO2 (see Step 4–5) | cluster name, hosts, MetalLB range |
+| **Backups & DR** | RKE2 etcd snapshots (scheduled + on-demand) · MSSQL FULL/LOG backups with retention | server/node IPs, SA password |
 
 > **Every Docker VM runs Traefik.** Traefik is installed as its own stack right after Docker base
 > and **owns the shared `platform` network** that the service stacks attach to. Each service is
@@ -147,8 +150,10 @@ Click **Run All Configured** to launch every card that has its target filled in.
 
 ### CLI equivalent (optional)
 
-The same playbooks can run directly from the jump host with a hand-written inventory
-(see [ansible/inventory](ansible/inventory) for example groups):
+The same playbooks can run directly from the jump host with a hand-written INI inventory.
+Groups: `docker_vm` (Docker stacks), `mssql` / `mssql_ag` / `mssql_backup` (SQL Server),
+`rke2_servers` / `rke2_agents` (cluster) — one `ip ansible_user=autoprovision ansible_become=true`
+line per host:
 
 ```bash
 # RKE2 cluster (first host in rke2_servers bootstraps; default CNI = Canal)
@@ -175,34 +180,39 @@ export KUBECONFIG="$HOME/autoprovision/data/k8s/prod-cluster/kubeconfig"
 kubectl get nodes -o wide      # all nodes Ready, CNI = Canal
 ```
 
-## Step 4 — Per-cluster add-ons (runbook)
+## Step 4 — Per-cluster add-ons (web UI cards)
 
-For **each** cluster, follow the runbook. Production:
-[rke2-cluster/prod-rke2-installation.md](rke2-cluster/prod-rke2-installation.md) · UAT:
-[rke2-cluster/uat-rke2-installation.md](rke2-cluster/uat-rke2-installation.md) · shared detail:
-[rke2-cluster/rke2-addons-istio-argocd-headlamp.md](rke2-cluster/rke2-addons-istio-argocd-headlamp.md).
+For **each** cluster, run the add-on cards in this order (each card runs
+[ansible/k8s_addons.yml](ansible/k8s_addons.yml) against the cluster's kubeconfig on the
+jump host — no SSH to the nodes):
 
-Order (per cluster, `KUBECONFIG` pointed at it):
+1. **Istio** card (fill the MetalLB IP range) — installs MetalLB, then Istio **1.30 ambient**
+   (istiod + istio-cni + ztunnel with the RKE2-correct CNI paths `/etc/cni/net.d` +
+   `/opt/cni/bin`; any old sidecar install is purged first), the Gateway API CRDs
+   (**standard** channel), and the **single shared ingress Gateway** (`shared-gateway` in
+   `istio-system` → svc `shared-gateway-istio` → **one MetalLB IP for ALL hosts**).
+2. **cert-manager (internal CA)** card — cert-manager + self-signed root CA
+   (`ca-issuer` ClusterIssuer).
+3. **Certificate — Kubernetes** card — the gateway TLS secret `wso2-ingress-cert` in
+   **`istio-system`** (the shared Gateway only reads its own namespace — Gateway API
+   `certificateRefs`). Paste a PEM, or leave it empty to auto-issue + auto-renew from the
+   internal CA (use a wildcard `cert_dns` covering all hosts).
+4. **ArgoCD** and **Headlamp** cards — each exposed via an `HTTPRoute` on the shared gateway
+   (no extra IPs).
+5. OpenTelemetry Collector — runbook step.
 
-```bash
-# 1. Istio 1.30 — AMBIENT profile (no ingressgateway; ingress via the Kubernetes Gateway API).
-#    Install the Gateway API CRDs, uninstall any old sidecar install, then install ambient.
-kubectl get crd gateways.gateway.networking.k8s.io &> /dev/null || \
-  kubectl apply --server-side -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.5.1/experimental-install.yaml
-curl -L https://istio.io/downloadIstio | ISTIO_VERSION=1.30.0 TARGET_ARCH=x86_64 sh -
-export PATH=$PWD/istio-1.30.0/bin:$PATH
-istioctl uninstall --purge -y                 # only if a sidecar Istio was previously installed
-istioctl install --set profile=ambient -y     # istiod + istio-cni + ztunnel
+Manual CLI equivalent + troubleshooting detail:
+[rke2-cluster/rke2-addons-istio-argocd-headlamp.md](rke2-cluster/rke2-addons-istio-argocd-headlamp.md)
+(prod: [prod-rke2-installation.md](rke2-cluster/prod-rke2-installation.md) · uat:
+[uat-rke2-installation.md](rke2-cluster/uat-rke2-installation.md)).
 
-# 2. cert-manager  3. ArgoCD  4. Headlamp  5. OpenTelemetry Collector
-#    (Helm commands in rke2-addons-istio-argocd-headlamp.md; ArgoCD/Headlamp exposed via Gateway API)
-```
+## Step 5 — WSO2 (web UI cards; manual = her steps)
 
-## Step 5 — WSO2 (team's repo — her steps)
-
-WSO2 APIM (Control Plane + Internal/External Gateways) and Identity Server are deployed from
-[`WSO2_APIM_KUBE_ISTIO/`](WSO2_APIM_KUBE_ISTIO/README.md). With `KUBECONFIG` set to the cluster
-and Istio already installed:
+WSO2 APIM (Control Plane + Internal/External Gateways) and Identity Server deploy from the
+**WSO2 APIM / WSO2 IS cards** — they run [ansible/k8s_wso2.yml](ansible/k8s_wso2.yml), which
+renders [`WSO2_APIM_KUBE_ISTIO/`](WSO2_APIM_KUBE_ISTIO/README.md) with your hostnames + MSSQL
+address, enrolls the WSO2 namespaces in ambient, and applies everything. **Tested working**
+(latest lab run). Manual equivalent with `KUBECONFIG` set and Istio already installed:
 
 ```bash
 cd WSO2_APIM_KUBE_ISTIO
@@ -224,18 +234,33 @@ kubectl apply -f control-plane/ -f internal-gw/ -f external-gw/ -f wso2-is/
 
 **Database wiring (read-scale AG):** load `mssql/shared_mssql.sql` and `mssql/apim_mssql.sql`,
 then point WSO2 JDBC at the **AG primary node** in Production (no listener with `CLUSTER_TYPE=NONE`)
-or the **single instance** in UAT. Details: [planning/news/wso2-rke2.md](planning/news/wso2-rke2.md).
+or the **single instance** in UAT. Details: [planning/wso2-rke2.md](planning/wso2-rke2.md).
 
 WSO2 ingress hosts (from the repo's `istio-gateway.yaml`, all TLS on 443 →
 secret `wso2-ingress-cert` in `istio-system`): `apim.example.com`, `internal-gw.example.com`,
 `external-gw.example.com`, `wso2is.example.com`. Point DNS / `/etc/hosts` at the Gateway API
 ingress IP (`kubectl -n istio-system get svc shared-gateway-istio`).
 
-## Step 6 — Observability, migration, validation
+## Step 6 — Backups (production-grade — run once per environment)
+
+Web UI → **Backups & DR**:
+
+- **RKE2 etcd Snapshots** ([ansible/k8s_etcd_backup.yml](ansible/k8s_etcd_backup.yml)) —
+  schedules a daily etcd snapshot on every RKE2 server (drop-in config under
+  `config.yaml.d/`, rolling restart so the API stays up), takes one snapshot immediately, and
+  prunes by retention. etcd holds ALL cluster state — without snapshots a lost etcd means
+  rebuilding from scratch. Restore: `rke2 server --cluster-reset --cluster-reset-restore-path=…`.
+- **MSSQL Scheduled Backups** ([ansible/mssql_backup.yml](ansible/mssql_backup.yml)) — FULL
+  daily + LOG every 15 min + retention pruning via a root-only script + cron. Install on **all**
+  AG nodes: only the current PRIMARY backs up, so backups follow failover (a standalone/UAT
+  instance counts as primary). The AG protects against node loss only — backups are what protect
+  against corruption / accidental `DELETE` / ransomware. **Point the backup dir at NFS/NAS.**
+
+## Step 7 — Observability, migration, validation
 
 Per ELK stack: configure Elasticsearch ILM/retention, archive paths to NFS/NAS, run the 8.14 →
 9.1.4 snapshot/restore migration, the WSO2 APIM credential migration job, and the base
-ElastAlert2 rules. See [planning/news/installation-steps-rke2.md](planning/news/installation-steps-rke2.md).
+ElastAlert2 rules. See [planning/installation-steps-rke2.md](planning/installation-steps-rke2.md).
 
 ---
 
@@ -342,6 +367,31 @@ EXEC @daysleft = xp_qv '2715127595', @instancename;
 SELECT @daysleft AS DaysLeft;
 ```
 
+## Security notes (read before a production rollout)
+
+The lab defaults favor automation speed; harden these for production:
+
+- **Web UI**: `bootstrap-jumphost.sh` binds uvicorn to `0.0.0.0:3000` with **no
+  authentication** — anyone who can reach the jump host can trigger deployments and read job
+  logs. Restrict port 3000 to operator IPs at the firewall (or bind to `127.0.0.1` and use SSH
+  port-forwarding: `ssh -L 3000:localhost:3000 <jump-host>`).
+- **Inventories**: per-job inventory files under `data/inventory/` contain the SSH password
+  (`ansible_password=`); they are written `0600`. Prefer SSH keys for the `autoprovision` user
+  in production and leave the password fields empty.
+- **SSH host keys**: `ansible/ansible.cfg` sets `host_key_checking = False` for first-contact
+  automation. For production, pre-populate `known_hosts` and set it back to `True`.
+- **Derived passwords**: `mssql_ag.yml` derives Pacemaker/hacluster/cert/master-key passwords
+  from the AG name when not provided (`<ag>-…-Pa55!`). Always pass explicit strong values for
+  production (`pacemaker_password`, `hacluster_password`, `cert_password`,
+  `master_key_password`).
+- **Secrets in logs/process list**: playbook passwords travel via `--extra-vars` (visible in
+  `ps` on the jump host while a job runs) and job logs are world-readable in the UI; sensitive
+  tasks use `no_log`, but treat jump-host shell access as privileged.
+- **PEMs**: pasted certs are staged to `data/certs/<track>/` (key `0600`) and are NOT stored in
+  the DB; delete them after rotation if the jump host is shared.
+- **Backups**: run the **Backups & DR** cards (etcd + MSSQL) and point targets at NFS/NAS —
+  same-disk backups don't survive the VM.
+
 ## Troubleshooting (common)
 
 | Symptom | Fix |
@@ -362,13 +412,17 @@ SELECT @daysleft AS DaysLeft;
 | Path | Purpose |
 | ---- | ------- |
 | `bootstrap-jumphost.sh` | One-shot jump host prep + start the web UI |
-| `app/` | FastAPI control plane — `ui_parallel.html` (`/`, multi-track) + legacy `ui_docker.html` (`/docker`) |
+| `app/` | FastAPI control plane — `main.py` + `ui_parallel.html` (the multi-track dashboard at `/`) |
 | `ansible/rke2_cluster.yml` | RKE2 servers + agents install (Canal, bundled ingress disabled) |
-| `ansible/mssql_single.yml`, `ansible/mssql_ag.yml` | SQL Server 2022 single / read-scale AG |
+| `ansible/k8s_addons.yml` | Per-cluster add-ons: MetalLB · Istio ambient + shared Gateway · cert-manager + internal CA · ArgoCD · Headlamp |
+| `ansible/k8s_wso2.yml` | WSO2 APIM/IS — renders `WSO2_APIM_KUBE_ISTIO/` and applies (ambient enrollment) |
+| `ansible/k8s_cert.yml` | TLS secret for the shared gateway (`istio-system`) — PEM or cert-manager auto-renew |
+| `ansible/k8s_etcd_backup.yml`, `ansible/mssql_backup.yml` | Backups: RKE2 etcd snapshots · MSSQL FULL/LOG + retention |
+| `ansible/mssql_single.yml`, `ansible/mssql_ag.yml`, `ansible/mssql_ag_clean.yml` | SQL Server 2025/2022 single · HA AG (Pacemaker) · AG cleanup/reset |
 | `ansible/traefik_stack.yml` | Traefik edge proxy — every Docker VM, right after base; owns the `platform` network |
 | `ansible/docker_*.yml`, `elk_stack.yml`, `gitlab_stack.yml`, `sonarqube_stack.yml` | Docker platform stacks (platform = PostgreSQL + Dockhand only) |
 | `rke2-cluster/` | RKE2 cluster + Istio/ArgoCD/Headlamp/WSO2 runbooks (prod, uat, shared) |
 | `WSO2_APIM_KUBE_ISTIO/` | Team's WSO2 + Istio deployment repo (authoritative for WSO2) |
-| `planning/news/` | New-requirement docs (RKE2/Istio/MSSQL/parallel) |
-| `planning/old/`, `talos-cluster/` | Original requirement docs (kept for reference) |
+| `planning/` | Requirement docs (RKE2/Istio/MSSQL/parallel) — start with `00-old-vs-new.md` |
+| `mssql/` | SQL Server manual-install + theory guides (Linux AG, Windows-AD alternative) |
 | `docker/` | Docker compose for the platform + ELK |

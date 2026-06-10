@@ -189,6 +189,16 @@
           loop: [istio-cni-node, ztunnel]
           changed_when: false
 
+        # Certs are NOT committed to git (private keys never are) — generate them on the jump
+        # host with the repo's script when missing. Replace with a real wildcard cert later via
+        # the 'Certificate — Kubernetes' workload (PEM or cert-manager); the gateway reloads it
+        # via SDS with no restart.
+        - name: Generate local WSO2 certs when missing (self-signed, via the repo's script)
+          shell: ./scripts/generate-local-certificates.sh
+          args:
+            chdir: "{{ wso2_certs_dir | dirname }}"
+            creates: "{{ wso2_certs_dir }}/server.crt"
+
         # Keep the whole pipeline on ONE physical line. With a YAML folded scalar (`>`/`>-`), a
         # more-indented continuation line becomes a literal newline (not a space), which split
         # `--cert=… --key=…` off into separate commands → "key and cert must be specified".

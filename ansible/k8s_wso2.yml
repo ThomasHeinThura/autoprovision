@@ -35,6 +35,14 @@
     - name: Create the render directory
       file: { path: "{{ render_dir }}", state: directory, mode: "0755" }
 
+    # Certs are NOT committed to git (private keys never are) — generate them in the source
+    # repo when missing, BEFORE the copy, so the rendered tree has certificates/server.{crt,key}.
+    - name: Generate local WSO2 certs when missing (self-signed, via the repo's script)
+      shell: ./scripts/generate-local-certificates.sh
+      args:
+        chdir: "{{ wso2_src }}"
+        creates: "{{ wso2_src }}/certificates/server.crt"
+
     - name: Copy the WSO2 repo into the render directory
       shell: "cp -a {{ wso2_src }}/. {{ render_dir }}/"
 

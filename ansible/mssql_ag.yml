@@ -50,6 +50,14 @@
       fail: { msg: "sa_password is required (strong password)." }
       when: sa_password_eff | length == 0
 
+    # The web UI only sends db_admin_user/password as a pair, but a CLI run can pass one without
+    # the other — the login would never be created and every later phase would fail confusingly.
+    - name: Fail early if db_admin_user is set without db_admin_password (or vice versa)
+      fail:
+        msg: "db_admin_user and db_admin_password must BOTH be set (or both left empty to use sa)."
+      when: >-
+        ((db_admin_user | default('')) | length > 0) != ((db_admin_password | default('')) | length > 0)
+
     - name: Require >= 2 GB RAM
       assert:
         that: ansible_facts['memtotal_mb'] | int >= 1900

@@ -3,9 +3,8 @@
 ## Scope
 
 Production topology: **3 RKE2 control-plane (server) nodes + 5 RKE2 worker (agent) nodes**, with
-the **default CNI (Canal)** and **Istio** ingress. This is the new-requirement replacement for
-[talos-cluster/prod-talos-installation.md](../talos-cluster/prod-talos-installation.md) (kept
-unchanged as the old record).
+the **default CNI (Canal)** and **Istio ambient** ingress (this replaced the original
+Talos-based guide, removed in cleanup).
 
 ## App or manual?
 
@@ -158,20 +157,23 @@ The playbook is **idempotent**, so adding nodes is just re-running it with a lon
 Follow [rke2-addons-istio-argocd-headlamp.md](rke2-addons-istio-argocd-headlamp.md) with these
 production choices:
 
-1. **Istio 1.30** — istioctl default profile (`istio-ingressgateway` in `istio-system`, as the
-   team's WSO2 repo expects). For HA, scale the ingress gateway / istiod replicas ≥2.
-2. **cert-manager** — install (v1.20.2).
-3. **ArgoCD** — install + expose via Istio with production DNS (`argocd.prod.example.com`).
-4. **Headlamp** — install + expose via Istio (`headlamp.prod.example.com`).
+1. **Istio 1.30 ambient** — `profile=ambient` (no sidecars, no ingressgateway) + the single
+   shared Gateway API `Gateway` in `istio-system` (one MetalLB IP for all production hosts).
+   For HA, scale istiod replicas ≥2 (ztunnel/istio-cni are DaemonSets already).
+2. **cert-manager** — install (+ internal CA `ca-issuer`).
+3. **ArgoCD** — `HTTPRoute` on the shared gateway, production DNS (`argocd.prod.example.com`).
+4. **Headlamp** — `HTTPRoute` on the shared gateway (`headlamp.prod.example.com`).
 5. **OpenTelemetry Collector** — export to the **production ELK** VM.
 6. **WSO2 APIM/IS** — deploy with the team's repo
-   [WSO2_APIM_KUBE_ISTIO](../WSO2_APIM_KUBE_ISTIO/README.md) (namespaces + sidecar injection,
-   certs, `istio-system` TLS secret `wso2-ingress-cert`, then `kubectl apply -f` of
-   control-plane / internal-gw / external-gw / wso2-is). Production replica topology
-   (2 CP + 2 internal GW + 2 external GW per [planning/old/wso2_apim.md](../planning/old/wso2_apim.md)).
-   With the **read-scale AG (CLUSTER_TYPE=NONE)** there is no virtual listener — point the WSO2
-   JDBC URL at the **AG primary node** (apply `mssql/*.sql` schemas there). See
-   [planning/news/wso2-rke2.md](../planning/news/wso2-rke2.md).
+   [WSO2_APIM_KUBE_ISTIO](../WSO2_APIM_KUBE_ISTIO/README.md) (namespaces enrolled in **ambient**
+   via `istio.io/dataplane-mode=ambient`, certs, `istio-system` TLS secret `wso2-ingress-cert`,
+   then `kubectl apply -f` of control-plane / internal-gw / external-gw / wso2-is — or just run
+   the web UI's WSO2 cards). Production replica topology
+   (2 CP + 2 internal GW + 2 external GW).
+   With the **HA AG (CLUSTER_TYPE=EXTERNAL)** point the WSO2 JDBC URL at the **Pacemaker
+   listener/VIP**; with a read-scale AG (CLUSTER_TYPE=NONE, no listener) use the **AG primary
+   node** (apply `mssql/*.sql` schemas on the primary). See
+   [planning/wso2-rke2.md](../planning/wso2-rke2.md).
 
 ---
 
@@ -180,14 +182,14 @@ production choices:
 ```bash
 kubectl get nodes -o wide
 kubectl get pods -A
-kubectl get svc -n istio-system istio-ingressgateway
-kubectl get gateway,virtualservice -A
+kubectl get svc -n istio-system shared-gateway-istio
+kubectl get gateway,httproute -A
 kubectl get applications -n argocd
 kubectl get pods -n wso2-cp -n wso2-is
 ```
 
-Confirm: 8 nodes Ready (Canal), Istio ingress has an external IP, ArgoCD/Headlamp reachable, WSO2
-pods Running and connected to the MSSQL AG primary.
+Confirm: 8 nodes Ready (Canal), the shared gateway has its MetalLB external IP, ArgoCD/Headlamp
+reachable, WSO2 pods Running and connected to MSSQL (VIP or primary).
 
 ---
 
@@ -198,7 +200,7 @@ pods Running and connected to the MSSQL AG primary.
 | `talosctl gen config` + `cni: none` patch | RKE2 `config.yaml` with default CNI (Canal) |
 | `talosctl bootstrap` | First `rke2-server` bootstraps etcd |
 | Cilium Helm install | None — Canal ships with RKE2 |
-| Envoy Gateway + Gateway API CRDs | Istio + `Gateway`/`VirtualService` |
+| Envoy Gateway + Gateway API CRDs | Istio **ambient** + Gateway API (`shared-gateway` + `HTTPRoute`) |
 | `talosctl kubeconfig` | `scp` `/etc/rancher/rke2/rke2.yaml` (done by Ansible) |
 
 ArgoCD and Headlamp install steps are unchanged from the Talos guide.

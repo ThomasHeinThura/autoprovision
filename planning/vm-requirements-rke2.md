@@ -1,8 +1,7 @@
 # VM Requirements — RKE2 / Istio (New)
 
-Updated VM topology for the new requirement. Supersedes
-[planning/vm-requirements.md](../vm-requirements.md) for Production and UAT execution.
-The old document remains valid as the previous baseline.
+Updated VM topology for the new requirement. Supersedes the original Talos-era sizing doc
+(removed in cleanup) for Production and UAT execution.
 
 ## Core changes from the old baseline
 
@@ -56,7 +55,7 @@ The old document remains valid as the previous baseline.
 - Run Istio ingress gateway and other HA add-ons with ≥2 replicas.
 - ELK is on its own VM in production (separate from GitLab).
 - The 3 MSSQL VMs form one Always On Availability Group; WSO2 APIM/IS connect to the AG primary
-  (read-scale AG has no virtual listener — see [mssql-ag-windows-ad.md](mssql-ag-windows-ad.md)
+  (read-scale AG has no virtual listener — see [mssql/windows-ad-ag.md](../mssql/windows-ad-ag.md)
   for the Windows/listener path).
 - **MSSQL VM OS: Ubuntu 22.04 LTS (or 20.04).** SQL Server 2022 on Linux is **not** supported on
   Ubuntu 24.04/25.04 (missing OpenLDAP 2.5 → `sqlservr` exits 127). The MSSQL VMs must be

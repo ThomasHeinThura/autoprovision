@@ -6,7 +6,7 @@ Server** joined to **Active Directory**, with **synchronous commit + automatic f
 
 > This is the **Windows/WSFC** path (full HA: automatic failover + virtual listener). It is
 > different from the Linux `CLUSTER_TYPE=NONE` read-scale AG built by
-> [ansible/mssql_ag.yml](../../ansible/mssql_ag.yml). Use this guide when the customer wants
+> [ansible/mssql_ag.yml](../ansible/mssql_ag.yml). Use this guide when the customer wants
 > Windows + AD with automatic failover.
 
 ---

@@ -1,0 +1,126 @@
+# RKE2 etcd snapshots — scheduled + on-demand (production-grade cluster state backup).
+#
+# etcd holds ALL Kubernetes state; without snapshots a corrupted/lost etcd means the
+# cluster (and every Gateway/HTTPRoute/Secret on it) is unrecoverable. This workload:
+#   1. drops a config snippet into /etc/rancher/rke2/config.yaml.d/ (RKE2 merges it —
+#      rke2_cluster.yml's main config.yaml is NOT touched, so re-running either is safe),
+#   2. restarts rke2-server ONE NODE AT A TIME (serial) so the API stays up on HA clusters,
+#   3. takes an immediate on-demand snapshot and lists what is on disk,
+#   4. optionally fetches the newest snapshot to the jump host (off-box copy).
+#
+# Target inventory group: rke2_servers (etcd lives only on server/control-plane nodes).
+#
+# Variables (all optional):
+#   snapshot_cron        cron schedule, default "0 2 * * *" (daily 02:00)
+#   snapshot_retention   how many snapshots RKE2 keeps locally, default 14
+#   snapshot_dir         on-node dir, default /var/lib/rancher/rke2/server/db/snapshots
+#   fetch_to_jumphost    true → copy the newest snapshot to data/backups/etcd/<cluster> on
+#                        the jump host (default false; snapshots can be several hundred MB)
+#   cluster_name         used only for the jump-host fetch path, default "rke2-cluster"
+#
+# RESTORE (documented, not automated — read before you need it):
+#   systemctl stop rke2-server   # on ALL servers
+#   rke2 server --cluster-reset --cluster-reset-restore-path=<snapshot-file>   # FIRST server only
+#   systemctl start rke2-server  # first server, then rejoin the others (wipe their db dirs)
+
+- name: RKE2 etcd snapshots — schedule + on-demand
+  hosts: rke2_servers
+  become: true
+  gather_facts: false
+  serial: 1 # restart servers one at a time so the kube-apiserver stays available
+  vars:
+    snapshot_cron_eff: "{{ snapshot_cron | default('0 2 * * *') }}"
+    snapshot_retention_eff: "{{ snapshot_retention | default(14) }}"
+    snapshot_dir_eff: "{{ snapshot_dir | default('/var/lib/rancher/rke2/server/db/snapshots') }}"
+  tasks:
+    - name: Verify this node runs rke2-server
+      stat:
+        path: /usr/local/bin/rke2
+      register: rke2_bin
+
+    - name: Fail clearly if RKE2 is not installed here
+      fail:
+        msg: "RKE2 is not installed on {{ inventory_hostname }} — run the RKE2 cluster workload first."
+      when: not rke2_bin.stat.exists
+
+    # A malformed cron would be written into the RKE2 config and silently schedule nothing.
+    - name: Validate the snapshot schedule (must be exactly 5 cron fields)
+      assert:
+        that: snapshot_cron_eff.split() | length == 5
+        fail_msg: "snapshot_cron must be a standard 5-field cron expression (got '{{ snapshot_cron_eff }}')."
+
+    - name: Ensure the RKE2 drop-in config directory exists
+      file:
+        path: /etc/rancher/rke2/config.yaml.d
+        state: directory
+        mode: "0700"
+
+    - name: Configure scheduled etcd snapshots (drop-in — does not touch config.yaml)
+      copy:
+        dest: /etc/rancher/rke2/config.yaml.d/50-etcd-snapshots.yaml
+        mode: "0600"
+        content: |
+          etcd-snapshot-schedule-cron: "{{ snapshot_cron_eff }}"
+          etcd-snapshot-retention: {{ snapshot_retention_eff }}
+          etcd-snapshot-dir: {{ snapshot_dir_eff }}
+      register: snap_cfg
+
+    - name: Restart rke2-server to pick up the snapshot schedule (only when config changed)
+      systemd:
+        name: rke2-server
+        state: restarted
+      when: snap_cfg is changed
+
+    - name: Wait for the API to come back on this node
+      shell: |
+        /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get --raw /readyz
+      register: api_ready
+      retries: 30
+      delay: 10
+      until: api_ready.rc == 0
+      changed_when: false
+      when: snap_cfg is changed
+
+# On-demand snapshot + report — first server only (one snapshot of the shared etcd is enough).
+- name: RKE2 etcd snapshot — take one now and report
+  hosts: rke2_servers[0]
+  become: true
+  gather_facts: false
+  vars:
+    snapshot_dir_eff: "{{ snapshot_dir | default('/var/lib/rancher/rke2/server/db/snapshots') }}"
+    cluster_name_eff: "{{ cluster_name | default('rke2-cluster') }}"
+  tasks:
+    - name: Take an on-demand etcd snapshot
+      shell: |
+        rke2 etcd-snapshot save --name on-demand
+      register: snap_now
+      changed_when: snap_now.rc == 0
+
+    - name: List snapshots on disk
+      shell: |
+        ls -lh {{ snapshot_dir_eff | quote }} | tail -n 20
+      register: snap_list
+      changed_when: false
+
+    - name: Find the newest snapshot file
+      shell: |
+        ls -1t {{ snapshot_dir_eff | quote }} | head -n 1
+      register: newest_snap
+      changed_when: false
+      when: fetch_to_jumphost | default(false) | bool
+
+    - name: Fetch the newest snapshot to the jump host (data/backups/etcd/<cluster>/)
+      fetch:
+        src: "{{ snapshot_dir_eff }}/{{ newest_snap.stdout }}"
+        dest: "{{ playbook_dir }}/../data/backups/etcd/{{ cluster_name_eff }}/"
+        flat: true
+      when:
+        - fetch_to_jumphost | default(false) | bool
+        - newest_snap.stdout | default('') | length > 0
+
+    - name: Report
+      debug:
+        msg: >-
+          etcd snapshots configured (cron '{{ snapshot_cron | default('0 2 * * *') }}',
+          retention {{ snapshot_retention | default(14) }}) on all servers; on-demand snapshot
+          taken. On-disk: {{ snap_list.stdout_lines | default([]) }}

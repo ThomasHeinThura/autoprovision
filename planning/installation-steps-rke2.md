@@ -1,7 +1,7 @@
 # Installation Steps — RKE2 / Istio (New)
 
 Updated operator flow for the new requirement. Supersedes
-[planning/installation-steps.md](../installation-steps.md) for Production and UAT execution.
+the original Talos-era flow doc (removed in cleanup) for Production and UAT execution.
 The old document remains valid as the previous flow.
 
 ## Summary of the new flow
@@ -15,7 +15,7 @@ The old document remains valid as the previous flow.
 7. Run observability lifecycle + migration tasks.
 
 Automation boundary: **Ansible installs Docker stacks, MSSQL, and RKE2.** The in-cluster
-add-ons are **runbooks** under [rke2-cluster/](../../rke2-cluster/); WSO2 is **GitOps via ArgoCD**.
+add-ons are **runbooks** under [rke2-cluster/](../rke2-cluster/); WSO2 is **GitOps via ArgoCD**.
 
 ---
 
@@ -48,7 +48,6 @@ http://<jump-host-ip>:3000/
 The home page is the **multi-track dashboard**. Each track is a card you can run independently
 and concurrently. See [parallel-installation.md](parallel-installation.md).
 
-Legacy single-Docker page is still available at `http://<jump-host-ip>:3000/docker`.
 
 ---
 
@@ -84,7 +83,7 @@ WSO2 manifests from it.
 ### 4b. MSSQL tracks
 
 - **Prod MSSQL AG** — installs SQL Server 2022 on 3 nodes and bootstraps the Always On AG.
-  See the manual verification checklist in [ansible/mssql_ag.yml](../../ansible/mssql_ag.yml)
+  See the manual verification checklist in [ansible/mssql_ag.yml](../ansible/mssql_ag.yml)
   output and [rke2-cluster runbooks].
 - **UAT MSSQL** — installs a single SQL Server 2022 instance.
 
@@ -104,31 +103,35 @@ After this, `kubectl --kubeconfig data/k8s/<cluster>/kubeconfig get nodes` shows
 
 ---
 
-## Step 5 — In-cluster add-ons (runbook, per cluster)
+## Step 5 — In-cluster add-ons (web UI cards, per cluster)
 
-Follow the matching guide:
+The dashboard cards run [ansible/k8s_addons.yml](../ansible/k8s_addons.yml) /
+[ansible/k8s_wso2.yml](../ansible/k8s_wso2.yml); the runbooks are the manual reference:
 
-- Production: [rke2-cluster/prod-rke2-installation.md](../../rke2-cluster/prod-rke2-installation.md)
-- UAT: [rke2-cluster/uat-rke2-installation.md](../../rke2-cluster/uat-rke2-installation.md)
-- Shared add-on detail: [rke2-cluster/rke2-addons-istio-argocd-headlamp.md](../../rke2-cluster/rke2-addons-istio-argocd-headlamp.md)
+- Production: [rke2-cluster/prod-rke2-installation.md](../rke2-cluster/prod-rke2-installation.md)
+- UAT: [rke2-cluster/uat-rke2-installation.md](../rke2-cluster/uat-rke2-installation.md)
+- Shared add-on detail: [rke2-cluster/rke2-addons-istio-argocd-headlamp.md](../rke2-cluster/rke2-addons-istio-argocd-headlamp.md)
 
 Order per cluster:
 
-1. Install Istio (`base`, `istiod`, ingress `gateway`).
-2. Install cert-manager.
-3. Install ArgoCD; expose via Istio `Gateway`/`VirtualService`.
-4. Install Headlamp; expose via Istio.
-5. Install OpenTelemetry Collector.
-6. Define ArgoCD `Application`s for WSO2 APIM/IS (manifests in GitLab); sync; expose WSO2 via Istio.
+1. Istio card — MetalLB + Istio **1.30 ambient** + the single shared Gateway API `Gateway`
+   (`shared-gateway` in `istio-system`, one MetalLB IP for all hosts).
+2. cert-manager card (+ internal CA), then the Certificate — Kubernetes card
+   (TLS secret `wso2-ingress-cert` in `istio-system`).
+3. ArgoCD card — exposed via `HTTPRoute` on the shared gateway.
+4. Headlamp card — same.
+5. OpenTelemetry Collector (runbook).
+6. WSO2 APIM + IS cards (render + apply the team repo; ambient enrollment). ArgoCD
+   `Application`s for GitOps handover as a follow-up.
 
 ---
 
 ## Step 6 — Kubernetes Git setup (GitLab + ArgoCD)
 
-Same as the old flow, with Istio resources in place of Envoy `HTTPRoute`:
+Same as the old flow — the route resources are Gateway API (`shared-gateway` + `HTTPRoute`):
 
 1. Create/select GitLab project(s) for Kubernetes manifests.
-2. Push WSO2 APIM/IS Kubernetes YAML (including Istio `Gateway`/`VirtualService`) to GitLab.
+2. Push WSO2 APIM/IS Kubernetes YAML (including the shared `Gateway` + `HTTPRoute`s) to GitLab.
 3. Push ArgoCD `Application` manifests pointing to those paths.
 4. ArgoCD syncs WSO2 into each cluster.
 

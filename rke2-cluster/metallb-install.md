@@ -1,13 +1,15 @@
 # MetalLB on RKE2 (FRR-K8s mode) — LoadBalancer IPs for Istio
 
-RKE2 nodes have no cloud load balancer, so `LoadBalancer` Services (most importantly the **Istio
-ingress gateway**) have no external IP by default. **MetalLB** assigns them a real IP from a pool
-on your LAN. This guide installs MetalLB in **FRR-K8s mode** (BGP + BFD + IPv6 + the ability to
-merge extra FRR config) and points the Istio ingress gateway at it.
+RKE2 nodes have no cloud load balancer, so `LoadBalancer` Services (most importantly the
+**shared ambient ingress Gateway**, svc `shared-gateway-istio`) have no external IP by default.
+**MetalLB** assigns them a real IP from a pool on your LAN. This guide installs MetalLB in
+**FRR-K8s mode** (BGP + BFD + IPv6 + the ability to merge extra FRR config) and points the
+shared gateway at it.
 
-> Run this **after the RKE2 cluster is up** and **before/with Istio** (the Istio ingress gateway
+> Run this **after the RKE2 cluster is up** and **before/with Istio** (the shared gateway's
 > Service stays `<pending>` until MetalLB can hand it an IP). See the order in
-> [rke2-addons-istio-argocd-headlamp.md](rke2-addons-istio-argocd-headlamp.md).
+> [rke2-addons-istio-argocd-headlamp.md](rke2-addons-istio-argocd-headlamp.md). The web UI's
+> Istio card runs MetalLB automatically first when the IP-range field is filled.
 
 ## Prerequisites
 
@@ -142,22 +144,21 @@ EOF
 
 ---
 
-## Step 4 — Give the Istio ingress gateway a MetalLB IP
+## Step 4 — Give the shared gateway a MetalLB IP
 
-The Istio ingress gateway Service is type `LoadBalancer`, so once a pool exists MetalLB assigns it
-an IP automatically. To **pin a specific IP**, annotate the Service:
+On the ambient setup, ingress is the **shared Gateway API Gateway** (`shared-gateway` in
+`istio-system`), which Istio reconciles into one `LoadBalancer` Service named
+`shared-gateway-istio`. Once a pool exists MetalLB assigns it an IP automatically. To **pin a
+specific IP**, annotate the Service:
 
 ```bash
-kubectl -n istio-system annotate svc istio-ingressgateway \
+kubectl -n istio-system annotate svc shared-gateway-istio \
   metallb.universe.tf/loadBalancerIPs=192.168.51.200 --overwrite
 ```
 
-> If you installed Istio via the Helm `gateway` chart into `istio-ingress`, target that namespace
-> instead of `istio-system`. With the istioctl default profile the gateway is in `istio-system`.
-
 Verify the external IP is assigned:
 ```bash
-kubectl -n istio-system get svc istio-ingressgateway
+kubectl -n istio-system get svc shared-gateway-istio
 # EXTERNAL-IP should show 192.168.51.200 (not <pending>)
 ```
 
@@ -194,8 +195,8 @@ ping -c1 192.168.51.200
 
 ```
 RKE2 cluster (Canal) → [ServiceLB disabled] → MetalLB (pool + L2/BGP)
-   → Istio ingress gateway gets a LAN IP → Gateway/VirtualService → ArgoCD / Headlamp / WSO2
+   → shared-gateway-istio gets ONE LAN IP → shared Gateway + HTTPRoutes → ArgoCD / Headlamp / WSO2
 ```
 
 Related: [rke2-addons-istio-argocd-headlamp.md](rke2-addons-istio-argocd-headlamp.md) ·
-[planning/news/wso2-rke2.md](../planning/news/wso2-rke2.md)
+[planning/wso2-rke2.md](../planning/wso2-rke2.md)
