@@ -1,0 +1,1 @@
+pkill -f "uvicorn app.main:app"
