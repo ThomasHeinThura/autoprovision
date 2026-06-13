@@ -105,8 +105,12 @@ spec:
             - /bin/sh
             - -c
             - timeout 1 bash -c "</dev/tcp/localhost/9443"
-          failureThreshold: 3
-          initialDelaySeconds: 120
+          # WSO2 ACP opens 9443 at ~140s; the old budget (120 + 3*10 = 150s) was a photo-finish
+          # and killed slow boots mid-startup. Give it room: first check at 60s, then up to
+          # 30*10 = 300s more (360s total) before declaring failure. Liveness/readiness below
+          # only begin once this succeeds, so a long window here costs nothing on a healthy pod.
+          failureThreshold: 30
+          initialDelaySeconds: 60
           periodSeconds: 10
           successThreshold: 1
           timeoutSeconds: 1

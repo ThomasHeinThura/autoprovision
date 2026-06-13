@@ -764,15 +764,34 @@
       changed_when: false
       failed_when: false
 
-    - name: Create the virtual IP resource + constraints (when listener_ip is provided)
+    - name: Create the virtual IP resource (when listener_ip is provided)
       when: listener_ip_eff | length > 0
-      shell: |
-        pcs resource config virtualip >/dev/null 2>&1 || \
-          pcs resource create virtualip ocf:heartbeat:IPaddr2 ip={{ listener_ip_eff }}
-        pcs constraint colocation add virtualip with promoted ag_cluster INFINITY || true
-        pcs constraint order promote ag_cluster then start virtualip kind=Mandatory || true
+      shell: >-
+        pcs resource config virtualip >/dev/null 2>&1 ||
+        pcs resource create virtualip ocf:heartbeat:IPaddr2 ip={{ listener_ip_eff }}
       changed_when: false
       failed_when: false
+
+    # The VIP MUST be colocated with the PROMOTED role of the promotable clone (ag_cluster-clone),
+    # NOT the bare primitive (ag_cluster). pcs will happily accept `with promoted ag_cluster`, but
+    # that constraint does NOT track failover — so the listener VIP just sits on whichever node it
+    # first started on and ends up answering on a SECONDARY (the bug we hit: node3 primary, VIP on
+    # node1). Fix: (1) delete any stale virtualip constraints from older runs, then (2) recreate
+    # against ag_cluster-clone. The promote keyword differs by pcs version — `promoted` (pcs 0.11 /
+    # Ubuntu 24.04) vs `master` (pcs 0.10 / 22.04) — so try the modern form, fall back to legacy.
+    # NO `|| true` masking the add: a real failure must surface (set -e + the assert task below).
+    - name: Colocate the VIP with the promoted AG replica + order promote-then-VIP
+      when: listener_ip_eff | length > 0
+      shell: |
+        set -e
+        for id in $(pcs constraint --full | grep -i virtualip | grep -oE 'id:[^) ]+' | sed 's/id://' || true); do
+          pcs constraint delete "$id" 2>/dev/null || true
+        done
+        pcs constraint colocation add virtualip with promoted ag_cluster-clone INFINITY \
+          || pcs constraint colocation add virtualip with master ag_cluster-clone INFINITY
+        pcs constraint order promote ag_cluster-clone then start virtualip kind=Mandatory \
+          || pcs constraint order promote ag_cluster then start virtualip kind=Mandatory
+      changed_when: false
 
     # Safety net: the create task above runs with failed_when:false (idempotent rerun), so a
     # silent miscreation would otherwise pass unnoticed. Creating ag_cluster with `promotable`
@@ -783,6 +802,16 @@
       register: clone_check
       changed_when: false
       failed_when: clone_check.rc != 0
+
+    # Belt-and-suspenders: the colocation is what makes the listener follow the primary. If it
+    # didn't take (wrong keyword, clone not yet present, etc.), fail here instead of shipping a
+    # cluster whose listener silently answers on a secondary.
+    - name: Assert the VIP is colocated with the promoted AG replica (else listener lands on a secondary)
+      when: listener_ip_eff | length > 0
+      shell: pcs constraint colocation --full | grep -Eq 'virtualip .*ag_cluster-clone'
+      register: vip_colo_check
+      changed_when: false
+      failed_when: vip_colo_check.rc != 0
 
 
 # ════════════════════════════════════════════════════════════════════════════════

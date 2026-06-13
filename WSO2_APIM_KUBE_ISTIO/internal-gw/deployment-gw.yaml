@@ -125,8 +125,10 @@ spec:
             - /bin/sh
             - -c
             - timeout 1 bash -c "</dev/tcp/localhost/9443"
-          failureThreshold: 3
-          initialDelaySeconds: 120
+          # Match the ACP/IS budget: WSO2 takes >150s to open 9443, so 120 + 3*10 killed slow
+          # boots mid-startup. First check at 60s, then up to 30*10 = 300s more (360s total).
+          failureThreshold: 30
+          initialDelaySeconds: 60
           periodSeconds: 10
           successThreshold: 1
           timeoutSeconds: 1
