@@ -812,7 +812,7 @@
       when: listener_ip_eff | length > 0
       shell: |
         set -e
-        for id in $(pcs constraint --full | grep -i virtualip | grep -oE 'id:[^) ]+' | sed 's/id://' || true); do
+        for id in $(pcs constraint --full | grep -i virtualip | grep -oE 'id: ?[^) ]+' | sed 's/id: *//' || true); do
           pcs constraint delete "$id" 2>/dev/null || true
         done
         pcs constraint colocation add virtualip with promoted ag_cluster-clone INFINITY \
@@ -836,7 +836,10 @@
     # cluster whose listener silently answers on a secondary.
     - name: Assert the VIP is colocated with the promoted AG replica (else listener lands on a secondary)
       when: listener_ip_eff | length > 0
-      shell: pcs constraint colocation --full | grep -Eq 'virtualip .*ag_cluster-clone'
+      # Format-agnostic: pcs 0.10 (22.04) prints `virtualip with ag_cluster-clone`, pcs 0.11
+      # (24.04) prints `resource 'virtualip' with resource 'ag_cluster-clone'`. Match either by
+      # requiring a colocation line that names BOTH resources, regardless of quoting/spacing.
+      shell: pcs constraint colocation --full | grep -i virtualip | grep -q ag_cluster-clone
       register: vip_colo_check
       changed_when: false
       failed_when: vip_colo_check.rc != 0
