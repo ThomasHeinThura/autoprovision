@@ -44,7 +44,7 @@
     endpoint_port_eff: "{{ endpoint_port | default(5022) }}"
     # Phase 1 ALWAYS uses sa: this play installs SQL Server and CREATES the optional named admin
     # login (below). The named login can't authenticate until it exists, so bootstrap as sa here.
-    sqlcmd: "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"{{ sa_password_eff }}\" -C"
+    sqlcmd: '/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "{{ sa_password_eff }}" -C'
   tasks:
     - name: Fail early if SA password is not provided
       fail: { msg: "sa_password is required (strong password)." }
@@ -91,14 +91,24 @@
           Acquire::BrokenProxy "true";
 
     - name: Install prerequisites
-      apt: { name: [curl, gnupg, apt-transport-https, ca-certificates, ufw], state: present, update_cache: yes }
+      apt:
+        {
+          name: [curl, gnupg, apt-transport-https, ca-certificates, ufw],
+          state: present,
+          update_cache: yes,
+        }
       register: r_prereq
       retries: 3
       delay: 15
       until: r_prereq is succeeded
 
     - name: Add Microsoft GPG key
-      get_url: { url: "https://packages.microsoft.com/keys/microsoft.asc", dest: /etc/apt/trusted.gpg.d/microsoft.asc, mode: "0644" }
+      get_url:
+        {
+          url: "https://packages.microsoft.com/keys/microsoft.asc",
+          dest: /etc/apt/trusted.gpg.d/microsoft.asc,
+          mode: "0644",
+        }
 
     - name: Add the SQL Server {{ mssql_version_eff }} engine apt repository
       get_url:
@@ -126,11 +136,20 @@
     # SQL Server 2022 links OpenLDAP 2.5 (liblber-2.5); 2025 links OpenLDAP 2.6 (liblber-2.6).
     # The matching runtime ships by default on the supported Ubuntu release; install best-effort.
     - name: Ensure the OpenLDAP runtime SQL Server needs is present
-      apt: { name: "{{ 'libldap-2.5-0' if mssql_version_eff == '2022' else 'libldap-2.6-0' }}", state: present }
+      apt:
+        {
+          name: "{{ 'libldap-2.5-0' if mssql_version_eff == '2022' else 'libldap-2.6-0' }}",
+          state: present,
+        }
       failed_when: false
 
     - name: Install mssql-tools18 + unixodbc-dev (sqlcmd)
-      apt: { name: [mssql-tools18, unixodbc-dev], state: present, update_cache: yes }
+      apt:
+        {
+          name: [mssql-tools18, unixodbc-dev],
+          state: present,
+          update_cache: yes,
+        }
       environment: { ACCEPT_EULA: "Y" }
       register: r_tools
       retries: 3
@@ -330,7 +349,6 @@
           pacemakerLogin
           {{ pacemaker_password_eff }}
 
-
 # ════════════════════════════════════════════════════════════════════════════════
 # PHASE 2 — Certificate on the PRIMARY (mirroring endpoint auth)
 # ════════════════════════════════════════════════════════════════════════════════
@@ -345,7 +363,7 @@
     cert_password_eff: "{{ cert_password | default((ag_name | default('ag1')) ~ '-Cert-Pa55!') }}"
     # Use the named sysadmin login when db_admin_user is provided (created in Phase 1 by sa);
     # otherwise fall back to sa. Both must be set in the web UI for the named login to take effect.
-    sqlcmd: "/opt/mssql-tools18/bin/sqlcmd -S localhost -U {{ (db_admin_user | default('')) | ternary(db_admin_user | default(''), 'sa') }} -P \"{{ (db_admin_user | default('')) | ternary(db_admin_password | default(''), sa_password | default('')) }}\" -C"
+    sqlcmd: '/opt/mssql-tools18/bin/sqlcmd -S localhost -U {{ (db_admin_user | default('''')) | ternary(db_admin_user | default(''''), ''sa'') }} -P "{{ (db_admin_user | default('''')) | ternary(db_admin_password | default(''''), sa_password | default('''')) }}" -C'
   tasks:
     - name: Create master key + certificate
       shell: >
@@ -365,9 +383,13 @@
       args: { creates: /var/opt/mssql/data/dbm_certificate.cer }
 
     - name: Fetch certificate files to the jump host
-      fetch: { src: "/var/opt/mssql/data/{{ item }}", dest: "/tmp/mssql-ag-{{ ag_name_eff }}/{{ item }}", flat: true }
-      loop: [ dbm_certificate.cer, dbm_certificate.pvk ]
-
+      fetch:
+        {
+          src: "/var/opt/mssql/data/{{ item }}",
+          dest: "/tmp/mssql-ag-{{ ag_name_eff }}/{{ item }}",
+          flat: true,
+        }
+      loop: [dbm_certificate.cer, dbm_certificate.pvk]
 
 # ════════════════════════════════════════════════════════════════════════════════
 # PHASE 3 — Restore certificate on SECONDARIES
@@ -383,11 +405,18 @@
     cert_password_eff: "{{ cert_password | default((ag_name | default('ag1')) ~ '-Cert-Pa55!') }}"
     # Use the named sysadmin login when db_admin_user is provided (created in Phase 1 by sa);
     # otherwise fall back to sa. Both must be set in the web UI for the named login to take effect.
-    sqlcmd: "/opt/mssql-tools18/bin/sqlcmd -S localhost -U {{ (db_admin_user | default('')) | ternary(db_admin_user | default(''), 'sa') }} -P \"{{ (db_admin_user | default('')) | ternary(db_admin_password | default(''), sa_password | default('')) }}\" -C"
+    sqlcmd: '/opt/mssql-tools18/bin/sqlcmd -S localhost -U {{ (db_admin_user | default('''')) | ternary(db_admin_user | default(''''), ''sa'') }} -P "{{ (db_admin_user | default('''')) | ternary(db_admin_password | default(''''), sa_password | default('''')) }}" -C'
   tasks:
     - name: Copy certificate files to the secondary
-      copy: { src: "/tmp/mssql-ag-{{ ag_name_eff }}/{{ item }}", dest: "/var/opt/mssql/data/{{ item }}", owner: mssql, group: mssql, mode: "0660" }
-      loop: [ dbm_certificate.cer, dbm_certificate.pvk ]
+      copy:
+        {
+          src: "/tmp/mssql-ag-{{ ag_name_eff }}/{{ item }}",
+          dest: "/var/opt/mssql/data/{{ item }}",
+          owner: mssql,
+          group: mssql,
+          mode: "0660",
+        }
+      loop: [dbm_certificate.cer, dbm_certificate.pvk]
 
     - name: Create master key + restore certificate
       shell: >
@@ -399,7 +428,6 @@
              WITH PRIVATE KEY (FILE = '/var/opt/mssql/data/dbm_certificate.pvk',
                DECRYPTION BY PASSWORD = '{{ cert_password_eff }}');"
       changed_when: false
-
 
 # ════════════════════════════════════════════════════════════════════════════════
 # PHASE 4 — Database mirroring endpoint on ALL nodes
@@ -413,7 +441,7 @@
     endpoint_port_eff: "{{ endpoint_port | default(5022) }}"
     # Use the named sysadmin login when db_admin_user is provided (created in Phase 1 by sa);
     # otherwise fall back to sa. Both must be set in the web UI for the named login to take effect.
-    sqlcmd: "/opt/mssql-tools18/bin/sqlcmd -S localhost -U {{ (db_admin_user | default('')) | ternary(db_admin_user | default(''), 'sa') }} -P \"{{ (db_admin_user | default('')) | ternary(db_admin_password | default(''), sa_password | default('')) }}\" -C"
+    sqlcmd: '/opt/mssql-tools18/bin/sqlcmd -S localhost -U {{ (db_admin_user | default('''')) | ternary(db_admin_user | default(''''), ''sa'') }} -P "{{ (db_admin_user | default('''')) | ternary(db_admin_password | default(''''), sa_password | default('''')) }}" -C'
   tasks:
     - name: Create + start the Hadr_endpoint (certificate auth)
       shell: >
@@ -424,7 +452,6 @@
              ENCRYPTION = REQUIRED ALGORITHM AES);
          ALTER ENDPOINT [Hadr_endpoint] STATE = STARTED;"
       changed_when: false
-
 
 # ════════════════════════════════════════════════════════════════════════════════
 # PHASE 5 — Create the AG (CLUSTER_TYPE = EXTERNAL, 3 synchronous replicas) on primary
@@ -439,7 +466,7 @@
     endpoint_port_eff: "{{ endpoint_port | default(5022) }}"
     # Use the named sysadmin login when db_admin_user is provided (created in Phase 1 by sa);
     # otherwise fall back to sa. Both must be set in the web UI for the named login to take effect.
-    sqlcmd: "/opt/mssql-tools18/bin/sqlcmd -S localhost -U {{ (db_admin_user | default('')) | ternary(db_admin_user | default(''), 'sa') }} -P \"{{ (db_admin_user | default('')) | ternary(db_admin_password | default(''), sa_password | default('')) }}\" -C"
+    sqlcmd: '/opt/mssql-tools18/bin/sqlcmd -S localhost -U {{ (db_admin_user | default('''')) | ternary(db_admin_user | default(''''), ''sa'') }} -P "{{ (db_admin_user | default('''')) | ternary(db_admin_password | default(''''), sa_password | default('''')) }}" -C'
   tasks:
     - name: Build FOR REPLICA ON clause (replica name = node hostname; endpoint = node IP)
       set_fact:
@@ -470,7 +497,6 @@
       changed_when: false
       failed_when: false
 
-
 # ════════════════════════════════════════════════════════════════════════════════
 # PHASE 5b — Create the AG Listener on the primary (registers the Pacemaker VIP in SQL Server)
 #
@@ -495,10 +521,13 @@
     listener_subnet_mask_eff: "{{ listener_subnet_mask | default('255.255.255.255' if (mssql_version | default('2025')) in ['2017','2019'] else '0.0.0.0') }}"
     # Use the named sysadmin login when db_admin_user is provided (created in Phase 1 by sa);
     # otherwise fall back to sa. Both must be set in the web UI for the named login to take effect.
-    sqlcmd: "/opt/mssql-tools18/bin/sqlcmd -S localhost -U {{ (db_admin_user | default('')) | ternary(db_admin_user | default(''), 'sa') }} -P \"{{ (db_admin_user | default('')) | ternary(db_admin_password | default(''), sa_password | default('')) }}\" -C"
+    sqlcmd: '/opt/mssql-tools18/bin/sqlcmd -S localhost -U {{ (db_admin_user | default('''')) | ternary(db_admin_user | default(''''), ''sa'') }} -P "{{ (db_admin_user | default('''')) | ternary(db_admin_password | default(''''), sa_password | default('''')) }}" -C'
   tasks:
     - name: Note when no listener is requested
-      debug: { msg: "listener_ip not set — skipping AG listener. Set listener_ip (= the Pacemaker VIP) to enable." }
+      debug:
+        {
+          msg: "listener_ip not set — skipping AG listener. Set listener_ip (= the Pacemaker VIP) to enable.",
+        }
       when: listener_ip_eff | length == 0
 
     # Idempotent: skip if a listener already exists for this AG; 'already' in stderr is treated OK.
@@ -526,8 +555,10 @@
       register: listener_show
       changed_when: false
       failed_when: false
-    - debug: { msg: "AG listener for {{ ag_name_eff }}: {{ listener_show.stdout | default('(none reported)') | trim }}" }
-
+    - debug:
+        {
+          msg: "AG listener for {{ ag_name_eff }}: {{ listener_show.stdout | default('(none reported)') | trim }}",
+        }
 
 # ════════════════════════════════════════════════════════════════════════════════
 # PHASE 6 — Join secondaries to the AG
@@ -541,7 +572,7 @@
     ag_name_eff: "{{ ag_name | default('ag1') }}"
     # Use the named sysadmin login when db_admin_user is provided (created in Phase 1 by sa);
     # otherwise fall back to sa. Both must be set in the web UI for the named login to take effect.
-    sqlcmd: "/opt/mssql-tools18/bin/sqlcmd -S localhost -U {{ (db_admin_user | default('')) | ternary(db_admin_user | default(''), 'sa') }} -P \"{{ (db_admin_user | default('')) | ternary(db_admin_password | default(''), sa_password | default('')) }}\" -C"
+    sqlcmd: '/opt/mssql-tools18/bin/sqlcmd -S localhost -U {{ (db_admin_user | default('''')) | ternary(db_admin_user | default(''''), ''sa'') }} -P "{{ (db_admin_user | default('''')) | ternary(db_admin_password | default(''''), sa_password | default('''')) }}" -C'
   tasks:
     - name: Join the AG (CLUSTER_TYPE = EXTERNAL) + grant permissions
       shell: >
@@ -553,7 +584,6 @@
       register: join_ag
       changed_when: false
       failed_when: join_ag.rc != 0 and 'already' not in (join_ag.stderr | default('') | lower)
-
 
 # ════════════════════════════════════════════════════════════════════════════════
 # PHASE 7 — Install Pacemaker/Corosync + SQL Server HA resource agent (all nodes)
@@ -614,7 +644,6 @@
 
     - name: Ensure pcsd is running on every node (pcs cluster setup connects to it)
       systemd: { name: pcsd, state: started, enabled: true }
-
 
 # ════════════════════════════════════════════════════════════════════════════════
 # PHASE 8 — Build the Pacemaker/Corosync cluster the supported Ubuntu way (pcs 0.11):
@@ -714,7 +743,6 @@
       when: not (enable_fencing_eff | bool)
       changed_when: false
 
-
 # ════════════════════════════════════════════════════════════════════════════════
 # PHASE 9 — Cluster properties + AG resource + virtual IP (primary)
 # ════════════════════════════════════════════════════════════════════════════════
@@ -813,7 +841,6 @@
       changed_when: false
       failed_when: vip_colo_check.rc != 0
 
-
 # ════════════════════════════════════════════════════════════════════════════════
 # PHASE 10 — Status + checklist
 # ════════════════════════════════════════════════════════════════════════════════
@@ -827,7 +854,7 @@
     listener_ip_eff: "{{ listener_ip | default('') }}"
     # Use the named sysadmin login when db_admin_user is provided (created in Phase 1 by sa);
     # otherwise fall back to sa. Both must be set in the web UI for the named login to take effect.
-    sqlcmd: "/opt/mssql-tools18/bin/sqlcmd -S localhost -U {{ (db_admin_user | default('')) | ternary(db_admin_user | default(''), 'sa') }} -P \"{{ (db_admin_user | default('')) | ternary(db_admin_password | default(''), sa_password | default('')) }}\" -C"
+    sqlcmd: '/opt/mssql-tools18/bin/sqlcmd -S localhost -U {{ (db_admin_user | default('''')) | ternary(db_admin_user | default(''''), ''sa'') }} -P "{{ (db_admin_user | default('''')) | ternary(db_admin_password | default(''''), sa_password | default('''')) }}" -C'
   tasks:
     - name: AG replica health
       shell: >
