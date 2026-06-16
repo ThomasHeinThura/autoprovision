@@ -232,6 +232,26 @@
         state: directory
         mode: "0755"
 
+    # An already-initialized datastore was encrypted with the token it was FIRST bootstrapped
+    # with. On a re-run (IPv6 prep, scaling, etc.) we must NOT write a different (derived)
+    # token, or rke2-server fails on restart with "bootstrap data already found and encrypted
+    # with different token". If the cluster token already exists on disk, reuse it verbatim.
+    - name: Detect an existing cluster token (initialized datastore)
+      stat:
+        path: /var/lib/rancher/rke2/server/token
+      register: existing_token_file
+
+    - name: Read the existing cluster token
+      slurp:
+        src: /var/lib/rancher/rke2/server/token
+      register: existing_token
+      when: existing_token_file.stat.exists
+
+    - name: Reuse the existing token instead of the derived default
+      set_fact:
+        rke2_token_eff: "{{ existing_token.content | b64decode | trim }}"
+      when: existing_token_file.stat.exists
+
     - name: Write first-server RKE2 config (default CNI / Canal kept)
       copy:
         dest: /etc/rancher/rke2/config.yaml
@@ -374,6 +394,25 @@
         path: /etc/rancher/rke2
         state: directory
         mode: "0755"
+
+    # Same protection as the first server: a joined server already has the cluster token on
+    # disk. Reuse it on re-runs so we never rewrite a mismatched token (which would fail the
+    # datastore reconcile with "encrypted with different token" on the next restart).
+    - name: Detect an existing cluster token (already joined)
+      stat:
+        path: /var/lib/rancher/rke2/server/token
+      register: existing_token_file
+
+    - name: Read the existing cluster token
+      slurp:
+        src: /var/lib/rancher/rke2/server/token
+      register: existing_token
+      when: existing_token_file.stat.exists
+
+    - name: Reuse the existing token instead of the derived default
+      set_fact:
+        rke2_token_eff: "{{ existing_token.content | b64decode | trim }}"
+      when: existing_token_file.stat.exists
 
     - name: Write joining-server RKE2 config
       copy:
