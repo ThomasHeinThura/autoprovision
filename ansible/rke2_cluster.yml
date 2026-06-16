@@ -82,6 +82,100 @@
           Increase this VM's memory and re-run.
         success_msg: "Memory OK ({{ node_mb }} MB)."
 
+# ── IPv6 prep: make Istio ambient's ztunnel start (it binds [::] host sockets) ──
+# ztunnel binds its readiness/stats/inbound sockets to the IPv6 wildcard ([::]:15021,
+# 15020, 15008). At startup it reads /proc/sys/net/ipv6/conf/all/disable_ipv6 to decide
+# whether to go IPv4-only. If IPv6 is HARD-disabled (GRUB `ipv6.disable=1` or a modprobe
+# blacklist), that /proc file does not exist -> ztunnel can't tell, assumes IPv6 is on,
+# binds [::] and dies with "Address family not supported by protocol (os error 97)" ->
+# CrashLoopBackOff. (istiod / istio-cni-node don't bind [::] the same way, so only
+# ztunnel breaks — which is why sidecar Istio worked but ambient does not.)
+#
+# Fix = keep the ipv6 module LOADED (so the /proc file exists) but SOFT-disable IPv6 via
+# sysctl. Then ztunnel detects disabled and binds IPv4-only. This play undoes any hard
+# kernel-level disable, then soft-disables. It runs on every (re-)run, so newly scaled
+# nodes get it automatically and already-fixed nodes are a no-op (no reboot).
+#
+# serial: 1 — a reboot only happens the FIRST time we strip a hard disable; doing it one
+# node at a time keeps the control-plane quorate. Idempotent reruns make no change and
+# don't reboot, so they pass through quickly.
+- name: RKE2 — IPv6 prep (ztunnel needs the ipv6 module present)
+  hosts: rke2_servers:rke2_agents
+  become: true
+  gather_facts: true
+  serial: 1
+  tasks:
+    - name: Check for a GRUB defaults file
+      stat:
+        path: /etc/default/grub
+      register: grub_default
+
+    - name: Strip `ipv6.disable=1` from the GRUB kernel cmdline
+      replace:
+        path: /etc/default/grub
+        regexp: '\s*ipv6\.disable=1'
+        replace: ''
+      when: grub_default.stat.exists
+      register: grub_ipv6_stripped
+
+    - name: Regenerate the GRUB config after editing the cmdline
+      command: update-grub
+      when: grub_ipv6_stripped is defined and grub_ipv6_stripped.changed
+
+    - name: Remove any modprobe blacklist / install-stub for the ipv6 module
+      shell: |
+        set -e
+        changed=0
+        files=$(grep -rlE '^[[:space:]]*(blacklist[[:space:]]+ipv6|install[[:space:]]+ipv6[[:space:]]+/bin/(true|false))' /etc/modprobe.d 2>/dev/null || true)
+        for f in $files; do
+          sed -i -E '/^[[:space:]]*(blacklist[[:space:]]+ipv6|install[[:space:]]+ipv6[[:space:]]+\/bin\/(true|false))/d' "$f"
+          changed=1
+        done
+        echo "$changed"
+      register: ipv6_blacklist
+      changed_when: ipv6_blacklist.stdout | trim == '1'
+
+    - name: Rebuild initramfs after removing an ipv6 blacklist (Debian/Ubuntu)
+      command: update-initramfs -u
+      when: ipv6_blacklist.changed
+
+    - name: Ensure the ipv6 module is loaded at boot
+      copy:
+        dest: /etc/modules-load.d/ipv6.conf
+        mode: "0644"
+        content: "ipv6\n"
+
+    - name: Soft-disable IPv6 via sysctl (keeps the module + /proc files; ztunnel goes IPv4-only)
+      copy:
+        dest: /etc/sysctl.d/99-rke2-ipv6.conf
+        mode: "0644"
+        content: |
+          # Soft-disable IPv6 so Istio ambient ztunnel detects it and binds IPv4-only.
+          # Do NOT use GRUB `ipv6.disable=1` here — that removes the /proc files and
+          # crashes ztunnel with "Address family not supported (os error 97)".
+          net.ipv6.conf.all.disable_ipv6 = 1
+          net.ipv6.conf.default.disable_ipv6 = 1
+      register: ipv6_sysctl
+
+    # A reboot is only needed when we just undid a HARD disable (GRUB cmdline or module
+    # blacklist) — that change takes effect on boot, and the sysctl.d drop-in is applied
+    # automatically during boot too. No reboot path: load the module now and apply sysctl.
+    - name: Reboot to apply the kernel-level IPv6 change
+      reboot:
+        reboot_timeout: 600
+      when: (grub_ipv6_stripped is defined and grub_ipv6_stripped.changed) or ipv6_blacklist.changed
+
+    - name: Ensure the ipv6 module is loaded now (no-reboot path)
+      command: modprobe ipv6
+      when: not ((grub_ipv6_stripped is defined and grub_ipv6_stripped.changed) or ipv6_blacklist.changed)
+      changed_when: false
+      failed_when: false
+
+    - name: Apply the sysctl drop-in now (no-reboot path)
+      command: sysctl --system
+      when: not ((grub_ipv6_stripped is defined and grub_ipv6_stripped.changed) or ipv6_blacklist.changed)
+      changed_when: false
+
 # ── Optional: preload RKE2 images onto nodes that can't reach the registry ──────
 # Set rke2_images_local_dir to a directory ON THE JUMP HOST containing the RKE2
 # image tarball(s) for this version (e.g. rke2-images.linux-amd64.tar.zst). Ansible
