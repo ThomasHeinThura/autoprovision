@@ -34,3 +34,5 @@ docker/traefik/certs/
 # Vendored reference repos (not part of this project)
 sql-docs*
 reference/
+
+credential*

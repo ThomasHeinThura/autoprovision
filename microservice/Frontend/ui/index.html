@@ -1,0 +1,1075 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>TaskDesk — UI/UX Prototype</title>
+<style>
+  :root{
+    /* BIM "charco" — DARK charcoal (default) */
+    --bg:#151c21; --surface:#1e282e; --surface-2:#27333a; --surface-3:#2f3d45;
+    --border:#334049; --border-strong:#415058;
+    --text:#e9eef1; --muted:#9fadb5; --faint:#728088;
+    --primary:#d98f26; --primary-weak:rgba(217,143,38,.15); --primary-ink:#eaa441;
+    --green:#2f9e6a; --amber:#d98f26; --purple:#9a6dc9; --blue:#4f93d6; --charcoal:#3a4a54;
+    --todo:#90a1aa; --todo-bg:rgba(144,161,170,.15);
+    --prog:#5b9fdf; --prog-bg:rgba(91,159,223,.15);
+    --wait:#e0a13a; --wait-bg:rgba(224,161,58,.15);
+    --done:#45b57f; --done-bg:rgba(69,181,127,.15);
+    --breach:#e5675b; --breach-bg:rgba(229,103,91,.15);
+    --purple-bg:rgba(154,109,201,.15);
+    --urgent:#e5675b; --high:#e89a3c; --med:#d0a24a; --low:#90a1aa;
+    --zebra:rgba(255,255,255,.022);
+    --shadow:0 1px 2px rgba(0,0,0,.32);
+    --shadow-lg:0 18px 44px -12px rgba(0,0,0,.6),0 3px 10px rgba(0,0,0,.4);
+    --radius:11px; --radius-sm:7px;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,Helvetica,Arial,sans-serif;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+  }
+  :root[data-theme="light"]{
+    /* BIM "charco" — LIGHT (from the deck) */
+    --bg:#eceff1; --surface:#ffffff; --surface-2:#f2f5f6; --surface-3:#e8edef;
+    --border:#e1e7ea; --border-strong:#cdd6da;
+    --text:#26333b; --muted:#5f6f78; --faint:#93a2aa;
+    --primary:#26333b; --primary-weak:rgba(38,51,59,.07); --primary-ink:#1c272e;
+    --green:#2e7d5b; --amber:#c2790a; --purple:#7a4e9e; --blue:#3b6fb0; --charcoal:#26333b;
+    --todo:#64748b; --todo-bg:#eef1f3;
+    --prog:#3b6fb0; --prog-bg:#eaf1fa;
+    --wait:#c2790a; --wait-bg:#fbf3e5;
+    --done:#2e7d5b; --done-bg:#e8f3ee;
+    --breach:#c0392b; --breach-bg:#fbece9;
+    --purple-bg:#f2ecf7;
+    --urgent:#c0392b; --high:#d97706; --med:#c2790a; --low:#8a909c;
+    --zebra:#f6f9fa;
+    --shadow:0 1px 2px rgba(17,24,39,.06);
+    --shadow-lg:0 12px 32px -8px rgba(17,24,39,.18),0 2px 6px rgba(17,24,39,.06);
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{font-family:var(--sans);color:var(--text);background:var(--bg);font-size:13.5px;line-height:1.5;
+    -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+  svg{display:block}
+  .ic svg,.btn svg{width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:1.75;
+    stroke-linecap:round;stroke-linejoin:round}
+  button{font-family:inherit;cursor:pointer}
+  a{color:inherit;text-decoration:none}
+  .hidden{display:none !important}
+
+  /* ---------- Login ---------- */
+  .login-wrap{min-height:100vh;display:grid;place-items:center;
+    background:radial-gradient(900px 500px at 50% -5%,var(--surface-2),var(--bg) 70%);padding:20px}
+  .login-card{width:min(400px,94vw);background:var(--surface);border:1px solid var(--border);
+    border-radius:14px;box-shadow:var(--shadow-lg);padding:30px}
+  .login-card .logo{width:40px;height:40px;border-radius:10px;background:var(--primary);
+    display:grid;place-items:center;color:#fff;font-weight:800;font-size:20px;margin-bottom:18px}
+  .login-card h1{margin:0 0 4px;font-size:20px;letter-spacing:-.02em}
+  .login-card p.sub{margin:0 0 22px;color:var(--muted)}
+  .seg{display:flex;background:var(--surface-2);border:1px solid var(--border);border-radius:10px;padding:4px;margin-bottom:20px}
+  .seg button{flex:1;border:0;background:transparent;padding:9px;border-radius:7px;font-weight:600;font-size:13px;color:var(--muted)}
+  .seg button.active{background:var(--surface);color:var(--primary-ink);box-shadow:var(--shadow)}
+  .login-card .btn{width:100%;justify-content:center;margin-top:4px}
+  .divider{display:flex;align-items:center;gap:10px;color:var(--faint);font-size:12px;margin:18px 0}
+  .divider::before,.divider::after{content:"";flex:1;height:1px;background:var(--border)}
+  .demo-note{font-size:12px;color:var(--muted);background:var(--surface-2);border:1px dashed var(--border);
+    border-radius:8px;padding:10px 12px;margin-top:16px}
+  .login-foot{text-align:center;color:var(--faint);font-size:12px;margin-top:18px}
+
+  /* ---------- Top bar ---------- */
+  .topbar{height:52px;background:var(--surface);border-bottom:1px solid var(--border);
+    display:flex;align-items:center;gap:14px;padding:0 16px;position:sticky;top:0;z-index:40}
+  .brand{display:flex;align-items:center;gap:9px;font-weight:650;font-size:14.5px;letter-spacing:-.01em}
+  .logo{width:26px;height:26px;border-radius:7px;background:var(--primary);
+    display:grid;place-items:center;color:#fff;font-weight:800;font-size:14px}
+  .brand small{color:var(--faint);font-weight:500;font-size:11px;padding-left:9px;margin-left:2px;border-left:1px solid var(--border)}
+  .spacer{flex:1}
+  .live{display:flex;align-items:center;gap:6px;color:var(--muted);font-size:12px}
+  .dot{width:7px;height:7px;border-radius:50%;background:var(--done);animation:pulse 2s infinite}
+  @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(22,163,74,.5)}70%{box-shadow:0 0 0 6px rgba(22,163,74,0)}100%{box-shadow:0 0 0 0 rgba(22,163,74,0)}}
+  .iconbtn{width:32px;height:32px;border-radius:8px;border:1px solid var(--border);background:transparent;color:var(--muted);
+    display:grid;place-items:center;transition:.12s}
+  .iconbtn:hover{background:var(--surface-2);color:var(--text)}
+  .usermenu{position:relative}
+  .avatar{width:32px;height:32px;border-radius:50%;background:var(--charcoal);color:#fff;
+    display:grid;place-items:center;font-weight:700;font-size:12px;cursor:pointer}
+  .menu{position:absolute;right:0;top:40px;background:var(--surface);border:1px solid var(--border);
+    border-radius:10px;box-shadow:var(--shadow-lg);min-width:200px;padding:8px;z-index:50}
+  .menu .mi{padding:9px 10px;border-radius:7px;font-weight:600;font-size:13px}
+  .menu .mi:hover{background:var(--surface-2)}
+  .menu .who{padding:8px 10px;border-bottom:1px solid var(--border);margin-bottom:6px}
+  .menu .who .n{font-weight:700}.menu .who .r{color:var(--muted);font-size:12px}
+
+  /* ---------- Layout ---------- */
+  .app{display:flex;min-height:calc(100vh - 52px)}
+  .sidebar{width:216px;background:var(--surface);border-right:1px solid var(--border);padding:12px 10px;flex-shrink:0}
+  .side-label{font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--faint);font-weight:600;padding:6px 8px;margin-top:10px}
+  .nav a{display:flex;align-items:center;gap:9px;padding:7px 8px;border-radius:var(--radius-sm);
+    color:var(--muted);font-weight:500;font-size:13px;margin-bottom:1px}
+  .nav a:hover{background:var(--surface-2);color:var(--text)}
+  .nav a.active{background:var(--surface-2);color:var(--text);font-weight:600;box-shadow:inset 2px 0 0 var(--primary)}
+  .nav a.active .ic{color:var(--primary)}
+  .nav .ic{width:16px;height:16px;color:var(--faint);flex-shrink:0}
+  .nav .count{margin-left:auto;background:var(--surface-2);color:var(--muted);border-radius:6px;font-size:11px;padding:1px 7px;font-weight:600}
+  .nav a.active .count{background:#fff;border:1px solid var(--border)}
+  .main{flex:1;padding:22px 26px;max-width:1440px;min-width:0;width:100%;margin:0 auto}
+
+  .breadcrumb{color:var(--muted);font-size:12.5px;margin-bottom:10px}
+  .breadcrumb a{color:var(--muted);font-weight:600}
+  .breadcrumb a:hover{color:var(--text)}
+  .page-head{display:flex;align-items:center;gap:16px;margin-bottom:18px;padding-left:12px;
+    border-left:3px solid var(--primary)}
+  .page-head h1{margin:0;font-size:19px;font-weight:650;letter-spacing:-.02em}
+  .page-head p{margin:3px 0 0;color:var(--muted);font-size:13px}
+
+  .btn{border:1px solid var(--border-strong);background:var(--surface);color:var(--text);padding:6px 12px;border-radius:var(--radius-sm);
+    font-weight:550;font-size:13px;display:inline-flex;align-items:center;gap:6px;line-height:1;height:32px;transition:background .12s,border-color .12s}
+  .btn:hover{background:var(--surface-2);border-color:var(--faint)}
+  .btn.primary{background:var(--primary);border-color:var(--primary);color:#fff;font-weight:600}
+  .btn.primary:hover{background:var(--primary-ink);border-color:var(--primary-ink)}
+  .btn.sm{padding:4px 9px;font-size:12px;height:27px}
+  .btn svg{width:15px;height:15px}
+  input,select,textarea{font-family:inherit;font-size:13px;width:100%;padding:8px 10px;border:1px solid var(--border-strong);
+    border-radius:var(--radius-sm);background:var(--surface);color:var(--text)}
+  input::placeholder,textarea::placeholder{color:var(--faint)}
+  input:focus,select:focus,textarea:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-weak)}
+  label.fld{display:block;margin-bottom:13px}
+  label.fld > span{display:block;font-weight:600;font-size:12.5px;margin-bottom:6px}
+
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius)}
+  .card.pad{padding:16px}
+  table{width:100%;border-collapse:collapse}
+  th{text-align:left;font-size:11px;font-weight:600;letter-spacing:.02em;color:var(--faint);padding:9px 14px;border-bottom:1px solid var(--border);background:var(--surface-2)}
+  th:first-child{border-top-left-radius:var(--radius)} th:last-child{border-top-right-radius:var(--radius)}
+  td{padding:10px 14px;border-bottom:1px solid var(--border);font-size:13px}
+  tr:last-child td{border-bottom:0}
+  tbody tr:nth-child(even){background:var(--zebra)}
+  tbody tr[data-key],tbody tr[data-nav]{cursor:pointer}
+  tbody tr[data-key]:hover,tbody tr[data-nav]:hover{background:var(--surface-2)}
+  .key{font-family:var(--mono);font-size:11.5px;color:var(--muted);font-weight:500}
+
+  .chip{display:inline-flex;align-items:center;gap:6px;padding:2px 8px;border-radius:6px;font-size:11.5px;font-weight:600;white-space:nowrap}
+  .chip .tick{width:6px;height:6px;border-radius:50%}
+  .st-todo{background:var(--todo-bg);color:var(--todo)} .st-todo .tick{background:var(--todo)}
+  .st-prog{background:var(--prog-bg);color:var(--prog)} .st-prog .tick{background:var(--prog)}
+  .st-wait{background:var(--wait-bg);color:var(--wait)} .st-wait .tick{background:var(--wait)}
+  .st-done{background:var(--done-bg);color:var(--done)} .st-done .tick{background:var(--done)}
+  .pri{font-weight:600;font-size:12px;display:inline-flex;align-items:center;gap:6px;color:var(--muted)}
+  .pri .pdot{width:8px;height:8px;border-radius:2px;transform:rotate(45deg)}
+  .pri.urgent .pdot{background:var(--urgent)} .pri.high .pdot{background:var(--high)} .pri.med .pdot{background:var(--med)} .pri.low .pdot{background:var(--low)}
+  .type-tag{font-size:10.5px;font-weight:700;padding:2px 6px;border-radius:5px;letter-spacing:.02em}
+  .type-ticket{background:var(--prog-bg);color:var(--prog)} .type-task{background:var(--purple-bg);color:var(--purple)} .type-bug{background:var(--breach-bg);color:var(--breach)}
+  .sla{font-size:12px;font-weight:600} .sla.ok{color:var(--done)} .sla.warn{color:var(--wait)} .sla.late{color:var(--breach)}
+  .label-tag{background:var(--surface-2);border:1px solid var(--border);color:var(--muted);font-size:11px;padding:1px 7px;border-radius:5px;font-weight:500}
+  .badge{background:var(--primary-weak);color:var(--primary-ink);font-size:11px;font-weight:600;padding:1px 7px;border-radius:5px}
+
+  .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:18px}
+  .stat{padding:14px 16px}
+  .stat .n{font-size:24px;font-weight:700;letter-spacing:-.02em;line-height:1}
+  .stat .l{color:var(--muted);font-size:12px;font-weight:500;margin-top:6px}
+  .stat .d{font-size:11.5px;font-weight:600;margin-top:8px}
+  .up{color:var(--done)} .down{color:var(--breach)}
+  .grid-2{display:grid;grid-template-columns:1.5fr 1fr;gap:14px}
+  .cards-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(252px,1fr));gap:12px}
+
+  .donutwrap{display:flex;align-items:center;gap:22px;flex-wrap:wrap}
+  .legend{flex:1;min-width:150px}
+  .leg{display:flex;align-items:center;gap:9px;font-size:12.5px;color:var(--muted);padding:5px 0}
+  .legdot{width:9px;height:9px;border-radius:3px;flex-shrink:0}
+  .legval{margin-left:auto;font-weight:700;color:var(--text)}
+  .card-h{font-weight:650;font-size:13.5px;letter-spacing:-.01em}
+  .bars{display:flex;flex-direction:column;gap:12px;margin-top:6px}
+  .bar-row{display:grid;grid-template-columns:130px 1fr 40px;align-items:center;gap:12px;font-size:12.5px}
+  .bar-track{background:var(--surface-2);border-radius:999px;height:10px;overflow:hidden}
+  .bar-fill{height:100%;border-radius:999px;background:var(--primary)}
+
+  /* project / customer card */
+  .pcard{padding:16px;cursor:pointer;transition:.12s}
+  .pcard:hover{border-color:var(--border-strong);box-shadow:var(--shadow)}
+  .pcard .top{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+  .pcard h3{margin:6px 0 2px;font-size:15px}
+  .pcard .sub{color:var(--muted);font-size:12.5px}
+  .pcard .foot{display:flex;align-items:center;gap:14px;margin-top:14px;font-size:12px;color:var(--muted)}
+  .avatars{display:flex}.avatars .avatar{width:26px;height:26px;font-size:10px;border:2px solid var(--surface);margin-left:-6px}
+  .avatars .avatar:first-child{margin-left:0}
+
+  .tabs{display:flex;gap:4px;border-bottom:1px solid var(--border);margin:4px 0 18px}
+  .tabs button{border:0;background:transparent;padding:10px 14px;font-weight:600;font-size:13.5px;color:var(--muted);
+    border-bottom:2px solid transparent;margin-bottom:-1px}
+  .tabs button.active{color:var(--text);border-color:var(--primary)}
+  .tabs button:hover{color:var(--text)}
+
+  .board-toolbar{display:flex;align-items:center;gap:12px;margin-bottom:14px}
+  .board-toolbar input{max-width:260px}
+  .board{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;align-items:start}
+  .col{background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius);padding:8px;min-height:120px}
+  .col.drop{outline:2px dashed var(--primary);outline-offset:-2px;background:var(--primary-weak)}
+  .col-head{display:flex;align-items:center;gap:8px;padding:6px 6px 10px;font-weight:600;font-size:12.5px;color:var(--muted)}
+  .col-head .n{margin-left:auto;background:var(--surface);border:1px solid var(--border);border-radius:5px;padding:0 7px;font-size:11px;color:var(--faint)}
+  .wcard{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px 11px;margin-bottom:8px;box-shadow:var(--shadow);cursor:grab;transition:border-color .12s}
+  .wcard:hover{border-color:var(--border-strong)}
+  .wcard.dragging{opacity:.5}
+  .wcard .t{font-weight:550;font-size:13px;margin:4px 0 9px;line-height:1.35}
+  .wcard .meta{display:flex;align-items:center;gap:8px;justify-content:space-between}
+  .wcard .row1{display:flex;align-items:center;gap:7px}
+
+  .member{display:flex;align-items:center;gap:12px;padding:11px 14px;border-bottom:1px solid var(--border)}
+  .member:last-child{border-bottom:0}
+
+  /* contract / managed-service */
+  .ck{font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--faint);font-weight:700}
+  .cv{font-weight:700;font-size:15px;margin-top:5px}
+  .cs{color:var(--muted);font-size:12px;margin-top:3px}
+  /* timeline */
+  .timeline{display:flex;justify-content:space-between;position:relative;margin:28px 6px 8px}
+  .timeline::before{content:"";position:absolute;top:9px;left:0;right:0;height:3px;background:var(--border);z-index:0}
+  .timeline .fill{position:absolute;top:9px;left:0;height:3px;background:var(--done);z-index:0;transition:width .3s}
+  .tl-node{flex:1;text-align:center;position:relative;z-index:1;padding:0 4px}
+  .tl-dot{width:21px;height:21px;border-radius:50%;background:var(--surface);border:3px solid var(--faint);margin:0 auto 10px}
+  .tl-node.done .tl-dot{background:var(--done);border-color:var(--done)}
+  .tl-node.active .tl-dot{background:var(--primary);border-color:var(--primary);box-shadow:0 0 0 4px var(--primary-weak)}
+  .tl-date{font-size:11px;color:var(--faint);font-weight:600}
+  .tl-name{font-size:12.5px;font-weight:600;margin-top:2px}
+  /* chat */
+  .chat{display:flex;flex-direction:column;gap:12px;margin-bottom:8px}
+  .msg{max-width:82%;padding:9px 12px;border-radius:12px;font-size:13px}
+  .msg .mh{font-size:11.5px;font-weight:700;margin-bottom:3px;display:flex;gap:6px;align-items:center}
+  .msg .mh .when{color:var(--faint);font-weight:500}
+  .msg.them{align-self:flex-start;background:var(--surface-2);border:1px solid var(--border);border-bottom-left-radius:3px}
+  .msg.me{align-self:flex-end;background:var(--primary-weak);border:1px solid var(--border-strong);border-bottom-right-radius:3px}
+  .msg.internal{align-self:stretch;max-width:100%;background:var(--wait-bg);border:1px solid rgba(224,161,58,.4)}
+  /* subtasks */
+  .subtask{display:flex;align-items:center;gap:9px;padding:6px 0;font-size:13px}
+  .subtask input{width:auto}
+  .subtask.done span{text-decoration:line-through;color:var(--faint)}
+  .swim-head{font-weight:700;font-size:12.5px;color:var(--muted);margin:18px 4px 8px;display:flex;align-items:center;gap:8px}
+  .wcard .r2{display:flex;align-items:center;gap:10px;color:var(--muted);font-size:11.5px;margin-top:8px}
+  .member .avatar{width:34px;height:34px}
+
+  .overlay{position:fixed;inset:0;background:rgba(15,23,42,.35);z-index:60;opacity:0;pointer-events:none;transition:opacity .18s}
+  .overlay.open{opacity:1;pointer-events:auto}
+  .drawer{position:fixed;top:0;right:0;height:100%;width:min(640px,94vw);background:var(--surface);z-index:70;
+    box-shadow:var(--shadow-lg);transform:translateX(100%);transition:transform .22s ease;display:flex;flex-direction:column}
+  .drawer.open{transform:translateX(0)}
+  .drawer-head{padding:16px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px}
+  .drawer-body{padding:20px;overflow:auto;flex:1}
+  .drawer-grid{display:grid;grid-template-columns:1fr 220px;gap:22px}
+  .close{margin-left:auto;border:0;background:var(--surface-2);width:32px;height:32px;border-radius:8px;font-size:16px;color:var(--muted)}
+  .close:hover{background:var(--surface-3);color:var(--text)}
+  /* modal (create dialog) */
+  .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:80;opacity:0;pointer-events:none;transition:opacity .18s;backdrop-filter:blur(2px)}
+  .modal-overlay.open{opacity:1;pointer-events:auto}
+  .modal{position:fixed;z-index:81;left:50%;top:50%;transform:translate(-50%,-48%) scale(.97);opacity:0;pointer-events:none;
+    width:min(600px,94vw);max-height:88vh;background:var(--surface);border:1px solid var(--border);border-radius:14px;
+    box-shadow:var(--shadow-lg);display:flex;flex-direction:column;transition:opacity .18s,transform .18s}
+  .modal.open{opacity:1;pointer-events:auto;transform:translate(-50%,-50%) scale(1)}
+  .modal-head{padding:18px 22px;border-bottom:1px solid var(--border);display:flex;align-items:flex-start;gap:12px}
+  .modal-head h2{margin:0;font-size:16px;letter-spacing:-.01em}
+  .modal-head p{margin:3px 0 0;color:var(--muted);font-size:12.5px}
+  .modal-body{padding:20px 22px;overflow:auto}
+  .modal-foot{padding:13px 22px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:10px;
+    background:var(--surface-2);border-radius:0 0 14px 14px}
+  .form-row{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  .req{color:var(--breach);margin-left:1px}
+  .segpri{display:flex;gap:6px}
+  .segpri button{flex:1;display:flex;align-items:center;justify-content:center;gap:6px;border:1px solid var(--border-strong);
+    background:var(--surface);color:var(--muted);border-radius:var(--radius-sm);padding:7px 4px;font-weight:600;font-size:12.5px}
+  .segpri button:hover{border-color:var(--faint)}
+  .segpri button.active{border-color:var(--primary);color:var(--text);background:var(--primary-weak)}
+  .segpri .pdot{width:8px;height:8px;border-radius:2px;transform:rotate(45deg)}
+  .dropzone{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;text-align:center;
+    border:1.5px dashed var(--border-strong);border-radius:var(--radius-sm);padding:22px;color:var(--muted);cursor:pointer;transition:.12s}
+  .dropzone:hover{border-color:var(--primary);background:var(--surface-2)}
+  .dropzone b{color:var(--primary-ink)} .dropzone small{font-size:11px;color:var(--faint)}
+  .field{margin-bottom:14px}
+  .field .k{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--faint);margin-bottom:5px}
+  .comment{display:flex;gap:11px;margin-bottom:16px}
+  .comment .body{flex:1}
+  .comment .who{font-weight:700;font-size:13px}
+  .comment .when{color:var(--faint);font-size:11.5px;margin-left:6px;font-weight:500}
+  .comment .txt{margin-top:4px}
+  .comment.internal .txt{background:var(--wait-bg);border:1px solid #fde68a;border-radius:8px;padding:9px 11px}
+  .internal-flag{font-size:10px;font-weight:700;color:var(--wait);background:var(--wait-bg);border:1px solid rgba(224,161,58,.4);padding:1px 6px;border-radius:5px;margin-left:6px}
+  .activity{position:relative;padding-left:18px;border-left:2px solid var(--border);margin-left:6px}
+  .activity li{list-style:none;margin-bottom:14px;position:relative;font-size:12.5px;color:var(--muted)}
+  .activity li::before{content:"";position:absolute;left:-24px;top:4px;width:9px;height:9px;border-radius:50%;background:var(--surface);border:2px solid var(--faint)}
+  .composer{border:1px solid var(--border);border-radius:10px;padding:10px;margin-top:8px}
+  .composer textarea{border:0;padding:4px;resize:vertical;min-height:60px}
+  .composer textarea:focus{outline:0}
+  .composer .actions{display:flex;align-items:center;gap:10px;margin-top:6px}
+  .toggle{display:flex;align-items:center;gap:7px;font-size:12.5px;color:var(--muted);font-weight:600;margin-right:auto}
+  .avatar.mini{width:26px;height:26px;font-size:10px}
+
+  .toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%) translateY(20px);background:#0f172a;color:#fff;
+    padding:11px 18px;border-radius:10px;font-size:13px;font-weight:600;z-index:90;opacity:0;transition:.22s;box-shadow:var(--shadow-lg)}
+  .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+  .empty{text-align:center;color:var(--faint);padding:32px;font-size:13px}
+
+  @media(max-width:900px){
+    .stats,.board{grid-template-columns:repeat(2,1fr)}
+    .grid-2,.drawer-grid{grid-template-columns:1fr}
+    .sidebar{display:none}
+  }
+</style>
+</head>
+<body>
+
+<!-- ================= LOGIN ================= -->
+<div class="login-wrap" id="login-screen">
+  <div class="login-card">
+    <div class="logo">T</div>
+    <h1>Sign in to TaskDesk</h1>
+    <p class="sub" id="login-sub">Customer support & delivery portal</p>
+    <div class="seg" id="login-seg">
+      <button data-side="customer" class="active">I'm a Customer</button>
+      <button data-side="team">I'm a Team member</button>
+    </div>
+    <label class="fld"><span>Sign in as (demo persona)</span><select id="login-persona"></select></label>
+    <label class="fld"><span>Email</span><input id="login-email" placeholder="you@company.com"></label>
+    <label class="fld"><span>Password</span><input type="password" value="••••••••"></label>
+    <button class="btn primary" onclick="doLogin()">Sign in</button>
+    <div class="divider">or continue with</div>
+    <button class="btn" style="width:100%;justify-content:center" onclick="doLogin()">Single Sign-On (Keycloak)</button>
+    <div class="demo-note" id="demo-note"></div>
+    <div class="login-foot">Don't have access? <a href="#" style="color:var(--primary-ink);font-weight:600">Contact your administrator</a></div>
+  </div>
+</div>
+
+<!-- ================= APP SHELL ================= -->
+<div id="app-shell" class="hidden">
+  <div class="topbar">
+    <div class="brand"><span class="logo">T</span> TaskDesk <small id="context-label"></small></div>
+    <div class="spacer"></div>
+    <div class="live"><span class="dot"></span> Realtime connected</div>
+    <button class="iconbtn" id="theme-toggle" title="Toggle theme" onclick="toggleTheme()">
+      <svg viewBox="0 0 24 24" width="17" height="17" stroke="currentColor" fill="none" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+    </button>
+    <div class="usermenu">
+      <div class="avatar" id="who" onclick="toggleMenu()">–</div>
+      <div class="menu hidden" id="menu">
+        <div class="who"><div class="n" id="menu-name"></div><div class="r" id="menu-role"></div></div>
+        <div class="mi">Settings</div>
+        <div class="mi" onclick="logout()">Sign out</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="app">
+    <aside class="sidebar">
+      <!-- Customer nav -->
+      <nav class="nav" id="nav-customer">
+        <div class="side-label">Support</div>
+        <a data-view="c-overview" class="active"><span class="ic"><svg viewBox="0 0 24 24"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/></svg></span> Overview</a>
+        <a data-view="c-tickets"><span class="ic"><svg viewBox="0 0 24 24"><path d="M3 8a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2 2 2 0 0 0 0 4 2 2 0 0 1-2 2H5a2 2 0 0 1-2-2 2 2 0 0 0 0-4z"/><path d="M13 6v12"/></svg></span> My tickets <span class="count" id="c-open-count">0</span></a>
+        <a data-view="c-projects"><span class="ic"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></span> Projects</a>
+        <div class="side-label">Help</div>
+        <a data-view="c-kb"><span class="ic"><svg viewBox="0 0 24 24"><path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2z"/><path d="M4 19a2 2 0 0 0 2 2h13"/></svg></span> Knowledge base</a>
+      </nav>
+      <!-- Team nav -->
+      <nav class="nav hidden" id="nav-team">
+        <div class="side-label">Work</div>
+        <a data-view="t-dash" data-cap="reports" class="active"><span class="ic"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg></span> Dashboard</a>
+        <a data-view="t-reports" data-cap="reports"><span class="ic"><svg viewBox="0 0 24 24"><path d="M3 3v18h18"/><path d="M7 15v2M12 10v7M17 6v11"/></svg></span> Reports</a>
+        <a data-view="t-mywork" data-cap="work"><span class="ic"><svg viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg></span> My work <span class="count" id="mywork-count">0</span></a>
+        <a data-view="t-triage" data-cap="work"><span class="ic"><svg viewBox="0 0 24 24"><path d="M3 12h5l2 3h4l2-3h5"/><path d="M5 5h14l2 7v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-5z"/></svg></span> Triage queue <span class="count" id="triage-count">0</span></a>
+        <div class="side-label">Delivery</div>
+        <a data-view="t-projects" data-cap="team"><span class="ic"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></span> Projects <span class="count" id="proj-count">0</span></a>
+        <a data-view="t-customers" data-cap="manage"><span class="ic"><svg viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="1"/><path d="M9 8h.01M15 8h.01M9 12h.01M15 12h.01M10 16h4"/></svg></span> Customers <span class="count" id="cust-count">0</span></a>
+        <a data-view="t-teams" data-cap="manage"><span class="ic"><svg viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/></svg></span> Teams</a>
+      </nav>
+    </aside>
+    <main class="main" id="main"></main>
+  </div>
+</div>
+
+<div class="overlay" id="overlay"></div>
+<aside class="drawer" id="drawer"><div id="drawer-content"></div></aside>
+<div class="modal-overlay" id="modal-overlay"></div>
+<div class="modal" id="modal" role="dialog" aria-modal="true"><div id="modal-content"></div></div>
+<div class="toast" id="toast"></div>
+
+<script>
+/* ================= MOCK DATA ================= */
+const USERS = {
+  // customers = Guest access
+  jd:{name:"Jane Doe", init:"JD", kind:"customer", customer:"acme", title:"IT Manager", access:"guest", position:"Customer"},
+  tom:{name:"Tom Blake", init:"TB", kind:"customer", customer:"acme", title:"Ops Lead", access:"guest", position:"Customer"},
+  gwen:{name:"Gwen Silva", init:"GS", kind:"customer", customer:"globex", title:"CTO", access:"guest", position:"Customer"},
+  // team = Member / Admin access, with a position (level)
+  rob:{name:"Rob Diaz", init:"RD", kind:"team", team:"support", title:"Junior Engineer", access:"member", position:"Junior"},
+  sam:{name:"Sam Rivera", init:"SR", kind:"team", team:"support", title:"Senior Engineer", access:"member", position:"Senior"},
+  amy:{name:"Amy Chen", init:"AC", kind:"team", team:"platform", title:"Senior Engineer", access:"member", position:"Senior"},
+  mia:{name:"Mia Wong", init:"MW", kind:"team", team:"support", title:"Support Manager", access:"admin", position:"Manager"},
+  priya:{name:"Priya Nair", init:"PN", kind:"team", team:"platform", title:"Project Manager", access:"admin", position:"PM"},
+  dan:{name:"Dan Cole", init:"DC", kind:"team", team:"support", title:"Delivery Director", access:"member", position:"Director"},
+};
+const CUSTOMERS = {
+  acme:{name:"Acme Corp", plan:"Enterprise", since:"2023", contacts:["jd","tom"]},
+  globex:{name:"Globex Ltd", plan:"Business", since:"2024", contacts:["gwen"]},
+  initech:{name:"Initech", plan:"Business", since:"2025", contacts:[]},
+};
+const TEAMS = {
+  support:{name:"Support Desk", members:["mia","sam","rob"]},
+  platform:{name:"Platform Team", members:["priya","amy"]},
+};
+const SLA_BIZ=[{pri:"Urgent",response:"1h",resolution:"4h"},{pri:"High",response:"2h",resolution:"8h"},
+  {pri:"Medium",response:"4h",resolution:"2 business days"},{pri:"Low",response:"1 business day",resolution:"5 business days"}];
+const SLA_247=[{pri:"Urgent",response:"30m",resolution:"2h"},{pri:"High",response:"1h",resolution:"6h"},
+  {pri:"Medium",response:"4h",resolution:"1 business day"},{pri:"Low",response:"8h",resolution:"3 business days"}];
+const PROJECTS = [
+  {key:"ACME-SUP", name:"Support Retainer", customer:"acme", team:"support", type:"Service desk", lead:"mia",
+   contract:{serviceType:"Managed Service (AMC)", status:"Active", amcStart:"01 Jan 2026", amcEnd:"31 Dec 2026",
+     kickoff:{status:"Completed", date:"09 Jan 2026"}, coverage:"Business hours (9×5)",
+     workingHours:"Mon–Fri · 09:00–18:00 (+07)", sla:SLA_BIZ, hoursTotal:200, hoursUsed:128.5},
+   milestones:[{name:"AMC Kick-off",date:"09 Jan",status:"done"},{name:"Q1 Review",date:"31 Mar",status:"done"},
+     {name:"Q2 Review",date:"30 Jun",status:"active"},{name:"Q3 Review",date:"30 Sep",status:"upcoming"},{name:"Renewal",date:"31 Dec",status:"upcoming"}],
+   hoursLog:[{item:"ACME-SUP-42",who:"sam",hours:2.5,date:"01 Jul"},{item:"ACME-SUP-51",who:"sam",hours:4,date:"28 Jun"},
+     {item:"ACME-SUP-39",who:"rob",hours:1.5,date:"27 Jun"},{item:"ACME-SUP-42",who:"sam",hours:3,date:"25 Jun"}]},
+  {key:"ACME-MIG", name:"Cloud Migration", customer:"acme", team:"platform", type:"Delivery", lead:"priya",
+   contract:{serviceType:"Project Delivery", status:"In delivery", amcStart:"03 Feb 2026", amcEnd:"30 Sep 2026",
+     kickoff:{status:"Completed", date:"05 Feb 2026"}, coverage:"Project hours",
+     workingHours:"Mon–Fri · 09:00–18:00 (+07)", sla:[{pri:"All",response:"Next business day",resolution:"Per project plan"}],
+     hoursTotal:400, hoursUsed:212},
+   milestones:[{name:"Kick-off",date:"05 Feb",status:"done"},{name:"Assess & Design",date:"13 Mar",status:"done"},
+     {name:"Migration W1",date:"15 May",status:"active"},{name:"Migration W2",date:"31 Jul",status:"upcoming"},{name:"Go-live",date:"30 Sep",status:"upcoming"}],
+   hoursLog:[{item:"ACME-MIG-3",who:"amy",hours:6,date:"01 Jul"},{item:"ACME-MIG-3",who:"amy",hours:8,date:"30 Jun"}]},
+  {key:"GLBX-SUP", name:"Support Contract", customer:"globex", team:"support", type:"Service desk", lead:"mia",
+   contract:{serviceType:"Managed Service (AMC)", status:"Active", amcStart:"15 Mar 2026", amcEnd:"14 Mar 2027",
+     kickoff:{status:"Completed", date:"20 Mar 2026"}, coverage:"24×7 on-call",
+     workingHours:"24×7", sla:SLA_247, hoursTotal:120, hoursUsed:41},
+   milestones:[{name:"AMC Kick-off",date:"20 Mar",status:"done"},{name:"Onboarding",date:"10 Apr",status:"done"},
+     {name:"Mid-term Review",date:"15 Sep",status:"upcoming"},{name:"Renewal",date:"14 Mar",status:"upcoming"}],
+   hoursLog:[{item:"GLBX-SUP-8",who:"rob",hours:3,date:"02 Jul"}]},
+  {key:"INIT-WEB", name:"Website Revamp", customer:"initech", team:"platform", type:"Delivery", lead:"priya",
+   contract:{serviceType:"Project Delivery", status:"Kickoff pending", amcStart:"15 Jul 2026", amcEnd:"31 Oct 2026",
+     kickoff:{status:"Pending", date:"15 Jul 2026"}, coverage:"Project hours",
+     workingHours:"Mon–Fri · 09:00–18:00 (+07)", sla:[{pri:"All",response:"Per project plan",resolution:"Per project plan"}],
+     hoursTotal:150, hoursUsed:0},
+   milestones:[{name:"Kick-off",date:"15 Jul",status:"upcoming"},{name:"Design Approval",date:"05 Aug",status:"upcoming"},
+     {name:"Build",date:"20 Sep",status:"upcoming"},{name:"Launch",date:"31 Oct",status:"upcoming"}],
+   hoursLog:[]},
+];
+const STATUS = {
+  todo:{label:"To Do", cls:"st-todo", cat:"todo"},
+  prog:{label:"In Progress", cls:"st-prog", cat:"in_progress"},
+  wait:{label:"Waiting on Customer", cls:"st-wait", cat:"in_progress"},
+  done:{label:"Resolved", cls:"st-done", cat:"done"},
+};
+const COLS=["todo","prog","wait","done"];
+let ITEMS=[
+  {key:"ACME-SUP-42",project:"ACME-SUP",type:"ticket",title:"Cannot reset my password",status:"prog",pri:"high",
+   requester:"jd",assignee:"sam",labels:["auth"],sla:"2h 10m",slaState:"warn",
+   desc:"'Forgot password' email never arrives. Tried twice.",
+   comments:[{u:"jd",t:"This is blocking me from logging in.",when:"2h ago"},
+             {u:"sam",t:"Thanks Jane — checking the mail queue now.",when:"1h ago"},
+             {u:"sam",t:"Mail relay was backed up; follow up with infra.",when:"40m ago",internal:true}],
+   activity:["Jane Doe created this ticket · 3h ago","Auto-assigned to Sam Rivera · 3h ago","Sam moved To Do → In Progress · 1h ago"]},
+  {key:"ACME-SUP-39",project:"ACME-SUP",type:"ticket",title:"Invoice shows wrong tax amount",status:"todo",pri:"med",
+   requester:"jd",assignee:null,labels:["billing"],sla:"6h 30m",slaState:"ok",
+   desc:"March invoice tax total looks off by ~5%.",comments:[],activity:["Jane Doe created this ticket · 5h ago"]},
+  {key:"ACME-SUP-55",project:"ACME-SUP",type:"ticket",title:"App crashes on file upload > 10MB",status:"todo",pri:"urgent",
+   requester:"tom",assignee:null,labels:["bug","upload"],sla:"25m",slaState:"late",
+   desc:"Uploading large attachments crashes the browser tab.",comments:[],activity:["Tom Blake created this ticket · 35m ago"]},
+  {key:"ACME-SUP-51",project:"ACME-SUP",type:"ticket",title:"Feature request: dark mode",status:"done",pri:"low",
+   requester:"jd",assignee:"sam",labels:["ux"],sla:"Met",slaState:"ok",
+   desc:"Would love a dark theme for the portal.",comments:[{u:"sam",t:"Logged for product — thanks!",when:"1d ago"}],
+   activity:["Jane Doe created this ticket · 2d ago","Sam resolved · 1d ago"]},
+  {key:"ACME-MIG-3",project:"ACME-MIG",type:"task",title:"Migrate primary DB to RKE2 cluster",status:"prog",pri:"high",
+   requester:"amy",assignee:"amy",labels:["mssql"],sla:"—",slaState:"ok",
+   desc:"Cut over MSSQL to the new cluster with minimal downtime.",comments:[],activity:["Amy created this task · 1d ago"]},
+  {key:"ACME-MIG-7",project:"ACME-MIG",type:"task",title:"Set up ArgoCD delivery pipeline",status:"todo",pri:"med",
+   requester:"amy",assignee:null,labels:["gitops"],sla:"—",slaState:"ok",
+   desc:"App-of-apps for the migration workloads.",comments:[],activity:["Amy created this task · 20h ago"]},
+  {key:"GLBX-SUP-8",project:"GLBX-SUP",type:"ticket",title:"Outbound email routing failing",status:"prog",pri:"high",
+   requester:"gwen",assignee:"rob",labels:["email"],sla:"1h 05m",slaState:"warn",
+   desc:"Customers not receiving notification emails since morning.",comments:[],activity:["Gwen created this ticket · 4h ago","Rob picked it up · 3h ago"]},
+  {key:"GLBX-SUP-11",project:"GLBX-SUP",type:"ticket",title:"Add 5 new user seats",status:"todo",pri:"low",
+   requester:"gwen",assignee:null,labels:["account"],sla:"1d",slaState:"ok",
+   desc:"Onboarding new staff, need seats provisioned.",comments:[],activity:["Gwen created this ticket · 6h ago"]},
+  {key:"INIT-WEB-2",project:"INIT-WEB",type:"task",title:"Homepage redesign implementation",status:"todo",pri:"med",
+   requester:"amy",assignee:"amy",labels:["frontend"],sla:"—",slaState:"ok",
+   desc:"Build the approved homepage design.",comments:[],activity:["Amy created this task · 2d ago"]},
+];
+
+/* ---- Jira-style fields backfilled onto items ---- */
+const SEED={
+  "ACME-SUP-42":{points:3,due:"03 Jul",watchers:["jd","mia"],subtasks:[{t:"Check mail relay logs",done:true},{t:"Reset via admin console",done:false},{t:"Confirm with customer",done:false}]},
+  "ACME-SUP-55":{points:5,due:"02 Jul",watchers:["tom"],subtasks:[]},
+  "ACME-MIG-3":{points:8,due:"15 May",watchers:["priya","amy"],subtasks:[{t:"Backup source DB",done:true},{t:"Provision target cluster",done:true},{t:"Cutover rehearsal",done:false}]},
+  "ACME-MIG-7":{points:5,due:"20 Jul",watchers:["priya"],subtasks:[]},
+  "GLBX-SUP-8":{points:2,due:"02 Jul",watchers:["gwen","rob"],subtasks:[{t:"Check SMTP relay health",done:false}]},
+  "INIT-WEB-2":{points:13,due:"20 Sep",watchers:["priya","amy"],subtasks:[{t:"Approved design handoff",done:false},{t:"Build sections",done:false}]},
+};
+ITEMS.forEach(i=>{const s=SEED[i.key]||{};i.points=s.points??null;i.due=s.due??null;i.watchers=s.watchers||[];i.subtasks=s.subtasks||[];i.logged=i.logged||0;});
+
+/* ================= STATE ================= */
+let ROLE="customer", CURRENT=null, LOGIN_SIDE="customer", ME=null, CAPS={};
+let CURRENT_PROJECT=null, CURRENT_CUSTOMER=null, PTAB="board", DTAB="comments";
+let RTAB="portfolio", BOARD_FILTER="", SWIMLANE=false;
+/* ---- RBAC: 3 access tiers (admin / member / guest); position is just a level label ---- */
+function capsFor(u){
+  if(u.access==="guest") return {portal:true};
+  if(u.access==="admin") return {team:true, work:true, assign:true, manage:true, reports:true};
+  if(u.position==="Director") return {team:true, reports:true};        // read-only reports
+  return {team:true, work:true};                                        // Junior / Senior
+}
+function accessLabel(u){return u.access==="admin"?"Admin":u.access==="guest"?"Guest"
+  :(u.position==="Director"?"Member · Reports (read-only)":"Member");}
+
+/* ================= HELPERS ================= */
+const $=(s,r=document)=>r.querySelector(s), $$=(s,r=document)=>[...r.querySelectorAll(s)];
+function chip(st){const s=STATUS[st];return `<span class="chip ${s.cls}"><span class="tick"></span>${s.label}</span>`}
+function priTag(p){return `<span class="pri ${p}"><span class="pdot"></span>${p[0].toUpperCase()+p.slice(1)}</span>`}
+function typeTag(t){return `<span class="type-tag type-${t}">${t.toUpperCase()}</span>`}
+function slaTag(i){if(i.sla==="—")return "";const c=i.slaState==="late"?"late":i.slaState==="warn"?"warn":"ok";
+  const ic=i.slaState==="late"?"⚠":"⏱";return `<span class="sla ${c}">${ic} ${i.sla}</span>`}
+const AVPAL=["#2f9e6a","#d98f26","#9a6dc9","#4f93d6","#c56b3f","#3a8f8a","#c65a7a"];
+function avColor(uid){let h=0;for(let k=0;k<uid.length;k++)h=(h*31+uid.charCodeAt(k))>>>0;return AVPAL[h%AVPAL.length];}
+function av(uid,cls="mini"){const u=USERS[uid];if(!u)return `<span class="avatar ${cls}" style="background:var(--surface-3);color:var(--faint)" title="Unassigned">–</span>`;
+  const c=avColor(uid);return `<span class="avatar ${cls}" style="background:${c};color:#fff" title="${u.name}">${u.init}</span>`}
+function toast(msg){const t=$("#toast");t.textContent=msg;t.classList.add("show");clearTimeout(t._t);t._t=setTimeout(()=>t.classList.remove("show"),2200)}
+function toggleTheme(){const r=document.documentElement;r.dataset.theme=r.dataset.theme==="light"?"":"light";}
+function statTile(n,label,color,delta,dcls){return `<div class="card stat"${color?` style="border-top:2px solid ${color}"`:""}>
+  <div class="n">${n}</div><div class="l">${label}</div>${delta?`<div class="d ${dcls||""}">${delta}</div>`:""}</div>`}
+function donut(segs){const R=54,C=2*Math.PI*R;const total=segs.reduce((s,x)=>s+x.value,0);let off=0;
+  const arcs=segs.filter(s=>s.value>0).map(s=>{const len=total?s.value/total*C:0;
+    const el=`<circle r="${R}" cx="70" cy="70" fill="none" stroke="${s.color}" stroke-width="15" stroke-linecap="round" stroke-dasharray="${Math.max(0,len-2)} ${C-Math.max(0,len-2)}" stroke-dashoffset="${-off}" transform="rotate(-90 70 70)"/>`;off+=len;return el;}).join("");
+  return `<svg viewBox="0 0 140 140" width="128" height="128" style="flex-shrink:0"><circle r="${R}" cx="70" cy="70" fill="none" stroke="var(--surface-2)" stroke-width="15"/>${arcs}
+    <text x="70" y="66" text-anchor="middle" font-size="26" font-weight="700" fill="var(--text)">${total}</text>
+    <text x="70" y="87" text-anchor="middle" font-size="11" fill="var(--muted)">Total</text></svg>`}
+function donutCard(title,segs){return `<div class="card pad"><div class="card-h">${title}</div>
+  <div class="donutwrap" style="margin-top:14px">${donut(segs)}<div class="legend">${segs.map(s=>`<div class="leg"><span class="legdot" style="background:${s.color}"></span>${s.label}<span class="legval">${s.value}</span></div>`).join("")}</div></div></div>`}
+function projName(k){const p=PROJECTS.find(x=>x.key===k);return p?p.name:k}
+function itemsOf(pk){return ITEMS.filter(i=>i.project===pk)}
+function openCnt(list){return list.filter(i=>STATUS[i.status].cat!=="done").length}
+function myCustomer(){return USERS[CURRENT].customer}
+function myProjects(){return PROJECTS.filter(p=>p.customer===myCustomer())}
+function myItems(){const cust=myCustomer();return ITEMS.filter(i=>{const p=PROJECTS.find(x=>x.key===i.project);return p&&p.customer===cust})}
+/* ---- managed service / contract helpers ---- */
+function hoursLeft(p){return Math.round((p.contract.hoursTotal-p.contract.hoursUsed)*10)/10}
+function hoursPct(p){return Math.min(100,p.contract.hoursUsed/p.contract.hoursTotal*100)}
+function hoursColor(p){const r=hoursLeft(p)/p.contract.hoursTotal;return r<0.1?"var(--breach)":r<0.25?"var(--wait)":"var(--done)"}
+function daysLeft(str){const d=Math.round((new Date(str)-new Date())/86400000);return isNaN(d)?null:d}
+function statusChip(s){const m={"Active":"st-done","In delivery":"st-prog","Kickoff pending":"st-wait","Expiring soon":"st-wait","Closed":"st-todo"}[s]||"st-todo";
+  return `<span class="chip ${m}"><span class="tick"></span>${s}</span>`}
+function kickoffChip(k){const m={Completed:"st-done",Scheduled:"st-prog",Pending:"st-wait"}[k.status]||"st-todo";
+  return `<span class="chip ${m}"><span class="tick"></span>Kick-off ${k.status}</span>`}
+function contractStrip(p){const c=p.contract,dl=daysLeft(c.amcEnd),managed=c.serviceType.includes("Managed");
+  return `<div class="cards-grid" style="grid-template-columns:repeat(auto-fit,minmax(165px,1fr));margin-bottom:18px">
+    <div class="card pad"><div class="ck">Service type</div><div class="cv">${c.serviceType}</div><div class="cs">${statusChip(c.status)}</div></div>
+    <div class="card pad"><div class="ck">${managed?"AMC period":"Project period"}</div><div class="cv">${c.amcStart} → ${c.amcEnd}</div><div class="cs">${dl!=null?dl+" days remaining":""}</div></div>
+    <div class="card pad"><div class="ck">${managed?"Support hours":"Effort budget"}</div><div class="cv" style="color:${hoursColor(p)}">${hoursLeft(p)}h left</div><div class="cs">${c.hoursUsed}h of ${c.hoursTotal}h used</div></div>
+    <div class="card pad"><div class="ck">Kick-off</div><div class="cv">${c.kickoff.status}</div><div class="cs">${c.kickoff.date}</div></div></div>`}
+function kickoffBanner(p){const k=p.contract.kickoff;
+  const col=k.status==="Completed"?"var(--done)":k.status==="Scheduled"?"var(--prog)":"var(--wait)";
+  return `<div class="card pad" style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
+    <span style="width:9px;height:9px;border-radius:50%;background:${col};flex-shrink:0"></span>
+    <div style="flex:1"><div style="font-weight:600">Kick-off ${k.status}</div>
+      <div style="color:var(--muted);font-size:12.5px">${k.date}${k.status!=="Completed"?" (planned)":""}</div></div>${kickoffChip(k)}</div>`}
+function timelineHTML(p){const ms=p.milestones||[];let idx=ms.findIndex(m=>m.status==="active");
+  if(idx<0){const d=ms.filter(m=>m.status==="done").length;idx=d>0?d-1:0;}
+  const fill=ms.length>1?idx/(ms.length-1)*100:0;
+  return `<div class="card pad"><strong>Project timeline</strong>
+    <div class="timeline"><div class="fill" style="width:${fill}%"></div>
+      ${ms.map(m=>`<div class="tl-node ${m.status}"><div class="tl-dot"></div><div class="tl-date">${m.date}</div><div class="tl-name">${m.name}</div></div>`).join("")}</div></div>
+    <div class="card" style="margin-top:16px"><table><thead><tr><th>Milestone</th><th>Target date</th><th>Status</th></tr></thead>
+      <tbody>${ms.map(m=>`<tr><td><strong>${m.name}</strong></td><td>${m.date}</td>
+        <td>${m.status==="done"?'<span class="chip st-done"><span class="tick"></span>Done</span>':m.status==="active"?'<span class="chip st-prog"><span class="tick"></span>In progress</span>':'<span class="chip st-todo"><span class="tick"></span>Upcoming</span>'}</td></tr>`).join("")}</tbody></table></div>`}
+function serviceHTML(p){const c=p.contract,color=hoursColor(p),managed=c.serviceType.includes("Managed");
+  return `${contractStrip(p)}
+    <div class="grid-2">
+      <div class="card pad">
+        <div style="display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:12px">
+          <div><div class="ck">${managed?"Support hours remaining":"Effort budget remaining"}</div>
+            <div style="font-size:32px;font-weight:800;color:${color}">${hoursLeft(p)}h</div></div>
+          <div style="text-align:right;color:var(--muted);font-size:12.5px">${c.hoursUsed}h used<br>of ${c.hoursTotal}h</div></div>
+        <div class="bar-track" style="height:14px"><div class="bar-fill" style="width:${hoursPct(p)}%;background:${color}"></div></div>
+        <div style="display:flex;justify-content:space-between;color:var(--faint);font-size:11px;margin-top:6px"><span>0h</span><span>${c.hoursTotal}h contracted</span></div></div>
+      <div class="card pad"><div class="ck" style="margin-bottom:10px">Coverage & working hours</div>
+        <div class="field"><div class="k">Coverage</div>${c.coverage}</div>
+        <div class="field"><div class="k">Working hours</div>${c.workingHours}</div>
+        <div class="field"><div class="k">Contract</div>${c.amcStart} → ${c.amcEnd}${daysLeft(c.amcEnd)!=null?` · ${daysLeft(c.amcEnd)} days left`:""}</div></div></div>
+    <div class="card pad" style="margin-top:16px"><strong>SLA targets</strong>
+      <table style="margin-top:10px"><thead><tr><th>Priority</th><th>First response</th><th>Resolution</th></tr></thead>
+        <tbody>${c.sla.map(s=>`<tr><td>${s.pri}</td><td>${s.response}</td><td>${s.resolution}</td></tr>`).join("")}</tbody></table></div>
+    <div class="card" style="margin-top:16px"><div style="padding:14px 14px 0;font-weight:700">Recent time logged (hour deductions)</div>
+      <table style="margin-top:8px"><thead><tr><th>Work item</th><th>Engineer</th><th>Hours</th><th>Date</th></tr></thead>
+        <tbody>${p.hoursLog.length?p.hoursLog.map(h=>`<tr><td><span class="key">${h.item}</span></td><td>${USERS[h.who]?.name||h.who}</td>
+          <td><strong>${h.hours}h</strong></td><td style="color:var(--muted)">${h.date}</td></tr>`).join(""):'<tr><td colspan=4 class="empty">No time logged yet.</td></tr>'}</tbody></table></div>`}
+
+/* ================= LOGIN ================= */
+$$("#login-seg button").forEach(b=>b.onclick=()=>{LOGIN_SIDE=b.dataset.side;
+  $$("#login-seg button").forEach(x=>x.classList.toggle("active",x===b));updateLoginHint();});
+const PERSONAS={
+  customer:[["jd","Jane Doe — Acme (Guest)"],["tom","Tom Blake — Acme (Guest)"],["gwen","Gwen Silva — Globex (Guest)"]],
+  team:[["rob","Rob Diaz — Junior · Member"],["sam","Sam Rivera — Senior · Member"],
+        ["mia","Mia Wong — Manager · Admin"],["priya","Priya Nair — PM · Admin"],["dan","Dan Cole — Director · Reports-only"]],
+};
+function updateLoginHint(){
+  const cust=LOGIN_SIDE==="customer";
+  $("#login-sub").textContent=cust?"Track your support tickets & projects":"Deliver work across your customers";
+  $("#login-persona").innerHTML=PERSONAS[LOGIN_SIDE].map(([v,l])=>`<option value="${v}">${l}</option>`).join("");
+  $("#login-email").value=cust?"jane@acme.com":"sam@taskdesk.io";
+  $("#demo-note").innerHTML=cust
+    ?"<b>Guest access:</b> customers can raise & track tickets and view their projects only."
+    :"<b>Role-based:</b> <b>Junior/Senior</b> work tasks, <b>Manager/PM</b> manage & report, <b>Director</b> sees reports only.";
+}
+function doLogin(){
+  CURRENT=$("#login-persona").value; ME=USERS[CURRENT]; ROLE=ME.kind; CAPS=capsFor(ME);
+  $("#login-screen").classList.add("hidden");
+  $("#app-shell").classList.remove("hidden");
+  $("#nav-customer").classList.toggle("hidden",ROLE!=="customer");
+  $("#nav-team").classList.toggle("hidden",ROLE!=="team");
+  $$("#nav-team a[data-cap]").forEach(a=>a.classList.toggle("hidden",!CAPS[a.dataset.cap]));
+  $("#who").textContent=ME.init; $("#menu-name").textContent=`${ME.name} · ${ME.position}`;
+  $("#menu-role").textContent=ROLE==="customer"?`${ME.title}, ${CUSTOMERS[ME.customer].name}`:`${accessLabel(ME)} · ${TEAMS[ME.team].name}`;
+  $("#context-label").textContent=ROLE==="customer"?CUSTOMERS[ME.customer].name:`${accessLabel(ME)} workspace`;
+  refreshCounts();
+  go(ROLE==="customer"?"c-overview":(CAPS.reports?"t-dash":"t-mywork"));
+}
+function logout(){$("#menu").classList.add("hidden");$("#app-shell").classList.add("hidden");
+  $("#login-screen").classList.remove("hidden");closeDrawer();}
+function toggleMenu(){$("#menu").classList.toggle("hidden")}
+
+/* ================= VIEWS ================= */
+const NAV_PARENT={"c-project":"c-projects","t-project":"t-projects","t-customer":"t-customers"};
+const VIEWS={
+  /* ---------- CUSTOMER ---------- */
+  "c-overview":()=>{
+    const items=myItems(), open=openCnt(items), breach=items.filter(i=>i.slaState==="late").length;
+    return head("Welcome back, "+USERS[CURRENT].name.split(" ")[0]+" 👋",CUSTOMERS[myCustomer()].name+" · "+CUSTOMERS[myCustomer()].plan+" plan")+
+      `<div class="stats">
+        ${statTile(open,"Open tickets","var(--blue)")}
+        ${statTile(myProjects().length,"Active projects","var(--green)")}
+        ${statTile(breach,"SLA at risk",breach?"var(--breach)":"var(--done)")}
+        ${statTile(items.filter(i=>i.status==="done").length,"Resolved","var(--charcoal)")}
+      </div>
+      <div class="page-head" style="margin-bottom:12px;border-left:0;padding-left:0"><div style="flex:1"><h1 style="font-size:16px">Your projects</h1></div>
+        <button class="btn primary sm" onclick="openNewTicket()">New ticket</button></div>
+      <div class="cards-grid">${myProjects().map(projectCard).join("")}</div>`;
+  },
+  "c-tickets":()=>{
+    const rows=myItems().map(rowHTML).join("");
+    return head("My tickets","Every request your organization has raised.",
+      `<button class="btn primary" onclick="openNewTicket()">New ticket</button>`)+
+      `<div class="card"><table><thead><tr><th>Key</th><th>Summary</th><th>Project</th><th>Status</th><th>Priority</th><th>SLA</th></tr></thead>
+       <tbody>${rows||`<tr><td colspan=6 class="empty">No tickets yet.</td></tr>`}</tbody></table></div>`;
+  },
+  "c-projects":()=>head("Projects","Your engagements with our team.")+
+    `<div class="cards-grid">${myProjects().map(projectCard).join("")}</div>`,
+  "c-project":()=>{
+    const p=PROJECTS.find(x=>x.key===CURRENT_PROJECT), items=itemsOf(p.key);
+    return crumb("c-projects","Projects",p.name)+
+      head(p.name,`${CUSTOMERS[p.customer].name} · ${p.type} · delivered by ${TEAMS[p.team].name}`,
+        `<button class="btn primary" onclick="openNewTicket()">New ticket</button>`)+
+      contractStrip(p)+
+      `<h3 style="font-size:14px;margin:6px 0 10px">Tickets</h3>
+       <div class="card"><table><thead><tr><th>Key</th><th>Summary</th><th>Status</th><th>Priority</th><th>SLA</th></tr></thead>
+        <tbody>${items.map(i=>`<tr data-key="${i.key}"><td><span class="key">${i.key}</span></td>
+          <td><strong>${i.title}</strong></td><td>${chip(i.status)}</td><td>${priTag(i.pri)}</td><td>${slaTag(i)||'—'}</td></tr>`).join("")}</tbody></table></div>
+       <div style="margin-top:20px">${timelineHTML(p)}</div>`;
+  },
+  "c-kb":()=>head("Knowledge base","Self-service articles (Phase 2).")+`<div class="card pad empty">Coming in Phase 2.</div>`,
+
+  /* ---------- TEAM ---------- */
+  "t-dash":()=>{
+    const open=openCnt(ITEMS), breach=ITEMS.filter(i=>i.slaState==="late").length,
+      unassigned=ITEMS.filter(i=>!i.assignee&&STATUS[i.status].cat!=="done").length;
+    const load={}; Object.keys(USERS).filter(u=>USERS[u].kind==="team").forEach(u=>load[u]=0);
+    ITEMS.forEach(i=>{if(i.assignee&&load[i.assignee]!=null&&STATUS[i.status].cat!=="done")load[i.assignee]++});
+    const maxw=Math.max(1,...Object.values(load));
+    const bars=Object.entries(load).map(([u,n])=>`<div class="bar-row"><span>${USERS[u].name}</span>
+      <div class="bar-track"><div class="bar-fill" style="width:${n/maxw*100}%"></div></div><span>${n}</span></div>`).join("");
+    const segs=COLS.map(c=>({label:STATUS[c].label,value:ITEMS.filter(i=>i.status===c).length,color:`var(--${c==="done"?"done":c==="wait"?"wait":c==="prog"?"prog":"todo"})`}));
+    return head("Dashboard","Across all customers and projects.")+
+      `<div class="stats">
+        ${statTile(open,"Open work items","var(--blue)","▲ 12% this week","up")}
+        ${statTile(unassigned,"Unassigned","var(--amber)","needs triage")}
+        ${statTile(breach,"SLA breaching","var(--breach)","act now","down")}
+        ${statTile(Object.keys(CUSTOMERS).length,"Customers","var(--green)")}</div>
+      <div class="grid-2">
+        <div class="card pad"><div class="card-h">Workload by team member</div><div class="bars">${bars}</div></div>
+        ${donutCard("Work items by status",segs)}</div>`;
+  },
+  "t-reports":()=>head("Reports","Portfolio view across all customers, projects & managed services.")+
+    `<div class="tabs" id="rtabs">
+      <button data-r="portfolio" class="active">Portfolio</button>
+      <button data-r="managed">Managed service</button>
+      <button data-r="sla">SLA</button>
+      <button data-r="workload">Workload</button></div>
+    <div id="rtab-body"></div>`,
+  "t-mywork":()=>{
+    const rows=ITEMS.filter(i=>i.assignee===CURRENT).map(rowHTML).join("");
+    return head("My work","Items assigned to you across every customer.")+
+      `<div class="card"><table><thead><tr><th>Key</th><th>Summary</th><th>Project</th><th>Status</th><th>Priority</th><th>SLA</th></tr></thead>
+       <tbody>${rows||`<tr><td colspan=6 class="empty">Nothing assigned</td></tr>`}</tbody></table></div>`;
+  },
+  "t-triage":()=>{
+    const q=ITEMS.filter(i=>!i.assignee&&STATUS[i.status].cat!=="done");
+    const rows=q.map(i=>`<tr data-key="${i.key}"><td><span class="key">${i.key}</span></td><td><strong>${i.title}</strong></td>
+      <td><span class="badge">${CUSTOMERS[PROJECTS.find(p=>p.key===i.project).customer].name}</span></td>
+      <td>${priTag(i.pri)}</td><td>${av(i.requester)}</td><td>${slaTag(i)||'—'}</td>
+      <td><button class="btn sm primary" onclick="event.stopPropagation();assignMe('${i.key}')">Assign me</button></td></tr>`).join("");
+    return head("Triage queue","Unassigned incoming tickets from all customers.")+
+      `<div class="card"><table><thead><tr><th>Key</th><th>Summary</th><th>Customer</th><th>Priority</th><th>Requester</th><th>SLA</th><th></th></tr></thead>
+       <tbody>${rows||`<tr><td colspan=7 class="empty">Queue is empty.</td></tr>`}</tbody></table></div>`;
+  },
+  "t-projects":()=>head("Projects","Every engagement across all customers.",
+      CAPS.manage?`<button class="btn primary">New project</button>`:"")+
+    `<div class="cards-grid">${PROJECTS.map(p=>projectCard(p,true)).join("")}</div>`,
+  "t-project":()=>{
+    const p=PROJECTS.find(x=>x.key===CURRENT_PROJECT);
+    return crumb("t-projects","Projects",p.name)+
+      head(`${p.name} <span class="key">${p.key}</span>`,`${CUSTOMERS[p.customer].name} · ${p.type} · Lead ${USERS[p.lead].name}`,
+        CAPS.manage?`<button class="btn">Settings</button>`:"")+
+      `<div class="tabs" id="ptabs">
+        <button data-t="board" class="active">Board</button><button data-t="list">List</button>
+        <button data-t="timeline">Timeline</button><button data-t="service">Managed service</button>
+        <button data-t="members">Members</button><button data-t="overview">Overview</button></div>
+      <div id="ptab-body"></div>`;
+  },
+  "t-customers":()=>head("Customers","The organizations you service.",
+      CAPS.manage?`<button class="btn primary">Add customer</button>`:"")+
+    `<div class="card"><table><thead><tr><th>Customer</th><th>Plan</th><th>Projects</th><th>Open tickets</th><th>Contacts</th><th>Since</th></tr></thead>
+      <tbody>${Object.entries(CUSTOMERS).map(([k,c])=>{
+        const projs=PROJECTS.filter(p=>p.customer===k), items=projs.flatMap(p=>itemsOf(p.key));
+        return `<tr data-nav="t-customer:${k}"><td><strong>${c.name}</strong></td><td><span class="label-tag">${c.plan}</span></td>
+          <td>${projs.length}</td><td>${openCnt(items)}</td>
+          <td><div class="avatars">${c.contacts.map(u=>av(u,'mini')).join("")||'<span style="color:var(--faint)">—</span>'}</div></td>
+          <td style="color:var(--muted)">${c.since}</td></tr>`}).join("")}</tbody></table></div>`,
+  "t-customer":()=>{
+    const c=CUSTOMERS[CURRENT_CUSTOMER], projs=PROJECTS.filter(p=>p.customer===CURRENT_CUSTOMER);
+    return crumb("t-customers","Customers",c.name)+
+      head(c.name,`${c.plan} plan · customer since ${c.since}`)+
+      `<div class="grid-2">
+        <div><h3 style="font-size:14px;margin:0 0 10px">Projects</h3><div class="cards-grid" style="grid-template-columns:1fr">
+          ${projs.map(p=>projectCard(p,true)).join("")||'<div class="card pad empty">No projects</div>'}</div></div>
+        <div><h3 style="font-size:14px;margin:0 0 10px">Contacts</h3><div class="card">
+          ${c.contacts.map(u=>`<div class="member">${av(u,'')}<div><div style="font-weight:600">${USERS[u].name}</div>
+            <div style="color:var(--muted);font-size:12px">${USERS[u].title}</div></div></div>`).join("")||'<div class="empty">No contacts</div>'}</div></div>
+      </div>`;
+  },
+  "t-teams":()=>head("Teams","Your delivery & support squads.")+
+    `<div class="cards-grid">${Object.entries(TEAMS).map(([k,t])=>{
+      const load=ITEMS.filter(i=>t.members.includes(i.assignee)&&STATUS[i.status].cat!=="done").length;
+      return `<div class="card pad"><div class="top"><span class="badge">${t.members.length} members</span></div>
+        <h3 style="margin:2px 0 12px">${t.name}</h3>
+        ${t.members.map(u=>`<div class="member" style="padding:8px 0">${av(u,'')}<div><div style="font-weight:600">${USERS[u].name}</div>
+          <div style="color:var(--muted);font-size:12px">${USERS[u].title}</div></div></div>`).join("")}
+        <div class="foot" style="border-top:1px solid var(--border);padding-top:10px;margin-top:6px">⚡ ${load} open items</div></div>`}).join("")}</div>`,
+};
+
+/* reports tabs (manager/admin/director) — spans ALL projects & managed service */
+function renderRTab(){
+  const el=$("#rtab-body"); if(!el)return;
+  if(RTAB==="portfolio"){
+    el.innerHTML=`<div class="card"><table><thead><tr><th>Project</th><th>Customer</th><th>Type</th><th>Status</th>
+      <th>Open</th><th>Done</th><th>SLA</th><th>Hours left</th><th>Contract ends</th></tr></thead>
+      <tbody>${PROJECTS.map(p=>{const it=itemsOf(p.key),late=it.filter(i=>i.slaState==="late").length;
+        return `<tr data-nav="t-project:${p.key}"><td><span class="key">${p.key}</span><div><strong>${p.name}</strong></div></td>
+        <td>${CUSTOMERS[p.customer].name}</td><td><span class="label-tag">${p.contract.serviceType.includes("Managed")?"AMC":"Delivery"}</span></td>
+        <td>${statusChip(p.contract.status)}</td><td>${openCnt(it)}</td><td>${it.filter(i=>i.status==="done").length}</td>
+        <td>${late?`<span class="sla late">⚠ ${late}</span>`:'<span class="sla ok">✓</span>'}</td>
+        <td><span style="color:${hoursColor(p)};font-weight:700">${hoursLeft(p)}h</span> <span style="color:var(--faint)">/ ${p.contract.hoursTotal}h</span></td>
+        <td style="color:var(--muted)">${p.contract.amcEnd}</td></tr>`}).join("")}</tbody></table></div>`;
+  } else if(RTAB==="managed"){
+    const amc=PROJECTS.filter(p=>p.contract.serviceType.includes("Managed"));
+    const totT=amc.reduce((s,p)=>s+p.contract.hoursTotal,0), totU=Math.round(amc.reduce((s,p)=>s+p.contract.hoursUsed,0)*10)/10;
+    const expiring=PROJECTS.filter(p=>{const d=daysLeft(p.contract.amcEnd);return d!=null&&d<75});
+    el.innerHTML=`<div class="stats">
+        <div class="card stat"><div class="n">${amc.length}</div><div class="l">Active AMC contracts</div></div>
+        <div class="card stat"><div class="n" style="color:var(--done)">${Math.round((totT-totU)*10)/10}h</div><div class="l">Hours remaining (all)</div></div>
+        <div class="card stat"><div class="n">${totU}h</div><div class="l">Hours consumed</div></div>
+        <div class="card stat"><div class="n" style="color:${expiring.length?"var(--wait)":"var(--done)"}">${expiring.length}</div><div class="l">Expiring &lt; 75 days</div></div></div>
+      <div class="card pad"><strong>Hour banks by contract</strong><div class="bars" style="margin-top:12px">${amc.map(p=>`<div class="bar-row"><span>${p.key}</span>
+        <div class="bar-track"><div class="bar-fill" style="width:${hoursPct(p)}%;background:${hoursColor(p)}"></div></div><span style="color:${hoursColor(p)};font-weight:700">${hoursLeft(p)}h</span></div>`).join("")}</div></div>
+      <div class="card" style="margin-top:16px"><div style="padding:14px 14px 0;font-weight:700">Contracts & kick-off status</div>
+        <table style="margin-top:8px"><thead><tr><th>Project</th><th>Service</th><th>Kick-off</th><th>Period</th><th>Days left</th></tr></thead>
+        <tbody>${PROJECTS.map(p=>{const d=daysLeft(p.contract.amcEnd);return `<tr data-nav="t-project:${p.key}"><td><strong>${p.name}</strong></td>
+          <td>${p.contract.serviceType}</td><td>${kickoffChip(p.contract.kickoff)}</td><td>${p.contract.amcStart} → ${p.contract.amcEnd}</td>
+          <td style="${d!=null&&d<75?"color:var(--wait);font-weight:700":""}">${d!=null?d+"d":"—"}</td></tr>`}).join("")}</tbody></table></div>`;
+  } else if(RTAB==="sla"){
+    const breaches=ITEMS.filter(i=>i.slaState==="late"), warn=ITEMS.filter(i=>i.slaState==="warn");
+    el.innerHTML=`<div class="stats">
+        <div class="card stat"><div class="n">94%</div><div class="l">SLA compliance</div><div class="d up">▲ 3%</div></div>
+        <div class="card stat"><div class="n" style="color:var(--breach)">${breaches.length}</div><div class="l">Breaching now</div></div>
+        <div class="card stat"><div class="n" style="color:var(--wait)">${warn.length}</div><div class="l">At risk</div></div>
+        <div class="card stat"><div class="n">${ITEMS.filter(i=>i.status==="done").length}</div><div class="l">Resolved (met)</div></div></div>
+      <div class="card"><div style="padding:14px 14px 0;font-weight:700">At risk / breaching — all projects</div>
+        <table style="margin-top:8px"><thead><tr><th>Key</th><th>Summary</th><th>Customer</th><th>Priority</th><th>SLA</th></tr></thead>
+        <tbody>${[...breaches,...warn].map(i=>`<tr data-key="${i.key}"><td><span class="key">${i.key}</span></td><td><strong>${i.title}</strong></td>
+          <td>${CUSTOMERS[PROJECTS.find(p=>p.key===i.project).customer].name}</td><td>${priTag(i.pri)}</td><td>${slaTag(i)}</td></tr>`).join("")||'<tr><td colspan=5 class="empty">All within SLA</td></tr>'}</tbody></table></div>`;
+    $$("#rtab-body tbody tr[data-key]").forEach(tr=>tr.onclick=()=>openItem(tr.dataset.key));
+  } else {
+    const team=Object.keys(USERS).filter(u=>USERS[u].kind==="team");
+    const load={}; team.forEach(u=>load[u]=0); ITEMS.forEach(i=>{if(load[i.assignee]!=null&&STATUS[i.status].cat!=="done")load[i.assignee]++});
+    const maxw=Math.max(1,...Object.values(load)), openTot=openCnt(ITEMS);
+    el.innerHTML=`<div class="card pad"><strong>Open items by team member (all projects)</strong><div class="bars" style="margin-top:12px">${team.map(u=>`<div class="bar-row"><span>${USERS[u].name} · ${USERS[u].position}</span>
+        <div class="bar-track"><div class="bar-fill" style="width:${load[u]/maxw*100}%"></div></div><span>${load[u]}</span></div>`).join("")}</div></div>
+      <div class="card pad" style="margin-top:16px"><strong>Open items by project</strong><div class="bars" style="margin-top:12px">${PROJECTS.map(p=>{const n=openCnt(itemsOf(p.key));return `<div class="bar-row"><span>${p.key}</span>
+        <div class="bar-track"><div class="bar-fill" style="width:${n/Math.max(1,openTot)*100}%"></div></div><span>${n}</span></div>`}).join("")}</div></div>`;
+  }
+  $$("#rtab-body [data-nav]").forEach(el2=>el2.onclick=()=>{CURRENT_PROJECT=el2.dataset.nav.split(":")[1];PTAB="board";BOARD_FILTER="";go("t-project");});
+}
+
+/* project detail tabs */
+function renderPTab(){
+  const p=PROJECTS.find(x=>x.key===CURRENT_PROJECT), items=itemsOf(p.key), el=$("#ptab-body");
+  if(PTAB==="board"){
+    el.innerHTML=`<div class="board-toolbar">
+        <input id="bfilter" placeholder="🔍 Filter items (title, key, label)…" value="${BOARD_FILTER}">
+        <label class="toggle" style="margin:0"><input type="checkbox" id="bswim" ${SWIMLANE?"checked":""} style="width:auto"> Group by assignee (swimlanes)</label></div>
+      <div id="boardwrap"></div>`;
+    renderBoardWrap();
+    $("#bfilter").oninput=e=>{BOARD_FILTER=e.target.value;renderBoardWrap();};
+    $("#bswim").onchange=e=>{SWIMLANE=e.target.checked;renderBoardWrap();};
+  } else if(PTAB==="list"){
+    el.innerHTML=`<div class="card"><table><thead><tr><th>Key</th><th>Summary</th><th>Type</th><th>Status</th><th>Priority</th><th>Assignee</th><th>SLA</th></tr></thead>
+      <tbody>${items.map(i=>`<tr data-key="${i.key}"><td><span class="key">${i.key}</span></td><td><strong>${i.title}</strong></td>
+        <td>${typeTag(i.type)}</td><td>${chip(i.status)}</td><td>${priTag(i.pri)}</td><td>${av(i.assignee)}</td><td>${slaTag(i)||'—'}</td></tr>`).join("")}</tbody></table></div>`;
+    $$("#ptab-body tbody tr[data-key]").forEach(tr=>tr.onclick=()=>openItem(tr.dataset.key));
+  } else if(PTAB==="timeline"){
+    el.innerHTML=`${kickoffBanner(p)}${timelineHTML(p)}`;
+  } else if(PTAB==="service"){
+    el.innerHTML=serviceHTML(p);
+  } else if(PTAB==="members"){
+    const team=TEAMS[p.team], contacts=CUSTOMERS[p.customer].contacts;
+    el.innerHTML=`<div class="grid-2">
+      <div class="card"><div style="padding:12px 14px;font-weight:700;border-bottom:1px solid var(--border)">${team.name} (delivery)</div>
+        ${team.members.map(u=>`<div class="member">${av(u,'')}<div><div style="font-weight:600">${USERS[u].name} ${u===p.lead?'<span class="badge">Lead</span>':''}</div>
+          <div style="color:var(--muted);font-size:12px">${USERS[u].title}</div></div></div>`).join("")}</div>
+      <div class="card"><div style="padding:12px 14px;font-weight:700;border-bottom:1px solid var(--border)">${CUSTOMERS[p.customer].name} (customer)</div>
+        ${contacts.map(u=>`<div class="member">${av(u,'')}<div><div style="font-weight:600">${USERS[u].name}</div>
+          <div style="color:var(--muted);font-size:12px">${USERS[u].title}</div></div></div>`).join("")||'<div class="empty">No contacts</div>'}</div></div>`;
+  } else {
+    el.innerHTML=`${contractStrip(p)}
+      <div class="grid-2"><div class="card pad"><strong>Status breakdown</strong><div class="bars">${
+        COLS.map(c=>{const n=items.filter(i=>i.status===c).length;return `<div class="bar-row"><span>${STATUS[c].label}</span>
+        <div class="bar-track"><div class="bar-fill" style="width:${n/Math.max(1,items.length)*100}%"></div></div><span>${n}</span></div>`}).join("")}</div></div>
+      <div class="card pad"><div class="field"><div class="k">Customer</div>${CUSTOMERS[p.customer].name} (${CUSTOMERS[p.customer].plan})</div>
+        <div class="field"><div class="k">Delivery team</div>${TEAMS[p.team].name}</div>
+        <div class="field"><div class="k">Project lead</div>${USERS[p.lead].name}</div>
+        <div class="field"><div class="k">Working hours</div>${p.contract.workingHours}</div></div></div>`;
+  }
+}
+
+/* ---- Jira-style helpers ---- */
+function convoCount(i){return i.comments.filter(c=>ROLE==="customer"?!c.internal:true).length}
+function subtasksHTML(i){if(!i.subtasks.length&&!CAPS.work)return "";
+  const done=i.subtasks.filter(s=>s.done).length,tot=i.subtasks.length;
+  return `<div style="margin-bottom:18px"><div class="ck" style="margin-bottom:8px">Sub-tasks ${tot?`(${done}/${tot})`:""}</div>
+    ${tot?`<div class="bar-track" style="margin-bottom:8px"><div class="bar-fill" style="width:${done/tot*100}%;background:var(--done)"></div></div>`:""}
+    ${i.subtasks.map((s,idx)=>`<label class="subtask ${s.done?"done":""}"><input type="checkbox" ${s.done?"checked":""} ${CAPS.work?"":"disabled"} onclick="toggleSub('${i.key}',${idx})"><span>${s.t}</span></label>`).join("")}
+    ${CAPS.work?`<button class="btn sm" style="margin-top:8px" onclick="addSub('${i.key}')">Add sub-task</button>`:tot?"":'<div style="color:var(--faint);font-size:12px">No sub-tasks</div>'}</div>`}
+function toggleSub(key,idx){const i=ITEMS.find(x=>x.key===key);i.subtasks[idx].done=!i.subtasks[idx].done;
+  i.activity.unshift(`${USERS[CURRENT].name} ${i.subtasks[idx].done?"completed":"reopened"} sub-task "${i.subtasks[idx].t}" · just now`);openItem(key);}
+function addSub(key){const t=prompt("Sub-task description");if(t&&t.trim()){ITEMS.find(x=>x.key===key).subtasks.push({t:t.trim(),done:false});openItem(key);}}
+
+/* ================= RENDER HELPERS ================= */
+function rowHTML(i){return `<tr data-key="${i.key}"><td><span class="key">${i.key}</span></td>
+  <td><strong>${i.title}</strong> ${typeTag(i.type)}</td><td>${projName(i.project)}</td>
+  <td>${chip(i.status)}</td><td>${priTag(i.pri)}</td><td>${slaTag(i)||'—'}</td></tr>`}
+function cardHTML(i){const done=i.subtasks.filter(s=>s.done).length;
+  const r2=[i.points!=null?`<span class="badge">${i.points} pts</span>`:"",
+    i.subtasks.length?`<span>☑ ${done}/${i.subtasks.length}</span>`:"",
+    i.due?`<span>📅 ${i.due}</span>`:""].filter(Boolean).join("");
+  return `<div class="wcard" draggable="${CAPS.work?"true":"false"}" data-key="${i.key}">
+  <div class="row1"><span class="key">${i.key}</span>${typeTag(i.type)}</div>
+  <div class="t">${i.title}</div>
+  <div class="meta"><div class="row1">${priTag(i.pri)}${i.labels[0]?`<span class="label-tag">${i.labels[0]}</span>`:""}</div>
+    <div class="row1">${slaTag(i)}${av(i.assignee)}</div></div>
+  ${r2?`<div class="r2">${r2}</div>`:""}</div>`}
+function projectCard(p,showCust){const items=itemsOf(p.key), team=TEAMS[p.team];
+  const accent=p.contract.serviceType.includes("Managed")?"var(--amber)":"var(--green)";
+  return `<div class="card pcard" style="border-top:3px solid ${accent}" data-nav="${ROLE==='customer'?'c-project':'t-project'}:${p.key}">
+    <div class="top"><span class="key">${p.key}</span><span class="label-tag">${p.type}</span></div>
+    <h3>${p.name}</h3>${showCust?`<div class="sub">${CUSTOMERS[p.customer].name}</div>`:`<div class="sub">Delivered by ${team.name}</div>`}
+    <div class="foot"><span>${openCnt(items)} open</span><span>${items.filter(i=>i.status==='done').length} done</span>
+      ${p.contract?`<span style="color:${hoursColor(p)};font-weight:700;margin-left:auto">${hoursLeft(p)}h left</span>`:""}
+      <div class="avatars" ${p.contract?"":'style="margin-left:auto"'}>${team.members.map(u=>av(u,'mini')).join("")}</div></div></div>`}
+function head(title,sub,actions=""){return `<div class="page-head"><div style="flex:1"><h1>${title}</h1><p>${sub||""}</p></div>${actions}</div>`}
+function crumb(view,label,here){return `<div class="breadcrumb"><a href="#" onclick="go('${view}');return false">${label}</a> › ${here}</div>`}
+
+/* ================= ROUTER ================= */
+function go(view){
+  $("#main").innerHTML=VIEWS[view]();
+  const active=NAV_PARENT[view]||view;
+  $$(".nav a").forEach(a=>a.classList.toggle("active",a.dataset.view===active));
+  $$("#main tbody tr[data-key]").forEach(tr=>tr.onclick=()=>openItem(tr.dataset.key));
+  $$("#main [data-nav]").forEach(el=>el.onclick=()=>{const [v,id]=el.dataset.nav.split(":");
+    if(v.endsWith("project")){CURRENT_PROJECT=id;PTAB="board";} if(v.endsWith("customer"))CURRENT_CUSTOMER=id; go(v);});
+  if(view==="t-project"){PTAB="board";BOARD_FILTER="";renderPTab();
+    $$("#ptabs button").forEach(b=>b.onclick=()=>{PTAB=b.dataset.t;$$("#ptabs button").forEach(x=>x.classList.toggle("active",x===b));renderPTab();});}
+  if(view==="t-reports"){RTAB="portfolio";renderRTab();
+    $$("#rtabs button").forEach(b=>b.onclick=()=>{RTAB=b.dataset.r;$$("#rtabs button").forEach(x=>x.classList.toggle("active",x===b));renderRTab();});}
+}
+$$(".nav a").forEach(a=>a.onclick=e=>{e.preventDefault();go(a.dataset.view)});
+
+/* ================= ACTIONS ================= */
+function openNewTicket(){
+  const projs=myProjects();
+  $("#modal-content").innerHTML=`
+    <div class="modal-head"><div style="flex:1"><h2>Create ticket</h2><p>We'll start the SLA clock as soon as you submit.</p></div>
+      <button class="close" onclick="closeModal()">✕</button></div>
+    <div class="modal-body">
+      <label class="fld"><span>Project <span class="req">*</span></span>
+        <select id="nt-project">${projs.map(p=>`<option value="${p.key}">${p.name} · ${p.key}</option>`).join("")}</select></label>
+      <label class="fld"><span>Summary <span class="req">*</span></span>
+        <input id="nt-title" placeholder="Short summary of the issue"></label>
+      <div class="form-row">
+        <label class="fld"><span>Type</span><select id="nt-type"><option value="ticket">Incident</option><option>Service request</option><option>Question</option></select></label>
+        <div><span style="display:block;font-weight:600;font-size:12.5px;margin-bottom:6px">Priority</span>
+          <div class="segpri" id="nt-pri-seg">${["low","med","high","urgent"].map(v=>`<button type="button" data-v="${v}" class="${v==="med"?"active":""}"><span class="pdot" style="background:var(--${v})"></span>${v[0].toUpperCase()+v.slice(1)}</button>`).join("")}</div>
+          <input type="hidden" id="nt-pri" value="med"></div>
+      </div>
+      <label class="fld"><span>Description</span><textarea id="nt-desc" rows="4" placeholder="What happened? What did you expect? Steps to reproduce…"></textarea></label>
+      <div class="field" style="margin-bottom:0"><div class="k" style="font-size:12.5px;font-weight:600;color:var(--text);text-transform:none;letter-spacing:0;margin-bottom:6px">Attachments</div>
+        <label class="dropzone"><input type="file" multiple hidden>
+          <svg viewBox="0 0 24 24" width="22" height="22" stroke="currentColor" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4M7 9l5-5 5 5"/><path d="M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+          <div>Drag &amp; drop files, or <b>browse</b></div><small>PNG, JPG, PDF — up to 10MB each</small></label></div>
+    </div>
+    <div class="modal-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+      <button class="btn primary" onclick="submitTicket()">Create ticket</button></div>`;
+  $$("#nt-pri-seg button").forEach(b=>b.onclick=()=>{$("#nt-pri").value=b.dataset.v;
+    $$("#nt-pri-seg button").forEach(x=>x.classList.toggle("active",x===b));});
+  $("#modal").classList.add("open");$("#modal-overlay").classList.add("open");
+  setTimeout(()=>$("#nt-title")?.focus(),60);
+}
+function closeModal(){$("#modal").classList.remove("open");$("#modal-overlay").classList.remove("open");}
+function submitTicket(){
+  const title=$("#nt-title").value.trim(); if(!title){toast("Please enter a summary");$("#nt-title").focus();return;}
+  const pk=$("#nt-project").value, n=Math.floor(60+itemsOf(pk).length);
+  ITEMS.unshift({key:`${pk}-${n}`,project:pk,type:"ticket",title,status:"todo",pri:$("#nt-pri").value,
+    requester:CURRENT,assignee:null,labels:[],sla:"8h 00m",slaState:"ok",desc:$("#nt-desc").value,
+    comments:[],activity:["You created this ticket · just now"],points:null,due:null,watchers:[],subtasks:[],logged:0});
+  refreshCounts();closeModal();toast("Ticket submitted — SLA timer started");go("c-tickets");
+}
+function assignMe(key){const i=ITEMS.find(x=>x.key===key);i.assignee=CURRENT;if(i.status==="todo")i.status="prog";
+  i.activity.unshift(`${USERS[CURRENT].name} assigned to self · just now`);refreshCounts();toast("Assigned to you");
+  go($$(".nav a.active")[0]?.dataset.view||"t-triage");}
+function refreshCounts(){
+  if(CURRENT&&USERS[CURRENT].kind==="customer"){$("#c-open-count").textContent=openCnt(myItems());}
+  $("#mywork-count").textContent=ITEMS.filter(i=>i.assignee===CURRENT&&STATUS[i.status].cat!=="done").length;
+  $("#triage-count").textContent=ITEMS.filter(i=>!i.assignee&&STATUS[i.status].cat!=="done").length;
+  $("#proj-count").textContent=PROJECTS.length;
+  $("#cust-count").textContent=Object.keys(CUSTOMERS).length;
+}
+
+/* ================= DRAWER ================= */
+function openItem(key){
+  const i=ITEMS.find(x=>x.key===key); if(!i)return; DTAB="comments";
+  const p=PROJECTS.find(x=>x.key===i.project);
+  $("#drawer-content").innerHTML=`
+    <div class="drawer-head">${typeTag(i.type)}<span class="key">${i.key}</span>
+      <span class="badge">${p?CUSTOMERS[p.customer].name:""}</span><button class="close" onclick="closeDrawer()">✕</button></div>
+    <div class="drawer-body">
+      <h2 style="margin:0 0 4px">${i.title}</h2>
+      <div style="color:var(--muted);margin-bottom:16px">${i.desc||""}</div>
+      <div class="drawer-grid">
+        <div>${subtasksHTML(i)}<div class="tabs">
+            <button data-tab="comments" class="active">Conversation (${convoCount(i)})</button>
+            <button data-tab="activity">Activity</button></div>
+          <div id="tab-body"></div></div>
+        <div>
+          <div class="field"><div class="k">Project</div><a href="#" style="font-weight:600;color:var(--primary-ink)"
+             onclick="closeDrawer();CURRENT_PROJECT='${i.project}';go('${ROLE==='customer'?'c-project':'t-project'}');return false">${projName(i.project)}</a></div>
+          <div class="field"><div class="k">Status</div>${CAPS.work
+            ?`<select id="d-status" onchange="transition('${i.key}',this.value)">${COLS.map(c=>`<option value="${c}" ${c===i.status?"selected":""}>${STATUS[c].label}</option>`).join("")}</select>`
+            :chip(i.status)}</div>
+          <div class="field"><div class="k">Assignee</div>${i.assignee?`<div class="row1" style="display:flex;gap:8px;align-items:center">${av(i.assignee)} ${USERS[i.assignee].name}</div>`:'<span style="color:var(--faint)">Unassigned</span>'}
+            ${CAPS.work&&!i.assignee?`<button class="btn sm" style="margin-top:8px" onclick="assignMe('${i.key}');closeDrawer()">Assign me</button>`:""}</div>
+          <div class="field"><div class="k">Priority</div>${priTag(i.pri)}</div>
+          <div class="field"><div class="k">Story points</div>${i.points!=null?`<span class="badge">${i.points}</span>`:"—"}</div>
+          <div class="field"><div class="k">Due date</div>${i.due?`📅 ${i.due}`:"—"}</div>
+          <div class="field"><div class="k">Reporter</div><div class="row1" style="display:flex;gap:8px;align-items:center">${av(i.requester)} ${USERS[i.requester]?.name||"Customer"}</div></div>
+          <div class="field"><div class="k">Watchers</div><div class="avatars">${i.watchers.map(u=>av(u,"mini")).join("")||"—"}</div></div>
+          <div class="field"><div class="k">SLA</div>${i.sla==="—"?"—":slaTag(i)}</div>
+          ${CAPS.work?`<div class="field"><div class="k">Time logged</div>
+            <div style="display:flex;align-items:center;gap:8px"><strong>${i.logged||0}h</strong>
+              <button class="btn sm" onclick="logTime('${i.key}',0.5)">+30m</button>
+              <button class="btn sm" onclick="logTime('${i.key}',1)">+1h</button></div>
+            <div style="font-size:11px;color:var(--muted);margin-top:4px">Deducts from the ${projName(i.project)} hour bank</div></div>`:""}
+          <div class="field"><div class="k">Labels</div>${i.labels.map(l=>`<span class="label-tag">${l}</span>`).join(" ")||"—"}</div>
+        </div></div></div>`;
+  renderTab(i);
+  $$("#drawer-content .tabs button").forEach(b=>b.onclick=()=>{DTAB=b.dataset.tab;
+    $$("#drawer-content .tabs button").forEach(x=>x.classList.toggle("active",x===b));renderTab(i)});
+  $("#drawer").classList.add("open");$("#overlay").classList.add("open");
+}
+function renderTab(i){
+  const el=$("#tab-body");
+  if(DTAB==="activity"){el.innerHTML=`<ul class="activity">${i.activity.map(a=>`<li>${a}</li>`).join("")}</ul>`;return;}
+  // Two-way conversation: customer ⇄ team. Internal notes hidden from customers.
+  const visible=i.comments.filter(c=>ROLE==="customer"?!c.internal:true);
+  const chat=visible.map(c=>{
+    if(c.internal) return `<div class="msg internal"><div class="mh">${av(c.u,"mini")} ${USERS[c.u]?.name||"User"}
+      <span class="internal-flag">🔒 Internal note</span><span class="when">${c.when}</span></div><div>${c.t}</div></div>`;
+    const mine=c.u===CURRENT;
+    return `<div class="msg ${mine?"me":"them"}"><div class="mh">${USERS[c.u]?.name||"User"}
+      ${USERS[c.u]?.kind==="team"?'<span class="label-tag">Team</span>':'<span class="label-tag">Customer</span>'}
+      <span class="when">${c.when}</span></div><div>${c.t}</div></div>`;}).join("")
+    ||'<div class="empty">No messages yet — start the conversation.</div>';
+  const canComment=ROLE==="customer"||CAPS.work;
+  const composer=canComment?`<div class="composer"><textarea id="cmt" placeholder="${ROLE==="customer"?"Message the support team…":"Reply to the customer…"}"></textarea>
+    <div class="actions">${CAPS.work?`<label class="toggle"><input type="checkbox" id="cmt-internal" style="width:auto"> 🔒 Internal note (hidden from customer)</label>`:'<span class="toggle"></span>'}
+      <button class="btn primary sm" onclick="addComment('${i.key}')">Send</button></div></div>`
+    :`<div class="empty" style="padding:14px">Read-only — your role can view but not reply.</div>`;
+  el.innerHTML=`<div class="chat">${chat}</div>`+composer;
+}
+function addComment(key){const i=ITEMS.find(x=>x.key===key);const txt=$("#cmt").value.trim();if(!txt){toast("Write something first");return;}
+  const internal=$("#cmt-internal")?.checked||false;
+  i.comments.push({u:CURRENT,t:txt,when:"just now",internal});
+  i.activity.unshift(`${USERS[CURRENT].name} ${internal?"added an internal note":"commented"} · just now`);
+  toast(internal?"🔒 Internal note added":"Reply posted — customer notified");openItem(key);}
+function logTime(key,hrs){const i=ITEMS.find(x=>x.key===key),p=PROJECTS.find(x=>x.key===i.project);
+  i.logged=(i.logged||0)+hrs; p.contract.hoursUsed=Math.round((p.contract.hoursUsed+hrs)*10)/10;
+  p.hoursLog.unshift({item:key,who:CURRENT,hours:hrs,date:"just now"});
+  i.activity.unshift(`${USERS[CURRENT].name} logged ${hrs}h · just now`);
+  toast(`Logged ${hrs}h — ${hoursLeft(p)}h left in bank`); openItem(key);}
+function transition(key,to){const i=ITEMS.find(x=>x.key===key);const from=STATUS[i.status].label;i.status=to;
+  i.activity.unshift(`${USERS[CURRENT].name} moved ${from} → ${STATUS[to].label} · just now`);refreshCounts();toast(`Moved to ${STATUS[to].label}`);}
+function closeDrawer(){$("#drawer").classList.remove("open");$("#overlay").classList.remove("open");
+  const v=$$(".nav a.active")[0]?.dataset.view; if(v)go(v==="t-projects"&&CURRENT_PROJECT?"t-project":v);}
+$("#overlay").onclick=closeDrawer;
+$("#modal-overlay").onclick=closeModal;
+document.addEventListener("keydown",e=>{if(e.key==="Escape"){closeModal();closeDrawer();}});
+
+/* ================= BOARD DRAG & DROP ================= */
+function boardHTML(items){return `<div class="board">${COLS.map(c=>`<div class="col" data-col="${c}">
+  <div class="col-head">${chip(c)}<span class="n">${items.filter(i=>i.status===c).length}</span></div>
+  ${items.filter(i=>i.status===c).map(cardHTML).join("")}</div>`).join("")}</div>`}
+function renderBoardWrap(){
+  const p=PROJECTS.find(x=>x.key===CURRENT_PROJECT); let items=itemsOf(p.key);
+  if(BOARD_FILTER){const q=BOARD_FILTER.toLowerCase();
+    items=items.filter(i=>i.title.toLowerCase().includes(q)||i.key.toLowerCase().includes(q)||i.labels.join(" ").toLowerCase().includes(q));}
+  const wrap=$("#boardwrap"); if(!wrap)return;
+  if(SWIMLANE){
+    const groups={}; items.forEach(i=>{const a=i.assignee||"__none";(groups[a]=groups[a]||[]).push(i);});
+    const keys=Object.keys(groups).sort((a,b)=>a==="__none"?1:b==="__none"?-1:0);
+    wrap.innerHTML=keys.length?keys.map(a=>`<div class="swim-head">${a==="__none"?"Unassigned":av(a,"mini")+" "+USERS[a].name} <span class="badge">${groups[a].length}</span></div>${boardHTML(groups[a])}`).join("")
+      :'<div class="empty">No items match.</div>';
+  } else wrap.innerHTML=boardHTML(items);
+  wireBoard();
+}
+function wireBoard(){
+  const wrap=$("#boardwrap"); if(!wrap)return; let dragKey=null;
+  $$(".wcard",wrap).forEach(card=>{
+    card.onclick=()=>openItem(card.dataset.key);
+    if(!CAPS.work)return;                              // read-only roles can open but not drag
+    card.ondragstart=e=>{dragKey=card.dataset.key;card.classList.add("dragging");e.dataTransfer.effectAllowed="move";};
+    card.ondragend=()=>card.classList.remove("dragging");});
+  if(!CAPS.work)return;
+  $$(".col",wrap).forEach(col=>{
+    col.ondragover=e=>{e.preventDefault();col.classList.add("drop");};
+    col.ondragleave=()=>col.classList.remove("drop");
+    col.ondrop=e=>{e.preventDefault();col.classList.remove("drop");
+      const i=ITEMS.find(x=>x.key===dragKey);if(!i)return;
+      if(i.status!==col.dataset.col){const from=STATUS[i.status].label;i.status=col.dataset.col;
+        i.activity.unshift(`${USERS[CURRENT].name} moved ${from} → ${STATUS[i.status].label} · just now`);
+        toast(`${dragKey} → ${STATUS[i.status].label}`);refreshCounts();}
+      renderBoardWrap();};});
+}
+
+/* ================= BOOT ================= */
+updateLoginHint();
+</script>
+</body>
+</html>
