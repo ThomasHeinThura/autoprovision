@@ -1,0 +1,33 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: echo-test
+  namespace: argocd        # namespace where Argo CD runs
+  # Keep the app until you explicitly delete it; add the finalizer to cascade-delete
+  # the echo-test resources when the Application is removed.
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/ThomasHeinThura/autoprovision.git
+    targetRevision: main
+    # echo.yaml sits at the repo root. Restrict the directory source to just that file
+    # so no other root-level manifests get pulled in.
+    path: .
+    directory:
+      recurse: false
+      include: echo.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    # echo.yaml declares namespace echo-test on every object; this is just the default
+    # for any resource that omits one.
+    namespace: echo-test
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      # The manifest creates the Namespace itself, so CreateNamespace is unnecessary,
+      # but harmless to leave off. Order the Namespace before workloads.
+      - ApplyOutOfSyncOnly=true

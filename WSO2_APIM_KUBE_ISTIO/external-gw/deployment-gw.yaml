@@ -1,7 +1,7 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: apim-gw-wso2am-universal-gw-deployment
+  name: apim-gw-wso2am-external-gw-deployment
   namespace: wso2-external-gw
 spec:
   progressDeadlineSeconds: 600
