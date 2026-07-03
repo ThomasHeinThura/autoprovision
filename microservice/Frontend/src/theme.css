@@ -124,6 +124,30 @@ a{cursor:pointer}
 .composer-actions{display:flex;align-items:center;gap:10px;margin-top:6px}
 .toggle{display:flex;align-items:center;gap:7px;font-size:12.5px;color:var(--muted);font-weight:600;margin-right:auto}
 
+/* SLA badge */
+.sla{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:700;padding:2px 7px;border-radius:6px;white-space:nowrap}
+.sla .sdot{width:6px;height:6px;border-radius:50%}
+.sla-ok{background:var(--done-bg);color:var(--done)}.sla-ok .sdot{background:var(--done)}
+.sla-met{background:var(--done-bg);color:var(--done)}.sla-met .sdot{background:var(--done)}
+.sla-risk{background:var(--wait-bg);color:var(--wait)}.sla-risk .sdot{background:var(--wait)}
+.sla-breached{background:var(--breach-bg);color:var(--breach)}.sla-breached .sdot{background:var(--breach)}
+.sla-missed{background:var(--breach-bg);color:var(--breach)}.sla-missed .sdot{background:var(--breach)}
+
+/* managed-service contract strip + hour-bank burn bar */
+.contract{padding:16px;margin-bottom:16px}
+.contract .ctop{display:flex;align-items:center;gap:10px;margin-bottom:14px;font-size:14px}
+.contract .cgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:16px}
+.kv .k{font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--faint);margin-bottom:4px}
+.kv .v{font-weight:600}
+.burn{height:8px;border-radius:5px;background:var(--surface-3);overflow:hidden}
+.burn>span{display:block;height:100%;border-radius:5px;transition:width .3s}
+.badge{font-size:11px;font-weight:700;padding:2px 8px;border-radius:6px;background:var(--surface-2);border:1px solid var(--border);color:var(--muted)}
+.badge.good{background:var(--done-bg);color:var(--done);border-color:transparent}
+.badge.warn{background:var(--wait-bg);color:var(--wait);border-color:transparent}
+.badge.bad{background:var(--breach-bg);color:var(--breach);border-color:transparent}
+.inline-form{display:flex;gap:6px;align-items:center}
+.inline-form input{height:30px}
+
 /* forms/buttons */
 .fld{display:block;margin-bottom:13px}.fld>span{display:block;font-weight:600;font-size:12.5px;margin-bottom:6px}
 input,select,textarea{font-family:inherit;font-size:13px;width:100%;padding:8px 10px;border:1px solid var(--border-strong);border-radius:var(--radius-sm);background:var(--surface);color:var(--text)}

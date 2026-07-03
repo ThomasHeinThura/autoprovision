@@ -45,6 +45,7 @@ public class WorkItem
     public string Requester { get; set; } = "";
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
+    public DateTime? ResolvedAt { get; set; }    // set when moved to done; used for SLA compliance
     public List<Comment> Comments { get; set; } = [];
     public List<ActivityEntry> Activity { get; set; } = [];
 }
@@ -66,6 +67,44 @@ public class ActivityEntry
     public string Actor { get; set; } = "";
     public string Verb { get; set; } = "";
     public string Detail { get; set; } = "";
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+}
+
+// ---- Managed service / AMC (§7) ----
+public static class KickoffStatus { public const string Pending = "Pending", Scheduled = "Scheduled", Completed = "Completed"; }
+
+// One contract per managed-service project: period + hour bank + coverage.
+public class Contract
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid ProjectId { get; set; }
+    public DateTime StartDate { get; set; }
+    public DateTime EndDate { get; set; }
+    public string KickoffStatusValue { get; set; } = KickoffStatus.Pending;
+    public DateTime? KickoffDate { get; set; }
+    public double ContractedHours { get; set; }               // hour bank size; used hours derived from TimeLogs
+    public string Coverage { get; set; } = "9x5 business hours";
+}
+
+// Response + resolution targets per priority, per project.
+public class SlaPolicy
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid ProjectId { get; set; }
+    public string Priority { get; set; } = "med";
+    public int ResponseMinutes { get; set; }
+    public int ResolutionMinutes { get; set; }
+}
+
+// A logged unit of work that deducts from the project hour bank.
+public class TimeLog
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid WorkItemId { get; set; }
+    public Guid ProjectId { get; set; }
+    public string Author { get; set; } = "";
+    public int Minutes { get; set; }
+    public string Note { get; set; } = "";
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 }
 

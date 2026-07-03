@@ -78,5 +78,8 @@ components:
         open: { type: integer }
         resolved: { type: integer }
         unassigned: { type: integer }
-        urgentOpen: { type: integer, description: Stand-in for SLA-risk until app1 exposes SLA timers }
+        urgentOpen: { type: integer }
+        breaching: { type: integer, description: Open items past their resolution SLA (from app1 slaState) }
+        atRisk: { type: integer, description: Open items within the last 25% of their SLA window }
+        compliancePct: { type: integer, description: (open - breaching) / open }
         lastScan: { type: string, format: date-time }

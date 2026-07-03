@@ -1,5 +1,5 @@
 # TaskDesk backend API — OpenAPI spec (generated from app1 /openapi/v1.json).
-# Regenerate: curl -s http://localhost:8080/openapi/v1.json | ... (see api/README).
+# Regenerate: see microservice/api/README.md.
 openapi: 3.1.1
 info:
   title: TaskDesk.Api | v1
@@ -138,7 +138,83 @@ paths:
       responses:
         '200':
           description: OK
+  /api/v1/workitems/{key}/assign:
+    post:
+      tags:
+      - TaskDesk
+      parameters:
+      - name: key
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AssignWorkItem'
+        required: true
+      responses:
+        '200':
+          description: OK
+  /api/v1/workitems/{key}/time:
+    post:
+      tags:
+      - TaskDesk
+      parameters:
+      - name: key
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LogTime'
+        required: true
+      responses:
+        '200':
+          description: OK
   /api/v1/reports/overview:
+    get:
+      tags:
+      - TaskDesk
+      parameters:
+      - name: customer
+        in: query
+        schema:
+          type: string
+      responses:
+        '200':
+          description: OK
+  /api/v1/projects/{key}/contract:
+    get:
+      tags:
+      - TaskDesk
+      parameters:
+      - name: key
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: OK
+  /api/v1/projects/{key}/sla-policies:
+    get:
+      tags:
+      - TaskDesk
+      parameters:
+      - name: key
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: OK
+  /api/v1/sla/breaches:
     get:
       tags:
       - TaskDesk
@@ -181,6 +257,16 @@ paths:
       responses:
         '200':
           description: OK
+  /api/docs.yaml:
+    get:
+      tags:
+      - TaskDesk
+      summary: This OpenAPI document (YAML)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/yaml: {}
 components:
   schemas:
     AddComment:
@@ -222,6 +308,15 @@ components:
           - integer
           - string
           format: int32
+    AssignWorkItem:
+      required:
+      - assignee
+      type: object
+      properties:
+        assignee:
+          type:
+          - 'null'
+          - string
     CreateProject:
       required:
       - key
@@ -268,6 +363,25 @@ components:
         requester:
           type: string
         assignee:
+          type:
+          - 'null'
+          - string
+    LogTime:
+      required:
+      - author
+      - minutes
+      - note
+      type: object
+      properties:
+        author:
+          type: string
+        minutes:
+          pattern: ^-?(?:0|[1-9]\d*)$
+          type:
+          - integer
+          - string
+          format: int32
+        note:
           type:
           - 'null'
           - string

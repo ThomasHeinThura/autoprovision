@@ -10,6 +10,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"sync"
@@ -22,12 +23,15 @@ import (
 var openapiDoc []byte
 
 type Overview struct {
-	Projects   int    `json:"projects"`
-	Open       int    `json:"open"`
-	Resolved   int    `json:"resolved"`
-	Unassigned int    `json:"unassigned"`
-	UrgentOpen int    `json:"urgentOpen"` // stand-in for "SLA-risk" until app1 exposes SLA timers
-	LastScan   string `json:"lastScan"`
+	Projects      int    `json:"projects"`
+	Open          int    `json:"open"`
+	Resolved      int    `json:"resolved"`
+	Unassigned    int    `json:"unassigned"`
+	UrgentOpen    int    `json:"urgentOpen"`
+	Breaching     int    `json:"breaching"`     // open items past their resolution SLA (from app1 slaState)
+	AtRisk        int    `json:"atRisk"`        // open items within the last 25% of their SLA window
+	CompliancePct int    `json:"compliancePct"` // (open - breaching) / open
+	LastScan      string `json:"lastScan"`
 }
 
 var (
@@ -120,8 +124,8 @@ func scan() {
 			rdb.Publish(ctx, "taskdesk:events", "sla_scan_complete")
 		}
 	}
-	log.Printf("scan #%d: projects=%d open=%d resolved=%d unassigned=%d urgentOpen=%d",
-		n, o.Projects, o.Open, o.Resolved, o.Unassigned, o.UrgentOpen)
+	log.Printf("scan #%d: projects=%d open=%d resolved=%d unassigned=%d breaching=%d atRisk=%d compliance=%d%%",
+		n, o.Projects, o.Open, o.Resolved, o.Unassigned, o.Breaching, o.AtRisk, o.CompliancePct)
 }
 
 func computeOverview() (Overview, error) {
@@ -138,6 +142,7 @@ func computeOverview() (Overview, error) {
 			Status   string  `json:"status"`
 			Priority string  `json:"priority"`
 			Assignee *string `json:"assignee"`
+			SlaState string  `json:"slaState"`
 		}
 		if err := getJSON(apiBase+"/api/v1/projects/"+p.Key+"/workitems", &items); err != nil {
 			return o, err
@@ -154,7 +159,18 @@ func computeOverview() (Overview, error) {
 			if it.Priority == "urgent" {
 				o.UrgentOpen++
 			}
+			switch it.SlaState {
+			case "breached":
+				o.Breaching++
+			case "risk":
+				o.AtRisk++
+			}
 		}
+	}
+	if o.Open > 0 {
+		o.CompliancePct = int(math.Round(100 * float64(o.Open-o.Breaching) / float64(o.Open)))
+	} else {
+		o.CompliancePct = 100
 	}
 	return o, nil
 }

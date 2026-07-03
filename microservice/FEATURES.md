@@ -122,14 +122,14 @@ Capability matrix (**[MVP]**):
 
 ## 7. Managed service / AMC (SI-specific)
 
-- **[MVP]** Service type per project: **Managed Service (AMC)** vs **Project Delivery**.
-- **[MVP]** Contract period (start → end) with days-remaining.
-- **[MVP]** Kick-off status: Pending / Scheduled / Completed (+ date).
-- **[MVP]** **Hour bank**: contracted hours, hours used, **hours left**, burn-down bar (color-coded).
-- **[MVP]** **Hour deduction** via time logging; recent-deductions log.
-- **[MVP]** **SLA policy**: first-response + resolution targets per priority.
-- **[MVP]** **Working hours & coverage** (e.g. 9×5 business hours vs 24×7 on-call).
-- **[MVP]** Contract status: Active / In delivery / Kickoff pending / Expiring.
+- **[MVP]** ✅ Service type per project: **Managed Service (AMC)** vs **Project Delivery**.
+- **[MVP]** ✅ Contract period (start → end) with days-remaining.
+- **[MVP]** ✅ Kick-off status: Pending / Scheduled / Completed (+ date).
+- **[MVP]** ✅ **Hour bank**: contracted hours, hours used, **hours left**, burn-down bar (color-coded).
+- **[MVP]** ✅ **Hour deduction** via time logging; recent-deductions log.
+- **[MVP]** ✅ **SLA policy**: first-response + resolution targets per priority. *(resolution SLA is enforced; response target stored — first-response timer is P2)*
+- **[MVP]** ✅ **Working hours & coverage** (e.g. 9×5 business hours vs 24×7 on-call).
+- **[MVP]** ✅ Contract status: Active / In delivery / Kickoff pending / Expiring.
 - **[P2]** SLA timers with pause on "Waiting on Customer"; automatic **breach flagging**.
 - **[P2]** Expiring-AMC reminders; renewal workflow.
 - **[P2]** Hours-per-month burn chart; low-balance alerts.
@@ -138,9 +138,9 @@ Capability matrix (**[MVP]**):
 
 ## 8. SLA & reporting
 
-- **[MVP]** Live SLA countdown on cards, lists, and detail.
-- **[MVP]** SLA-at-risk / breaching indicators on dashboard.
-- **[MVP]** Dashboard reports: workload, status breakdown, open-by-project, SLA compliance %.
+- **[MVP]** ✅ Live SLA countdown on cards, lists, and detail.
+- **[MVP]** ✅ SLA-at-risk / breaching indicators on dashboard (Go worker scan → Valkey → BFF).
+- **[MVP]** Dashboard reports: workload, status breakdown, open-by-project, ✅ SLA compliance %. *(compliance %, status breakdown, open-by-project done; workload-by-member pending)*
 - **[P2]** SLA breach report + trend.
 - **[P2]** Report exports (CSV / PDF).
 - **[P2]** Scheduled report emails to Directors.
@@ -287,10 +287,10 @@ reports — all behind WSO2 APIM, deployed by ArgoCD.**
 
 Suggested build order (from PLAN.md §18):
 1. **[done]** UI/UX prototype (this repo).
-2. .NET core-API vertical slice: Projects + Work Items + one board + **module registry skeleton**, behind ArgoCD & APIM.
-3. Node realtime/BFF + Go **workers** (SLA scan, notifications) + Valkey.
-4. React SPA against the API + Keycloak login **+ access-code login** + RBAC + module-aware nav.
-5. Managed-service + SI: SLA timers/breaches, hour bank, contracts, reports.
+2. **[done]** .NET core-API vertical slice: Projects + Work Items + one board + **module registry skeleton** (behind ArgoCD; APIM pending).
+3. **[done]** Node realtime/BFF + Go **workers** (SLA scan) + Valkey.
+4. **[partial]** React SPA against the API (built); Keycloak login **+ access-code login** + RBAC + module-aware nav still pending.
+5. **[done]** Managed-service + SI: SLA breaches, hour bank, contracts, SLA-compliance reports. *(SLA timers-with-pause is P2)*
 6. **God mode + module toggles** + platform audit.
 7. **AI assist** module (multi-model): triage / suggested replies / summarize (opt-in).
 8. **Phase 3 — multi-channel** (Viber → email → …) + cross-channel identity.

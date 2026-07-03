@@ -48,6 +48,28 @@ export function Avatar({ name, size = 24 }: { name?: string; size?: number }) {
   return <span className="avatar" style={{ ...style, background: AVPAL[h % AVPAL.length], color: "#fff" }} title={name}>{initials(name)}</span>;
 }
 
+const SLA_LABEL: Record<string, string> = { met: "SLA met", missed: "SLA missed", breached: "SLA breached", risk: "At risk", ok: "On track" };
+function slaText(state: string, dueAt?: string | null) {
+  if ((state === "ok" || state === "risk") && dueAt) {
+    const ms = new Date(dueAt).getTime() - Date.now();
+    if (ms <= 0) return "overdue";
+    const h = ms / 3600000;
+    if (h < 1) return "<1h left";
+    if (h < 24) return `${Math.round(h)}h left`;
+    return `${Math.round(h / 24)}d left`;
+  }
+  return SLA_LABEL[state] ?? state;
+}
+export function Sla({ state, dueAt }: { state?: string; dueAt?: string | null }) {
+  if (!state || state === "none") return null;
+  return <span className={"sla sla-" + state}><span className="sdot" />{slaText(state, dueAt)}</span>;
+}
+
+export function Burn({ pct }: { pct: number }) {
+  const color = pct >= 90 ? "var(--breach)" : pct >= 70 ? "var(--amber)" : "var(--green)";
+  return <div className="burn"><span style={{ width: `${Math.min(100, Math.max(0, pct))}%`, background: color }} /></div>;
+}
+
 export function StatTile({ n, label, color }: { n: any; label: string; color?: string }) {
   return (
     <div className="card stat" style={{ borderTop: `2px solid ${color || "var(--border-strong)"}` }}>

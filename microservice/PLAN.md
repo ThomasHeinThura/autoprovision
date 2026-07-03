@@ -4,9 +4,11 @@
 > management** tool with a built-in **customer support portal**. External clients raise tickets;
 > internal teams triage and resolve them as work items on boards, organized into projects.
 
-Status: **PLANNING** — no application code yet. This document is the source of truth for features,
-service boundaries, data model, auth, networking, and GitOps. Next step after sign-off: design the
-UI/UX as static HTML (workflow-first), then implement service by service.
+Status: **IN BUILD** — MVP vertical slice is live (`docker compose up`): .NET core API, Go workers,
+Node BFF/realtime, React SPA, MSSQL + Valkey, module registry, and **Managed Service / SLA** (contracts,
+hour bank, SLA breach detection, compliance reports). Still pending for MVP: **auth (Keycloak +
+access-code) & RBAC**, **god mode**, and platform wiring (WSO2 APIM, EF migrations). This document
+remains the source of truth for features, service boundaries, data model, auth, networking, and GitOps.
 
 ---
 
@@ -472,14 +474,14 @@ queue**, so requests stop landing in personal DMs.
 
 ## 18. Delivery phases
 
-1. **Design (now)** — sign off this plan → build static **HTML UI/UX prototype** (workflow-first)
-   under `Frontend/ui/` for both Portal and Workspace. *No backend yet.*
-2. **Vertical slice** — .NET core API + DB for Work Items + Projects; one board end-to-end; Dockerized;
-   deployed via ArgoCD behind APIM. Proves the pipeline. Includes the **module registry** skeleton.
-3. **Realtime + workers** — Node realtime/BFF + Go workers (SLA scan, notifications) + Valkey.
-4. **React SPA** — implement the signed-off UI against the API; Keycloak login **+ access-code login**;
-   module-aware nav.
-5. **Support + SI features** — SLA timers/breaches, contracts/AMC + hour bank, reports, portal polish.
+1. **[done] Design** — static **HTML UI/UX prototype** under `Frontend/ui/` for Portal + Workspace.
+2. **[done] Vertical slice** — .NET core API + DB for Work Items + Projects; one board end-to-end;
+   Dockerized; deployed via ArgoCD. Includes the **module registry** skeleton. *(APIM front-door pending.)*
+3. **[done] Realtime + workers** — Node realtime/BFF + Go workers (SLA scan) + Valkey.
+4. **[partial] React SPA** — signed-off UI implemented against the API. Keycloak login **+ access-code
+   login** + module-aware nav still pending.
+5. **[done] Support + SI features** — SLA breach detection + compliance, contracts/AMC + hour bank,
+   time logging, reports. *(SLA timers-with-pause remains P2.)*
 6. **God mode + modules** — `/godmode` console, per-tenant module toggles, platform audit.
 7. **AI assist module** — multi-model registry + triage/suggested-reply/summarize (opt-in).
 8. **Phase 3 — Multi-channel** — Node channel gateway, Viber first → email → others; cross-channel identity.

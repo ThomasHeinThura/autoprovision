@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { get, post } from "./api";
 import { useRealtime } from "./useRealtime";
-import { Avatar, Chip, COLS, Pri, StatTile, STATUS, TypeTag } from "./ui";
+import { Avatar, Burn, Chip, COLS, Pri, Sla, StatTile, STATUS, TypeTag } from "./ui";
 
 type Role = "customer" | "team";
 
@@ -96,14 +96,15 @@ function Dashboard({ rev, openBoard }: { rev: number; openBoard: (k: string) => 
   if (err) return <ErrorCard msg={err} />;
   if (!d) return <div className="empty">Loading…</div>;
   const t = d.totals;
+  const r = d.report;
   return (
     <>
       <PageHead title="Dashboard" sub="Live across all customers and projects." />
       <div className="stats">
         <StatTile n={t.projects} label="Projects" color="var(--blue)" />
         <StatTile n={t.open} label="Open work items" color="var(--amber)" />
-        <StatTile n={t.resolved} label="Resolved" color="var(--green)" />
-        <StatTile n={d.report ? d.report.unassigned : "—"} label="Unassigned (workers)" color="var(--breach)" />
+        <StatTile n={r ? `${r.compliancePct}%` : "—"} label="SLA compliance" color="var(--green)" />
+        <StatTile n={r ? r.breaching : "—"} label="SLA breaching" color="var(--breach)" />
       </div>
       <h3 className="section">Projects</h3>
       <div className="cards-grid">
@@ -151,6 +152,7 @@ function Board({ projectKey, role, rev, openItem, back }: any) {
     <>
       <div className="breadcrumb"><a onClick={back}>Projects</a> › {projectKey}</div>
       <PageHead title={projectKey} sub={`${b.count} work items`} />
+      <ContractPanel projectKey={projectKey} rev={rev} />
       <div className="board">
         {COLS.map((c) => (
           <div className="col" key={c}>
@@ -159,6 +161,7 @@ function Board({ projectKey, role, rev, openItem, back }: any) {
               <div className="wcard" key={w.key} onClick={() => openItem(w.key)}>
                 <div className="row1"><span className="key">{w.key}</span><TypeTag t={w.type} /></div>
                 <div className="t">{w.title}</div>
+                {w.slaState && w.slaState !== "none" && <div style={{ marginBottom: 8 }}><Sla state={w.slaState} dueAt={w.slaDueAt} /></div>}
                 <div className="meta"><Pri p={w.priority} /><Avatar name={w.assignee} size={24} /></div>
               </div>
             ))}
@@ -175,10 +178,25 @@ function Drawer({ itemKey, role, onClose, bump }: any) {
   const [tab, setTab] = useState("comments");
   const [text, setText] = useState("");
   const [internal, setInternal] = useState(false);
-  const load = () => get(`/bff/workitems/${itemKey}`).then(setW);
+  const [assignVal, setAssignVal] = useState("");
+  const [mins, setMins] = useState("");
+  const [note, setNote] = useState("");
+  const [msVal, setMsVal] = useState<string | null>(null);
+  const load = () => get(`/bff/workitems/${itemKey}`).then((x) => { setW(x); setAssignVal(x.assignee ?? ""); });
   useEffect(() => { load(); }, [itemKey]);
 
   const transition = async (status: string) => { await post(`/bff/workitems/${itemKey}/transition`, { status }); await load(); bump(); };
+  const assign = async () => { await post(`/bff/workitems/${itemKey}/assign`, { assignee: assignVal.trim() || null }); await load(); bump(); };
+  const logTime = async () => {
+    const m = parseInt(mins, 10);
+    if (!m || m <= 0) return;
+    try {
+      await post(`/bff/workitems/${itemKey}/time`, { author: "Sam Rivera", minutes: m, note });
+      setMins(""); setNote(""); setMsVal(null); bump();
+    } catch (e: any) {
+      setMsVal(e.message?.includes("403") ? "Managed-service module is off for this customer." : e.message);
+    }
+  };
   const comment = async () => {
     if (!text.trim()) return;
     await post(`/bff/workitems/${itemKey}/comments`, { author: role === "team" ? "Sam Rivera" : "Jane Doe", body: text, isInternal: role === "team" && internal });
@@ -234,9 +252,27 @@ function Drawer({ itemKey, role, onClose, bump }: any) {
                     </select>) : <Chip s={w.status} />}
                   </Field>
                   <Field k="Priority"><Pri p={w.priority} /></Field>
-                  <Field k="Assignee">{w.assignee ? <span className="row1"><Avatar name={w.assignee} size={24} /> {w.assignee}</span> : <span className="muted">Unassigned</span>}</Field>
+                  {w.slaState && w.slaState !== "none" && <Field k="SLA"><Sla state={w.slaState} dueAt={w.slaDueAt} /></Field>}
+                  <Field k="Assignee">
+                    {role === "team" ? (
+                      <div className="inline-form">
+                        <input placeholder="Unassigned" value={assignVal} onChange={(e) => setAssignVal(e.target.value)} onKeyDown={(e) => e.key === "Enter" && assign()} />
+                        <button className="btn sm" onClick={assign}>Save</button>
+                      </div>
+                    ) : w.assignee ? <span className="row1"><Avatar name={w.assignee} size={24} /> {w.assignee}</span> : <span className="muted">Unassigned</span>}
+                  </Field>
                   <Field k="Reporter"><span className="row1"><Avatar name={w.requester} size={24} /> {w.requester}</span></Field>
                   <Field k="Project">{w.project}</Field>
+                  {role === "team" && (
+                    <Field k="Log time (hour bank)">
+                      <div className="inline-form">
+                        <input style={{ width: 70 }} type="number" min={1} placeholder="min" value={mins} onChange={(e) => setMins(e.target.value)} />
+                        <input placeholder="note" value={note} onChange={(e) => setNote(e.target.value)} />
+                        <button className="btn sm" onClick={logTime}>Log</button>
+                      </div>
+                      {msVal && <div className="muted" style={{ marginTop: 6, color: "var(--breach)" }}>{msVal}</div>}
+                    </Field>
+                  )}
                 </div>
               </div>
             </div>
@@ -244,6 +280,50 @@ function Drawer({ itemKey, role, onClose, bump }: any) {
         )}
       </aside>
     </>
+  );
+}
+
+/* ---------------- Managed-service contract strip ---------------- */
+function fmtDate(s: string) { return new Date(s).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" }); }
+
+function ContractPanel({ projectKey, rev }: { projectKey: string; rev: number }) {
+  const [c, setC] = useState<any>(null);
+  // 403 (managed_service off) or a Delivery project with no contract → render nothing.
+  useEffect(() => { get(`/bff/projects/${projectKey}/contract`).then(setC).catch(() => setC(null)); }, [projectKey, rev]);
+  if (!c || c.hasContract === false) return null;
+  const hb = c.hourBank;
+  const statusCls = c.status === "Active" ? "good" : c.status === "Expired" ? "bad" : "warn";
+  return (
+    <div className="card contract">
+      <div className="ctop">
+        <strong>Managed service</strong>
+        <span className={"badge " + statusCls}>{c.status}</span>
+        <span className="muted" style={{ marginLeft: "auto" }}>{c.coverage}</span>
+      </div>
+      <div className="cgrid">
+        <div style={{ gridColumn: "span 2", minWidth: 220 }}>
+          <div className="kv">
+            <div className="k">Hour bank</div>
+            <div className="v">{hb.remaining}h left <span className="muted">of {hb.contracted}h · {hb.used}h used</span></div>
+          </div>
+          <div style={{ marginTop: 8 }}><Burn pct={hb.usedPct} /></div>
+        </div>
+        <div className="kv"><div className="k">Contract ends</div><div className="v">{fmtDate(c.period.end)} <span className="muted">· {c.period.daysRemaining}d</span></div></div>
+        <div className="kv"><div className="k">Kickoff</div><div className="v">{c.kickoff.status}</div></div>
+      </div>
+      {c.recentDeductions?.length > 0 && (
+        <div style={{ marginTop: 16 }}>
+          <div className="kv"><div className="k">Recent time</div></div>
+          {c.recentDeductions.map((d: any, i: number) => (
+            <div key={i} className="muted" style={{ fontSize: 12.5, display: "flex", gap: 10, marginTop: 4 }}>
+              <span style={{ fontWeight: 600, color: "var(--text)" }}>{d.hours}h</span>
+              <span>{d.author}</span>
+              <span style={{ opacity: 0.85 }}>{d.note}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 

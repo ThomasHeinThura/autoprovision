@@ -95,6 +95,14 @@ app.get("/bff/modules", async (req, res) => {
   catch (e) { res.status(502).json({ error: e.message }); }
 });
 
+// Managed service: contract + hour bank (§7). app1 returns 403 when the module is off — pass it through.
+app.get("/bff/projects/:key/contract", async (req, res) => {
+  try {
+    const r = await fetch(API_BASE + `/api/v1/projects/${req.params.key}/contract`);
+    res.status(r.status).type("application/json").send(await r.text());
+  } catch (e) { res.status(502).json({ error: e.message }); }
+});
+
 // ---- BFF writes (proxied to app1, then broadcast so other clients update live) ----
 async function proxy(req, res, path) {
   try {
@@ -109,6 +117,8 @@ async function proxy(req, res, path) {
 app.post("/bff/workitems", (req, res) => proxy(req, res, "/api/v1/workitems"));
 app.post("/bff/workitems/:key/transition", (req, res) => proxy(req, res, `/api/v1/workitems/${req.params.key}/transition`));
 app.post("/bff/workitems/:key/comments", (req, res) => proxy(req, res, `/api/v1/workitems/${req.params.key}/comments`));
+app.post("/bff/workitems/:key/assign", (req, res) => proxy(req, res, `/api/v1/workitems/${req.params.key}/assign`));
+app.post("/bff/workitems/:key/time", (req, res) => proxy(req, res, `/api/v1/workitems/${req.params.key}/time`));
 
 // ---- realtime ----
 const server = http.createServer(app);
