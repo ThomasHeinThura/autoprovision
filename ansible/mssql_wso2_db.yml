@@ -1,0 +1,263 @@
+# WSO2 database + AG-consistent login provisioning for the SQL Server Always On AG.
+#
+# THE PROBLEM THIS SOLVES
+# -----------------------
+# WSO2 (APIM CP, gateways, IS) authenticates to MSSQL as a SQL login (default: wso2carbon).
+# In an Availability Group:
+#   - the DATABASE and its contained database-level USER (which carries a SID) are replicated to
+#     every replica by AG seeding;
+#   - the server-level LOGIN is NOT replicated — it must exist independently on every node.
+# If each node's login is created with `CREATE LOGIN ... WITH PASSWORD` (no SID), SQL assigns a
+# RANDOM SID per node. After a failover the new primary's login SID no longer matches the
+# replicated database user's SID -> the user is ORPHANED -> WSO2 gets "Login failed for user".
+#
+# THE FIX (what this playbook does)
+# ---------------------------------
+#   PHASE 1 (ALL nodes): create the login on every replica with ONE fixed explicit SID
+#            (wso2_db_sid) + the same password, BEFORE any contained user exists. If a login with
+#            the wrong SID already exists (e.g. an earlier no-SID run), it is dropped + recreated
+#            with the correct SID.
+#   PHASE 2 (PRIMARY): load the WSO2 schema *.sql. `CREATE USER ... FOR LOGIN` then inherits the
+#            fixed SID, so the contained user's SID == the login's SID on every node.
+#   PHASE 3 (PRIMARY): FULL recovery + full backup + ALTER AVAILABILITY GROUP ADD DATABASE, so the
+#            WSO2 databases are protected by failover and auto-seed to the secondaries.
+#   PHASE 4 (ALL nodes): verify no orphaned users remain (sys.database_principals with no matching
+#            server login), so a failover is proven safe before WSO2 ever connects.
+#
+# Target inventory group: [mssql_ag] (first host = primary). Also works against a single instance
+# (put the one host in the group); PHASE 3 auto-skips when there is no AG.
+#
+# Required: sa_password (or db_admin_user/db_admin_password), wso2_db_password.
+# Key vars (all optional except the above):
+#   wso2_db_user      (wso2carbon)  — MUST equal the username in the WSO2 deployment.toml.
+#   wso2_db_password               — MUST equal the password in the WSO2 deployment.toml.
+#   wso2_db_sid       (default below) — a 16-byte hex SID, IDENTICAL on every node. The exact
+#                     value is irrelevant; only cross-node consistency matters. Keep it stable
+#                     across rebuilds so a re-seeded secondary keeps mapping. Override per-env if
+#                     you like, but then use the SAME value every time for that AG.
+#   ag_name           (ag1)         — the availability group to add the DBs to (PHASE 3).
+#   load_schemas      (true)        — run the repo's apim/shared/is *.sql on the primary. NOTE:
+#                     apim_mssql.sql/shared_mssql.sql DROP+recreate their DB (initial provisioning);
+#                     a DROP fails if the DB is already an AG member, so on a re-run either set
+#                     load_schemas=false or reset the AG first (mssql_ag_clean.yml). is_mssql.sql is
+#                     re-runnable (IF NOT EXISTS). PHASE 1 (the login/SID fix) is always idempotent.
+#   add_to_ag         (true)        — add the WSO2 DBs to the AG after loading schemas.
+#   wso2_repo_dir     (auto)        — path to WSO2_APIM_KUBE_ISTIO on the CONTROLLER (for the .sql).
+#   backup_dir        (/var/opt/mssql/backup) — where PHASE 3 writes the pre-seed full backup.
+#   component         (all)         — apim | is | all: which schema set to load / DBs to protect.
+
+# ════════════════════════════════════════════════════════════════════════════════
+# PHASE 1 — Create the WSO2 login with a FIXED SID on EVERY replica (the actual fix)
+# ════════════════════════════════════════════════════════════════════════════════
+- name: WSO2 login with consistent SID on every AG replica
+  hosts: mssql_ag
+  become: true
+  gather_facts: false
+  vars:
+    sa_password_eff: "{{ sa_password | default('') }}"
+    wso2_db_user_eff: "{{ wso2_db_user | default('wso2carbon') }}"
+    # 16-byte (32 hex char) SID, identical on all nodes. "WSO2CARB" in ASCII + marker padding.
+    wso2_db_sid_eff: "{{ wso2_db_sid | default('0x57534F3243415242000000000000ABCD') }}"
+    # Run as the named sysadmin when provided (created by mssql_ag.yml Phase 1), else as sa.
+    sqlcmd: '/opt/mssql-tools18/bin/sqlcmd -S localhost -U {{ (db_admin_user | default('''')) | ternary(db_admin_user | default(''''), ''sa'') }} -P "{{ (db_admin_user | default('''')) | ternary(db_admin_password | default(''''), sa_password | default('''')) }}" -C'
+  tasks:
+    - name: Require a WSO2 DB password
+      fail: { msg: "wso2_db_password is required (it must match the WSO2 deployment.toml)." }
+      when: (wso2_db_password | default('')) | length == 0
+
+    - name: Validate the SID is 16 bytes (0x + 32 hex chars)
+      assert:
+        that: wso2_db_sid_eff | regex_search('^0x[0-9A-Fa-f]{32}$')
+        fail_msg: "wso2_db_sid must be 0x followed by exactly 32 hex characters (16 bytes); got '{{ wso2_db_sid_eff }}'."
+
+    # Idempotent + self-healing: create the login with the fixed SID if absent; if it exists with a
+    # DIFFERENT SID (an earlier no-SID run left a random one), drop and recreate it with the correct
+    # SID so all nodes converge. CHECK_POLICY=OFF so a lab password isn't rejected by OS policy.
+    # `no_log` because the password is on the command line.
+    - name: Create/repair the WSO2 login with the fixed SID
+      shell: >
+        {{ sqlcmd }} -b -Q
+        "DECLARE @want VARBINARY(85) = {{ wso2_db_sid_eff }};
+         DECLARE @cur VARBINARY(85) = (SELECT sid FROM sys.server_principals WHERE name = N'{{ wso2_db_user_eff }}');
+         IF @cur IS NOT NULL AND @cur <> @want
+           EXEC('DROP LOGIN [{{ wso2_db_user_eff }}]');
+         IF NOT EXISTS (SELECT 1 FROM sys.server_principals WHERE name = N'{{ wso2_db_user_eff }}')
+           CREATE LOGIN [{{ wso2_db_user_eff }}] WITH PASSWORD = N'{{ wso2_db_password }}',
+             SID = {{ wso2_db_sid_eff }}, CHECK_POLICY = OFF;
+         ELSE
+           ALTER LOGIN [{{ wso2_db_user_eff }}] WITH PASSWORD = N'{{ wso2_db_password }}';"
+      no_log: true
+      changed_when: true
+
+    - name: Confirm the login SID matches on this node
+      shell: >
+        {{ sqlcmd }} -h -1 -W -Q
+        "SELECT CONVERT(varchar(66), sid, 1) FROM sys.server_principals WHERE name = N'{{ wso2_db_user_eff }}';"
+      register: sid_check
+      changed_when: false
+    - name: Assert the SID is the requested one
+      assert:
+        that: (sid_check.stdout | trim | lower) == (wso2_db_sid_eff | lower)
+        fail_msg: "Login SID on {{ inventory_hostname }} is {{ sid_check.stdout | trim }}, expected {{ wso2_db_sid_eff }}."
+        success_msg: "{{ inventory_hostname }}: login {{ wso2_db_user_eff }} SID = {{ wso2_db_sid_eff }} (consistent)."
+
+# ════════════════════════════════════════════════════════════════════════════════
+# PHASE 2 — Load the WSO2 schemas on the PRIMARY (contained users inherit the fixed SID)
+# ════════════════════════════════════════════════════════════════════════════════
+- name: Load WSO2 schemas on the primary
+  hosts: mssql_ag[0]
+  become: true
+  gather_facts: false
+  vars:
+    sa_password_eff: "{{ sa_password | default('') }}"
+    wso2_db_user_eff: "{{ wso2_db_user | default('wso2carbon') }}"
+    load_schemas_eff: "{{ load_schemas | default(true) }}"
+    component_eff: "{{ component | default('all') }}"
+    # Controller-side path to the repo that holds mssql/*.sql. Auto-derive from the playbook dir.
+    wso2_repo_dir_eff: "{{ wso2_repo_dir | default(playbook_dir + '/../WSO2_APIM_KUBE_ISTIO') }}"
+    sqlcmd: '/opt/mssql-tools18/bin/sqlcmd -S localhost -U {{ (db_admin_user | default('''')) | ternary(db_admin_user | default(''''), ''sa'') }} -P "{{ (db_admin_user | default('''')) | ternary(db_admin_password | default(''''), sa_password | default('''')) }}" -C'
+    # Which schema files to load for the selected component.
+    apim_sql: [apim_mssql.sql, shared_mssql.sql]
+    is_sql: [is_mssql.sql]
+    schemas_to_load: >-
+      {{ (apim_sql if component_eff in ['apim','all'] else [])
+         + (is_sql if component_eff in ['is','all'] else []) }}
+  tasks:
+    - name: Copy the WSO2 schema scripts to the primary
+      copy:
+        src: "{{ wso2_repo_dir_eff }}/mssql/{{ item }}"
+        dest: "/tmp/wso2-sql/{{ item }}"
+        mode: "0644"
+      loop: "{{ schemas_to_load }}"
+      when: load_schemas_eff | bool
+
+    # sqlcmd :setvar defaults in each script are overridden with -v so the DB user/password/SID
+    # match the login created in PHASE 1. `IF NOT EXISTS` guards make re-runs idempotent. -b makes
+    # sqlcmd exit non-zero on a T-SQL error so a real failure surfaces (not just a warning).
+    - name: Run the WSO2 schema scripts (user/password/SID passed through)
+      shell: >
+        {{ sqlcmd }} -b -i /tmp/wso2-sql/{{ item }}
+        -v WSO2_USER="{{ wso2_db_user_eff }}"
+        -v WSO2_PW="{{ wso2_db_password }}"
+        -v WSO2_SID="{{ wso2_db_sid | default('0x57534F3243415242000000000000ABCD') }}"
+      loop: "{{ schemas_to_load }}"
+      when: load_schemas_eff | bool
+      no_log: true
+      changed_when: true
+
+    - name: Note the IS vendor DDL still has to be loaded separately
+      debug:
+        msg: >-
+          is_mssql.sql created the IS databases + login/user only. Load the IS 7.2.0 pack's
+          dbscripts (mssql.sql / consent/mssql.sql) into WSO2_IS_IDENTITY_DB and WSO2_IS_SHARED_DB
+          before starting IS — see the header of is_mssql.sql.
+      when:
+        - load_schemas_eff | bool
+        - component_eff in ['is','all']
+
+# ════════════════════════════════════════════════════════════════════════════════
+# PHASE 3 — Add the WSO2 databases to the AG on the PRIMARY (protect + seed to secondaries)
+# ════════════════════════════════════════════════════════════════════════════════
+- name: Add WSO2 databases to the availability group
+  hosts: mssql_ag[0]
+  become: true
+  gather_facts: false
+  vars:
+    sa_password_eff: "{{ sa_password | default('') }}"
+    ag_name_eff: "{{ ag_name | default('ag1') }}"
+    add_to_ag_eff: "{{ add_to_ag | default(true) }}"
+    component_eff: "{{ component | default('all') }}"
+    backup_dir_eff: "{{ backup_dir | default('/var/opt/mssql/backup') }}"
+    apim_dbs: [WSO2AM_DB, WSO2AM_SHARED_DB]
+    is_dbs: [WSO2_IS_IDENTITY_DB, WSO2_IS_SHARED_DB]
+    wso2_dbs: >-
+      {{ (apim_dbs if component_eff in ['apim','all'] else [])
+         + (is_dbs if component_eff in ['is','all'] else []) }}
+    sqlcmd: '/opt/mssql-tools18/bin/sqlcmd -S localhost -U {{ (db_admin_user | default('''')) | ternary(db_admin_user | default(''''), ''sa'') }} -P "{{ (db_admin_user | default('''')) | ternary(db_admin_password | default(''''), sa_password | default('''')) }}" -C'
+  tasks:
+    - name: Detect whether this instance hosts the availability group
+      shell: >
+        {{ sqlcmd }} -h -1 -W -Q
+        "SET NOCOUNT ON; SELECT COUNT(*) FROM sys.availability_groups WHERE name = N'{{ ag_name_eff }}';"
+      register: ag_present
+      changed_when: false
+      failed_when: false
+
+    - name: Note when no AG is present (single instance — nothing to add)
+      debug: { msg: "No availability group '{{ ag_name_eff }}' on this instance — skipping AG add (single-instance mode)." }
+      when: add_to_ag_eff | bool and (ag_present.stdout | trim) != '1'
+
+    - name: Ensure the backup directory exists
+      file: { path: "{{ backup_dir_eff }}", state: directory, owner: mssql, group: mssql, mode: "0770" }
+      when: add_to_ag_eff | bool and (ag_present.stdout | trim) == '1'
+
+    # A database can only join an AG after FULL recovery + at least one full backup exists. Each DB
+    # is: set FULL recovery -> full backup -> ADD DATABASE to the AG (automatic seeding replicates
+    # it + its contained wso2 user to the secondaries, where PHASE 1's same-SID login maps it).
+    # Idempotent: skip a DB already in the AG.
+    - name: Set FULL recovery, back up, and add each WSO2 DB to the AG
+      shell: >
+        {{ sqlcmd }} -b -Q
+        "IF DB_ID(N'{{ item }}') IS NOT NULL
+         AND NOT EXISTS (SELECT 1 FROM sys.availability_databases_cluster adc
+             JOIN sys.availability_groups ag ON adc.group_id = ag.group_id
+             WHERE ag.name = N'{{ ag_name_eff }}' AND adc.database_name = N'{{ item }}')
+         BEGIN
+           ALTER DATABASE [{{ item }}] SET RECOVERY FULL;
+           BACKUP DATABASE [{{ item }}] TO DISK = N'{{ backup_dir_eff }}/{{ item }}_seed.bak' WITH INIT, COMPRESSION;
+           ALTER AVAILABILITY GROUP [{{ ag_name_eff }}] ADD DATABASE [{{ item }}];
+         END;"
+      loop: "{{ wso2_dbs }}"
+      when: add_to_ag_eff | bool and (ag_present.stdout | trim) == '1'
+      register: add_db
+      changed_when: add_db.rc == 0
+      failed_when: add_db.rc != 0 and 'already' not in (add_db.stderr | default('') | lower)
+
+# ════════════════════════════════════════════════════════════════════════════════
+# PHASE 4 — Verify no orphaned users on ANY replica (proves failover is safe)
+# ════════════════════════════════════════════════════════════════════════════════
+- name: Verify WSO2 user mapping on every replica
+  hosts: mssql_ag
+  become: true
+  gather_facts: false
+  vars:
+    sa_password_eff: "{{ sa_password | default('') }}"
+    wso2_db_user_eff: "{{ wso2_db_user | default('wso2carbon') }}"
+    component_eff: "{{ component | default('all') }}"
+    apim_dbs: [WSO2AM_DB, WSO2AM_SHARED_DB]
+    is_dbs: [WSO2_IS_IDENTITY_DB, WSO2_IS_SHARED_DB]
+    wso2_dbs: >-
+      {{ (apim_dbs if component_eff in ['apim','all'] else [])
+         + (is_dbs if component_eff in ['is','all'] else []) }}
+    sqlcmd: '/opt/mssql-tools18/bin/sqlcmd -S localhost -U {{ (db_admin_user | default('''')) | ternary(db_admin_user | default(''''), ''sa'') }} -P "{{ (db_admin_user | default('''')) | ternary(db_admin_password | default(''''), sa_password | default('''')) }}" -C'
+  tasks:
+    # For each WSO2 DB present on THIS node (a secondary in a sync AG is readable), the contained
+    # user's SID must resolve to a server login (suser_sname(sid) IS NOT NULL). A NULL means an
+    # orphan -> failover to this node would break WSO2 auth. Report per-DB; fail loudly on any orphan.
+    - name: Check each WSO2 DB for an orphaned {{ wso2_db_user_eff }} user
+      shell: >
+        {{ sqlcmd }} -h -1 -W -Q
+        "SET NOCOUNT ON;
+         IF DB_ID(N'{{ item }}') IS NULL SELECT 'ABSENT';
+         ELSE BEGIN
+           DECLARE @s VARBINARY(85);
+           SELECT @s = sid FROM [{{ item }}].sys.database_principals WHERE name = N'{{ wso2_db_user_eff }}';
+           IF @s IS NULL SELECT 'NOUSER';
+           ELSE IF SUSER_SNAME(@s) IS NULL SELECT 'ORPHAN';
+           ELSE SELECT 'OK';
+         END;"
+      loop: "{{ wso2_dbs }}"
+      register: orphan_check
+      changed_when: false
+      failed_when: false
+
+    - name: Fail if any WSO2 DB has an orphaned user on this node
+      assert:
+        that: "'ORPHAN' not in (orphan_check.results | map(attribute='stdout') | map('trim') | list)"
+        fail_msg: >-
+          Orphaned {{ wso2_db_user_eff }} user found on {{ inventory_hostname }}:
+          {{ dict(wso2_dbs | zip(orphan_check.results | map(attribute='stdout') | map('trim') | list)) }}.
+          The login SID does not match the DB user SID — re-run PHASE 1 on this node.
+        success_msg: >-
+          {{ inventory_hostname }}: {{ dict(wso2_dbs | zip(orphan_check.results | map(attribute='stdout') | map('trim') | list)) }}
+          (OK = mapped, ABSENT = not seeded yet, NOUSER = schema not loaded here — all non-orphan).

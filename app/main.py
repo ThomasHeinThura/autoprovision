@@ -57,6 +57,8 @@ ALL_TRACKS = [
     "traefik_cert", "k8s_cert", "k8s_certmanager",
     # Maintenance / backups
     "mssql_clean", "k8s_etcd_backup", "mssql_backup",
+    # WSO2 database provisioning (AG-consistent login SID)
+    "uat_wso2_db", "prod_wso2_db",
 ]
 
 
@@ -126,7 +128,7 @@ def _read_targets() -> dict:
     return out
 
 
-_SECRET_KEYS = ("ssh_pass", "sa_password", "db_admin_password", "rke2_token", "gitlab_runner_token", "cert_pem", "key_pem")
+_SECRET_KEYS = ("ssh_pass", "sa_password", "db_admin_password", "wso2_db_password", "rke2_token", "gitlab_runner_token", "cert_pem", "key_pem")
 
 
 def _save_target(track: str, data: dict) -> None:
@@ -384,6 +386,43 @@ def _track_plan(action: str, body: dict) -> dict:
             }],
         }
 
+    # Provision the WSO2 DB login + schemas on the AG with a SID that is CONSISTENT across every
+    # replica, so a failover does not orphan the wso2 user. wso2_db_password must match the value
+    # injected into the WSO2 deployment.toml (WSO2 APIM/IS cards below). See ansible/mssql_wso2_db.yml.
+    if action == "mssql-wso2-user-up":
+        ips = _parse_ip_list(body.get("mssql_ips"))
+        if len(ips) < 1:
+            raise ValueError("at least one MSSQL node IP is required (first is the AG primary)")
+        if not (body.get("wso2_db_password") or "").strip():
+            raise ValueError("wso2_db_password is required (must match the WSO2 deployment.toml)")
+        wso2_db_extra = {
+            "sa_password": body.get("sa_password", ""),
+            "ag_name": body.get("ag_name") or "ag1",
+            "wso2_db_user": (body.get("wso2_db_user") or "wso2carbon").strip(),
+            "wso2_db_password": body.get("wso2_db_password"),
+            "component": body.get("wso2_component") or "all",
+        }
+        # Optional named sysadmin (same convention as the AG playbook): both or neither.
+        if (body.get("db_admin_user") or "").strip() and (body.get("db_admin_password") or "").strip():
+            wso2_db_extra["db_admin_user"] = body.get("db_admin_user").strip()
+            wso2_db_extra["db_admin_password"] = body.get("db_admin_password")
+        # Optional overrides: a custom fixed SID (else the playbook default), and toggles for loading
+        # schemas / adding the DBs to the AG (both default on in the playbook).
+        if (body.get("wso2_db_sid") or "").strip():
+            wso2_db_extra["wso2_db_sid"] = body.get("wso2_db_sid").strip()
+        if body.get("load_schemas") is not None:
+            wso2_db_extra["load_schemas"] = body.get("load_schemas")
+        if body.get("add_to_ag") is not None:
+            wso2_db_extra["add_to_ag"] = body.get("add_to_ag")
+        return {
+            "inventory": {"mssql_ag": ips},
+            "steps": [{
+                "playbook": "ansible/mssql_wso2_db.yml",
+                "extra_vars": wso2_db_extra,
+                "label": "WSO2 DB user + schemas (AG-consistent SID)",
+            }],
+        }
+
     if action == "docker-traefik-up":
         ip = (body.get("docker_ip") or "").strip()
         if not ip:
@@ -556,6 +595,10 @@ def _track_plan(action: str, body: dict) -> dict:
             "external_gw_host": body.get("external_gw_host") or "external-gw.example.com",
             "is_host": body.get("is_host") or "wso2is.example.com",
             "mssql_host": body.get("mssql_host") or "",
+            # DB credentials injected into the deployment.toml [database.*] blocks. MUST match the
+            # login created on the SQL Server AG by the "WSO2 DB user" card (mssql_wso2_db.yml).
+            "wso2_db_user": (body.get("wso2_db_user") or "wso2carbon").strip(),
+            "wso2_db_password": body.get("wso2_db_password") or "wso2carbon",
             # Optional: docker ELK VM IP/host running Logstash on :5044 (gateway filebeat target).
             "logstash_host": body.get("logstash_host") or "",
         }

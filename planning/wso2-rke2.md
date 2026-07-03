@@ -27,11 +27,18 @@ MSSQL JDBC 13.4.0, log4j2 config, Elastic Agent sidecar, key migration — are *
 The new requirement uses a **read-scale Availability Group** (`CLUSTER_TYPE = NONE`) in
 production, which has **no virtual listener**. So:
 
-- **Production:** point WSO2 APIM/IS JDBC URLs at the **AG primary node**, e.g.
-  `jdbc:sqlserver://<ag-primary-ip>:1433;databaseName=...`. Load the repo's `mssql/*.sql` schemas
-  on the primary. (When a Pacemaker-managed listener is later added — see the
-  [mssql_ag.yml](../ansible/mssql_ag.yml) checklist — switch the URL to the listener name.)
-- **UAT:** point at the single MSSQL instance.
+- **Production:** point WSO2 APIM/IS JDBC URLs at the **AG primary node** (or the Pacemaker VIP /
+  listener when configured), e.g. `jdbc:sqlserver://<ag-primary-ip>:1433;databaseName=...`. Create
+  the databases + the application login and load the `mssql/*.sql` schemas with
+  [`ansible/mssql_wso2_db.yml`](../ansible/mssql_wso2_db.yml) (UI card **"7b · WSO2 DB user +
+  schemas"**) — do **not** just run the raw `.sql` on the primary. That playbook creates the
+  `wso2carbon` login on **every** replica with the **same explicit SID**, which is what prevents the
+  login from orphaning on failover (see [mssql/README.md](../mssql/README.md) → "WSO2 login on an AG").
+- **UAT:** same playbook against the single MSSQL instance (its AG-add phase auto-skips).
+- **Credentials are now variables, not hardcoded:** the DB user/password in each `deployment.toml`
+  ConfigMap are `<WSO2_DB_USER>` / `<WSO2_DB_PASSWORD>` tokens substituted by
+  [k8s_wso2.yml](../ansible/k8s_wso2.yml). They **must match** the login created by `mssql_wso2_db.yml`.
+  (The keystore/truststore still use the literal `wso2carbon` — DB and keystore creds are decoupled.)
 - JDBC driver remains `mssql-jdbc-13.4.0.jre11.jar`, baked into the custom image (the repo's
   `build-apim-images.sh` downloads and includes it).
 

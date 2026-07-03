@@ -25,16 +25,16 @@ data:
     [database.shared_db]
     type = "mssql"
     url = "jdbc:sqlserver://<MSSQL_DB_URL>:1433;databaseName=WSO2AM_SHARED_DB;encrypt=true;trustServerCertificate=true;"
-    username = "wso2carbon"
-    password = "wso2carbon"
+    username = "<WSO2_DB_USER>"
+    password = "<WSO2_DB_PASSWORD>"
     driver = "com.microsoft.sqlserver.jdbc.SQLServerDriver"
     validationQuery = "SELECT 1"
 
     [database.apim_db]
     type = "mssql"
     url = "jdbc:sqlserver://<MSSQL_DB_URL>:1433;databaseName=WSO2AM_DB;encrypt=true;trustServerCertificate=true;"
-    username = "wso2carbon"
-    password = "wso2carbon"
+    username = "<WSO2_DB_USER>"
+    password = "<WSO2_DB_PASSWORD>"
     driver = "com.microsoft.sqlserver.jdbc.SQLServerDriver"
     validationQuery = "SELECT 1"
 

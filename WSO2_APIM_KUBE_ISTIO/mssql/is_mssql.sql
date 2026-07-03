@@ -1,6 +1,11 @@
--- WSO2 Identity Server 7.2.0 — MSSQL database bootstrap for the SQL Server AG.
--- Creates the two IS databases + the shared `wso2carbon` login/user, matching the credentials
--- hardcoded in wso2-is/cm-is.yaml (wso2carbon / wso2carbon) and the APIM scripts.
+-- WSO2 Identity Server 7.2.0 — MSSQL database bootstrap for the SQL Server Always On AG.
+-- Creates the two IS databases + the shared login/user. The login user/password and its SID are
+-- passed as sqlcmd variables so EVERY AG replica gets the SAME login SID (else the contained user
+-- orphans on failover). ansible/mssql_wso2_db.yml passes them; for a MANUAL run supply them:
+--   sqlcmd -S <primary> -U sa -P '<sa-pw>' -C -b -i is_mssql.sql \
+--     -v WSO2_USER=wso2carbon -v WSO2_PW='<db-pw>' -v WSO2_SID=0x57534F3243415242000000000000ABCD
+-- WSO2_USER/WSO2_PW MUST match the [database.*] blocks in wso2-is/cm-is.yaml; WSO2_SID MUST be the
+-- same value used by apim_mssql.sql / shared_mssql.sql and on every node.
 --
 -- IMPORTANT: this script only creates the databases, login and grants. It does NOT contain the
 -- IS table schema (that is thousands of lines of vendor DDL). After running this, load the IS
@@ -16,9 +21,9 @@
 -- Add both databases to the availability group afterward if you want them protected by failover.
 
 -- ── Login (server-level; created once, used by both DBs) ─────────────────────────
-IF NOT EXISTS (SELECT * FROM sys.server_principals WHERE name = 'wso2carbon')
+IF NOT EXISTS (SELECT * FROM sys.server_principals WHERE name = '$(WSO2_USER)')
 BEGIN
-    CREATE LOGIN wso2carbon WITH PASSWORD = 'wso2carbon', CHECK_POLICY = OFF;
+    CREATE LOGIN [$(WSO2_USER)] WITH PASSWORD = '$(WSO2_PW)', SID = $(WSO2_SID), CHECK_POLICY = OFF;
 END;
 GO
 
@@ -30,10 +35,10 @@ END;
 GO
 USE WSO2_IS_IDENTITY_DB;
 GO
-IF NOT EXISTS (SELECT * FROM sys.database_principals WHERE name = 'wso2carbon')
-    CREATE USER wso2carbon FOR LOGIN wso2carbon;
+IF NOT EXISTS (SELECT * FROM sys.database_principals WHERE name = '$(WSO2_USER)')
+    CREATE USER [$(WSO2_USER)] FOR LOGIN [$(WSO2_USER)];
 GO
-ALTER ROLE db_owner ADD MEMBER wso2carbon;
+ALTER ROLE db_owner ADD MEMBER [$(WSO2_USER)];
 GO
 -- Read-committed snapshot avoids reader/writer blocking (WSO2 recommends RCSI for IS on MSSQL).
 ALTER DATABASE WSO2_IS_IDENTITY_DB SET READ_COMMITTED_SNAPSHOT ON;
@@ -47,10 +52,10 @@ END;
 GO
 USE WSO2_IS_SHARED_DB;
 GO
-IF NOT EXISTS (SELECT * FROM sys.database_principals WHERE name = 'wso2carbon')
-    CREATE USER wso2carbon FOR LOGIN wso2carbon;
+IF NOT EXISTS (SELECT * FROM sys.database_principals WHERE name = '$(WSO2_USER)')
+    CREATE USER [$(WSO2_USER)] FOR LOGIN [$(WSO2_USER)];
 GO
-ALTER ROLE db_owner ADD MEMBER wso2carbon;
+ALTER ROLE db_owner ADD MEMBER [$(WSO2_USER)];
 GO
 ALTER DATABASE WSO2_IS_SHARED_DB SET READ_COMMITTED_SNAPSHOT ON;
 GO

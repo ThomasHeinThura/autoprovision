@@ -1,3 +1,10 @@
+-- WSO2 API Manager — MSSQL bootstrap for the SQL Server Always On AG (WSO2AM_SHARED_DB).
+-- The login user/password and its SID are passed as sqlcmd variables so EVERY AG replica gets the
+-- SAME login SID — otherwise the contained user orphans on failover ("Login failed for user").
+-- ansible/mssql_wso2_db.yml passes these automatically; for a MANUAL run you MUST supply them:
+--   sqlcmd -S <primary> -U sa -P '<sa-pw>' -C -b -i shared_mssql.sql \
+--     -v WSO2_USER=wso2carbon -v WSO2_PW='<db-pw>' -v WSO2_SID=0x57534F3243415242000000000000ABCD
+-- Use the IDENTICAL WSO2_SID on every node (and the same one used for apim_mssql.sql/is_mssql.sql).
 IF EXISTS (SELECT * FROM sys.databases WHERE name = 'WSO2AM_SHARED_DB')
 BEGIN
     ALTER DATABASE WSO2AM_SHARED_DB SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
@@ -8,22 +15,22 @@ GO
 CREATE DATABASE WSO2AM_SHARED_DB COLLATE Latin1_General_CS_AS;
 GO
 
-IF NOT EXISTS (SELECT * FROM sys.server_principals WHERE name = 'wso2carbon')
+IF NOT EXISTS (SELECT * FROM sys.server_principals WHERE name = '$(WSO2_USER)')
 BEGIN
-    CREATE LOGIN wso2carbon WITH PASSWORD = 'wso2carbon', CHECK_POLICY = OFF;
+    CREATE LOGIN [$(WSO2_USER)] WITH PASSWORD = '$(WSO2_PW)', SID = $(WSO2_SID), CHECK_POLICY = OFF;
 END;
 GO
 
 USE WSO2AM_SHARED_DB;
 GO
 
-IF NOT EXISTS (SELECT * FROM sys.database_principals WHERE name = 'wso2carbon')
+IF NOT EXISTS (SELECT * FROM sys.database_principals WHERE name = '$(WSO2_USER)')
 BEGIN
-    CREATE USER wso2carbon FOR LOGIN wso2carbon;
+    CREATE USER [$(WSO2_USER)] FOR LOGIN [$(WSO2_USER)];
 END;
 GO
 
-ALTER ROLE db_owner ADD MEMBER wso2carbon;
+ALTER ROLE db_owner ADD MEMBER [$(WSO2_USER)];
 GO
 
 --create table REG_CLUSTER_LOCK

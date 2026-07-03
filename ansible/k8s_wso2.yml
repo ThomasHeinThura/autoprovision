@@ -14,6 +14,11 @@
 #   apim.example.com -> apim_host        internal-gw.example.com -> internal_gw_host
 #   external-gw.example.com -> external_gw_host   wso2is.example.com -> is_host
 #   <MSSQL_DB_URL> -> mssql_host          <LOGSTASH_URL> -> logstash_host (when set)
+#   <WSO2_DB_USER> -> wso2_db_user (default wso2carbon)   <WSO2_DB_PASSWORD> -> wso2_db_password
+#     These land ONLY in the [database.*] blocks of the deployment.toml ConfigMaps — the keystore/
+#     truststore still use the literal `wso2carbon` (its .jks alias/password), so DB creds and
+#     keystore creds are now decoupled. The DB user/password MUST match the login created on the
+#     SQL Server AG by ansible/mssql_wso2_db.yml (same wso2_db_user / wso2_db_password / SID).
 
 - name: Deploy WSO2 {{ component | default('?') | upper }} (IAC)
   hosts: localhost
@@ -22,6 +27,10 @@
   vars:
     kubectl: "kubectl --kubeconfig {{ kubeconfig_path }}"
     tls_secret: "{{ tls_secret | default('wso2-ingress-cert') }}"
+    # DB credentials injected into the deployment.toml [database.*] blocks. Defaults preserve the
+    # historical wso2carbon/wso2carbon; override to match the AG login (see mssql_wso2_db.yml).
+    wso2_db_user_eff: "{{ wso2_db_user | default('wso2carbon') }}"
+    wso2_db_password_eff: "{{ wso2_db_password | default('wso2carbon') }}"
   tasks:
     - name: Verify the cluster kubeconfig exists
       stat: { path: "{{ kubeconfig_path }}" }
@@ -50,7 +59,31 @@
     # literal newlines, breaking the single `find ... -exec sed -i ... {} +` invocation.
     - name: Substitute environment values into the rendered manifests (no manual CM edits)
       shell: >-
-        find {{ render_dir }} -type f \( -name '*.yaml' -o -name '*.yml' \) -exec sed -i -e 's|apim\.example\.com|{{ apim_host }}|g' -e 's|internal-gw\.example\.com|{{ internal_gw_host }}|g' -e 's|external-gw\.example\.com|{{ external_gw_host }}|g' -e 's|wso2is\.example\.com|{{ is_host }}|g' -e 's|<MSSQL_DB_URL>|{{ mssql_host }}|g' {} +
+        find {{ render_dir }} -type f \( -name '*.yaml' -o -name '*.yml' \) -exec sed -i -e 's|apim\.example\.com|{{ apim_host }}|g' -e 's|internal-gw\.example\.com|{{ internal_gw_host }}|g' -e 's|external-gw\.example\.com|{{ external_gw_host }}|g' -e 's|wso2is\.example\.com|{{ is_host }}|g' -e 's|<MSSQL_DB_URL>|{{ mssql_host }}|g' -e 's|<WSO2_DB_USER>|{{ wso2_db_user_eff }}|g' {} +
+
+    # The DB PASSWORD is substituted with a LITERAL (non-regex) replace, not sed: a password can
+    # contain sed metacharacters (& | / \) that would corrupt a sed replacement. Python's str.replace
+    # treats both needle and value as literals, so any password is injected verbatim. The placeholder
+    # <WSO2_DB_PASSWORD> only ever appears in the [database.*] blocks (keystore keeps `wso2carbon`).
+    - name: Inject the DB password into the rendered ConfigMaps (literal, sed-metachar safe)
+      shell: |
+        python3 - "{{ render_dir }}" <<'PY'
+        import os, sys
+        root = sys.argv[1]
+        pw = os.environ["WSO2_DB_PASSWORD"]
+        for dp, _, fns in os.walk(root):
+            for fn in fns:
+                if not fn.endswith((".yaml", ".yml")):
+                    continue
+                fp = os.path.join(dp, fn)
+                with open(fp) as f:
+                    txt = f.read()
+                if "<WSO2_DB_PASSWORD>" in txt:
+                    with open(fp, "w") as f:
+                        f.write(txt.replace("<WSO2_DB_PASSWORD>", pw))
+        PY
+      environment:
+        WSO2_DB_PASSWORD: "{{ wso2_db_password_eff }}"
 
     # Only substitute the Logstash host when one is provided — otherwise leave the placeholder so a
     # half-configured ELK target doesn't silently become hosts: [":5044"]. Filebeat is a sidecar,

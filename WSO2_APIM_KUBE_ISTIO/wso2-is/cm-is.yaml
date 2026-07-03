@@ -39,8 +39,8 @@ data:
     [database.identity_db]
     type = "mssql"
     url = "jdbc:sqlserver://<MSSQL_DB_URL>:1433;databaseName=WSO2_IS_IDENTITY_DB;encrypt=true;trustServerCertificate=true;"
-    username = "wso2carbon"
-    password = "wso2carbon"
+    username = "<WSO2_DB_USER>"
+    password = "<WSO2_DB_PASSWORD>"
     driver = "com.microsoft.sqlserver.jdbc.SQLServerDriver"
     validationQuery = "SELECT 1"
 
@@ -54,8 +54,8 @@ data:
     [database.shared_db]
     type = "mssql"
     url = "jdbc:sqlserver://<MSSQL_DB_URL>:1433;databaseName=WSO2_IS_SHARED_DB;encrypt=true;trustServerCertificate=true;"
-    username = "wso2carbon"
-    password = "wso2carbon"
+    username = "<WSO2_DB_USER>"
+    password = "<WSO2_DB_PASSWORD>"
     driver = "com.microsoft.sqlserver.jdbc.SQLServerDriver"
     validationQuery = "SELECT 1"
 
@@ -70,8 +70,8 @@ data:
     id = "WSO2CONSENT_DB"
     type = "mssql"
     url = "jdbc:sqlserver://<MSSQL_DB_URL>:1433;databaseName=WSO2_IS_IDENTITY_DB;encrypt=true;trustServerCertificate=true;"
-    username = "wso2carbon"
-    password = "wso2carbon"
+    username = "<WSO2_DB_USER>"
+    password = "<WSO2_DB_PASSWORD>"
     driver = "com.microsoft.sqlserver.jdbc.SQLServerDriver"
     validationQuery = "SELECT 1"
     jmx_enable = false
@@ -80,8 +80,8 @@ data:
     id = "AgentIdentity"
     type = "mssql"
     url = "jdbc:sqlserver://<MSSQL_DB_URL>:1433;databaseName=WSO2_IS_IDENTITY_DB;encrypt=true;trustServerCertificate=true;"
-    username = "wso2carbon"
-    password = "wso2carbon"
+    username = "<WSO2_DB_USER>"
+    password = "<WSO2_DB_PASSWORD>"
     driver = "com.microsoft.sqlserver.jdbc.SQLServerDriver"
     validationQuery = "SELECT 1"
     jmx_enable = false
@@ -95,8 +95,8 @@ data:
     [database.user]
     type = "mssql"
     url = "jdbc:sqlserver://<MSSQL_DB_URL>:1433;databaseName=WSO2_IS_SHARED_DB;encrypt=true;trustServerCertificate=true;"
-    username = "wso2carbon"
-    password = "wso2carbon"
+    username = "<WSO2_DB_USER>"
+    password = "<WSO2_DB_PASSWORD>"
     driver = "com.microsoft.sqlserver.jdbc.SQLServerDriver"
     validationQuery = "SELECT 1"
 
