@@ -71,12 +71,12 @@ Capability matrix (**[MVP]**):
 
 ## 3. Customer portal (Guest)
 
-- **[MVP]** Overview: open tickets, active projects, SLA-at-risk, resolved counts.
-- **[MVP]** Submit a ticket (choose project, type, priority, description, attachments).
-- **[MVP]** My tickets — list, filter, status + live SLA.
-- **[MVP]** Ticket detail — reply thread, status, SLA countdown.
-- **[MVP]** Projects — the customer's engagements, each with tickets + timeline + contract summary (hours left, AMC period, SLA).
-- **[MVP]** Notification on agent reply / status change.
+- **[MVP]** ✅ Overview: open tickets, active projects, SLA-at-risk, resolved counts.
+- **[MVP]** ✅ Submit a ticket (choose project, type, priority, description). *(attachments P2)*
+- **[MVP]** ✅ My tickets — list, filter by status, live SLA.
+- **[MVP]** ✅ Ticket detail — reply thread, status, SLA countdown (work-item drawer).
+- **[MVP]** ✅ Projects — the customer's engagements (scoped), board + contract summary (hours left, AMC period, SLA). *(milestone timeline P2)*
+- **[MVP]** Notification on agent reply / status change. *(realtime board/list refresh via WS ✅; targeted in-app notification pending)*
 - **[P2]** Knowledge base / self-service articles.
 - **[P2]** CSAT survey after resolution.
 - **[P3]** Customer-side reports (their own SLA compliance, hours consumed trend).

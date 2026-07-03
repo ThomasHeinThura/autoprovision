@@ -81,6 +81,15 @@ paths:
       responses:
         '200': { description: OK }
         '502': { description: Upstream error }
+  /bff/portal/tickets:
+    get:
+      summary: Customer-scoped ticket list for the portal (with optional status filter)
+      parameters:
+      - { name: customer, in: query, schema: { type: string } }
+      - { name: status, in: query, schema: { type: string, enum: [todo, prog, wait, done] } }
+      responses:
+        '200': { description: OK }
+        '502': { description: Upstream error }
   /bff/projects/{key}/contract:
     get:
       summary: Managed-service contract + hour bank (§7). 403 when managed_service module is off.

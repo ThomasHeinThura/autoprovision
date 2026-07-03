@@ -60,6 +60,19 @@ public static class Endpoints
             return Results.Ok(items.Select(w => WorkItemDto(w, Sla.Compute(w, sla))));
         });
 
+        // Customer-scoped ticket list (portal "my tickets"); optional status filter.
+        v1.MapGet("/workitems", async (AppDbContext db, string? customer, string? status) =>
+        {
+            Guid? custId = string.IsNullOrEmpty(customer) ? null
+                : (await db.Customers.FirstOrDefaultAsync(c => c.Key == customer))?.Id;
+            var q = db.WorkItems.Include(w => w.Project).AsQueryable();
+            if (custId is not null) q = q.Where(w => w.Project!.CustomerId == custId);
+            if (!string.IsNullOrEmpty(status)) q = q.Where(w => w.Status == status);
+            var items = await q.OrderByDescending(w => w.CreatedAt).ToListAsync();
+            var sla = await SlaLookup(db, custId);
+            return Results.Ok(items.Select(w => WorkItemDto(w, Sla.Compute(w, sla))));
+        });
+
         v1.MapGet("/workitems/{key}", async (AppDbContext db, string key) =>
         {
             var w = await db.WorkItems.Include(x => x.Project).Include(x => x.Comments).Include(x => x.Activity)

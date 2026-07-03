@@ -95,6 +95,16 @@ app.get("/bff/modules", async (req, res) => {
   catch (e) { res.status(502).json({ error: e.message }); }
 });
 
+// Customer portal: "my tickets" across the customer's projects, with optional status filter.
+app.get("/bff/portal/tickets", async (req, res) => {
+  try {
+    const qs = new URLSearchParams();
+    if (req.query.customer) qs.set("customer", req.query.customer);
+    if (req.query.status) qs.set("status", req.query.status);
+    res.json(await apiJson("/api/v1/workitems?" + qs.toString()));
+  } catch (e) { res.status(502).json({ error: e.message }); }
+});
+
 // Managed service: contract + hour bank (§7). app1 returns 403 when the module is off — pass it through.
 app.get("/bff/projects/:key/contract", async (req, res) => {
   try {

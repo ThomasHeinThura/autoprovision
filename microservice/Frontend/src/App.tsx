@@ -5,6 +5,9 @@ import { Avatar, Burn, Chip, COLS, Pri, Sla, StatTile, STATUS, TypeTag } from ".
 
 type Role = "customer" | "team";
 
+// Demo customer identity for the portal (until Keycloak/access-code auth lands, PLAN §8).
+const CUSTOMER = { key: "ACME", name: "Acme Corp", contact: "Jane Doe" };
+
 export default function App() {
   const [role, setRole] = useState<Role | null>(null);
   const [dark, setDark] = useState(true);
@@ -41,18 +44,19 @@ function Login({ onLogin }: { onLogin: (r: Role) => void }) {
 
 /* ---------------- Shell ---------------- */
 function Shell({ role, dark, toggleTheme, onLogout }: { role: Role; dark: boolean; toggleTheme: () => void; onLogout: () => void }) {
-  const [view, setView] = useState<string>(role === "team" ? "dashboard" : "projects");
+  const [view, setView] = useState<string>(role === "team" ? "dashboard" : "portal");
   const [projectKey, setProjectKey] = useState<string | null>(null);
   const [openKey, setOpenKey] = useState<string | null>(null);
   const [rev, setRev] = useState(0);
   const live = useRealtime(() => setRev((r) => r + 1));
 
   const openBoard = (key: string) => { setProjectKey(key); setView("board"); };
+  const bump = () => setRev((r) => r + 1);
 
   const nav =
     role === "team"
       ? [["dashboard", "Dashboard"], ["projects", "Projects"]]
-      : [["projects", "Projects"]];
+      : [["portal", "Overview"], ["mytickets", "My tickets"], ["projects", "Projects"], ["submit", "Submit ticket"]];
 
   return (
     <>
@@ -78,8 +82,11 @@ function Shell({ role, dark, toggleTheme, onLogout }: { role: Role; dark: boolea
 
         <main className="main">
           {view === "dashboard" && <Dashboard rev={rev} openBoard={openBoard} />}
-          {view === "projects" && <Projects openBoard={openBoard} rev={rev} />}
-          {view === "board" && projectKey && <Board projectKey={projectKey} role={role} rev={rev} bump={() => setRev((r) => r + 1)} openItem={setOpenKey} back={() => setView("projects")} />}
+          {view === "portal" && <PortalHome rev={rev} openBoard={openBoard} openItem={setOpenKey} />}
+          {view === "mytickets" && <MyTickets rev={rev} openItem={setOpenKey} />}
+          {view === "submit" && <SubmitTicket onDone={() => { bump(); setView("mytickets"); }} />}
+          {view === "projects" && <Projects openBoard={openBoard} rev={rev} customer={role === "customer" ? CUSTOMER.key : undefined} />}
+          {view === "board" && projectKey && <Board projectKey={projectKey} role={role} rev={rev} bump={bump} openItem={setOpenKey} back={() => setView("projects")} />}
         </main>
       </div>
 
@@ -115,15 +122,15 @@ function Dashboard({ rev, openBoard }: { rev: number; openBoard: (k: string) => 
 }
 
 /* ---------------- Projects ---------------- */
-function Projects({ openBoard, rev }: { openBoard: (k: string) => void; rev: number }) {
+function Projects({ openBoard, rev, customer }: { openBoard: (k: string) => void; rev: number; customer?: string }) {
   const [ps, setPs] = useState<any[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  useEffect(() => { get("/bff/projects").then(setPs).catch((e) => setErr(e.message)); }, [rev]);
+  useEffect(() => { get("/bff/projects" + (customer ? `?customer=${customer}` : "")).then(setPs).catch((e) => setErr(e.message)); }, [rev, customer]);
   if (err) return <ErrorCard msg={err} />;
   if (!ps) return <div className="empty">Loading…</div>;
   return (
     <>
-      <PageHead title="Projects" sub="Engagements across all customers." />
+      <PageHead title="Projects" sub={customer ? "Your engagements." : "Engagements across all customers."} />
       <div className="cards-grid">{ps.map((p) => <ProjectCard key={p.key} p={p} onOpen={() => openBoard(p.key)} />)}</div>
     </>
   );
@@ -138,6 +145,119 @@ function ProjectCard({ p, onOpen }: { p: any; onOpen: () => void }) {
       <div className="sub">{p.customer}</div>
       <div className="pc-foot"><span>{p.open} open</span><span>{p.resolved} done</span><Avatar name={p.lead} size={26} /></div>
     </div>
+  );
+}
+
+/* ---------------- Customer portal ---------------- */
+function TicketRow({ w, onOpen }: { w: any; onOpen: () => void }) {
+  return (
+    <div className="trow" onClick={onOpen}>
+      <span className="key">{w.key}</span>
+      <TypeTag t={w.type} />
+      <span className="t">{w.title}</span>
+      <div className="rt">
+        {w.slaState && w.slaState !== "none" && <Sla state={w.slaState} dueAt={w.slaDueAt} />}
+        <Pri p={w.priority} />
+        <Chip s={w.status} />
+      </div>
+    </div>
+  );
+}
+
+function PortalHome({ rev, openBoard, openItem }: { rev: number; openBoard: (k: string) => void; openItem: (k: string) => void }) {
+  const [ps, setPs] = useState<any[] | null>(null);
+  const [tks, setTks] = useState<any[] | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => {
+    get(`/bff/projects?customer=${CUSTOMER.key}`).then(setPs).catch((e) => setErr(e.message));
+    get(`/bff/portal/tickets?customer=${CUSTOMER.key}`).then(setTks).catch((e) => setErr(e.message));
+  }, [rev]);
+  if (err) return <ErrorCard msg={err} />;
+  if (!ps || !tks) return <div className="empty">Loading…</div>;
+  const open = tks.filter((t) => t.status !== "done");
+  const atRisk = open.filter((t) => t.slaState === "risk" || t.slaState === "breached").length;
+  const resolved = tks.length - open.length;
+  return (
+    <>
+      <PageHead title={`Welcome, ${CUSTOMER.contact}`} sub={`${CUSTOMER.name} — support & projects overview.`} />
+      <div className="stats">
+        <StatTile n={open.length} label="Open tickets" color="var(--amber)" />
+        <StatTile n={ps.length} label="Active projects" color="var(--blue)" />
+        <StatTile n={atRisk} label="SLA at risk" color="var(--breach)" />
+        <StatTile n={resolved} label="Resolved" color="var(--green)" />
+      </div>
+      <h3 className="section">Recent tickets</h3>
+      {open.slice(0, 6).map((t) => <TicketRow key={t.key} w={t} onOpen={() => openItem(t.key)} />)}
+      {open.length === 0 && <div className="empty">No open tickets. 🎉</div>}
+      <h3 className="section">Your projects</h3>
+      <div className="cards-grid">{ps.map((p) => <ProjectCard key={p.key} p={p} onOpen={() => openBoard(p.key)} />)}</div>
+    </>
+  );
+}
+
+function MyTickets({ rev, openItem }: { rev: number; openItem: (k: string) => void }) {
+  const [tks, setTks] = useState<any[] | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [filter, setFilter] = useState("all");
+  useEffect(() => {
+    const q = filter === "all" ? "" : `&status=${filter}`;
+    get(`/bff/portal/tickets?customer=${CUSTOMER.key}${q}`).then(setTks).catch((e) => setErr(e.message));
+  }, [rev, filter]);
+  if (err) return <ErrorCard msg={err} />;
+  return (
+    <>
+      <PageHead title="My tickets" sub="All requests across your projects, with live SLA." />
+      <div className="filterbar">
+        {[["all", "All"], ...COLS.map((c) => [c, STATUS[c].label])].map(([k, label]) => (
+          <button key={k} className={filter === k ? "active" : ""} onClick={() => setFilter(k)}>{label}</button>
+        ))}
+      </div>
+      {!tks ? <div className="empty">Loading…</div> : tks.length === 0 ? <div className="empty">No tickets here.</div> :
+        tks.map((t) => <TicketRow key={t.key} w={t} onOpen={() => openItem(t.key)} />)}
+    </>
+  );
+}
+
+function SubmitTicket({ onDone }: { onDone: () => void }) {
+  const [ps, setPs] = useState<any[]>([]);
+  const [projectKey, setProjectKey] = useState("");
+  const [priority, setPriority] = useState("med");
+  const [title, setTitle] = useState("");
+  const [desc, setDesc] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => { get(`/bff/projects?customer=${CUSTOMER.key}`).then((r) => { setPs(r); if (r[0]) setProjectKey(r[0].key); }); }, []);
+
+  const submit = async () => {
+    if (!projectKey || !title.trim()) { setErr("Pick a project and enter a title."); return; }
+    setBusy(true); setErr(null);
+    try {
+      await post("/bff/workitems", { projectKey, type: "ticket", title, description: desc, priority, requester: CUSTOMER.contact, assignee: null });
+      onDone();
+    } catch (e: any) { setErr(e.message); setBusy(false); }
+  };
+
+  return (
+    <>
+      <PageHead title="Submit a ticket" sub="Raise a support request — we'll triage and respond per your SLA." />
+      <div className="card form-card">
+        <label className="fld"><span>Project</span>
+          <select value={projectKey} onChange={(e) => setProjectKey(e.target.value)}>
+            {ps.map((p) => <option key={p.key} value={p.key}>{p.key} — {p.name}</option>)}
+          </select>
+        </label>
+        <label className="fld"><span>Priority</span>
+          <select value={priority} onChange={(e) => setPriority(e.target.value)}>
+            <option value="low">Low</option><option value="med">Medium</option>
+            <option value="high">High</option><option value="urgent">Urgent</option>
+          </select>
+        </label>
+        <label className="fld"><span>Title</span><input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Short summary of the issue" /></label>
+        <label className="fld"><span>Description</span><textarea style={{ minHeight: 110 }} value={desc} onChange={(e) => setDesc(e.target.value)} placeholder="What happened, steps to reproduce, impact…" /></label>
+        {err && <div className="muted" style={{ color: "var(--breach)", marginBottom: 10 }}>{err}</div>}
+        <button className="btn primary" disabled={busy} onClick={submit}>{busy ? "Submitting…" : "Submit ticket"}</button>
+      </div>
+    </>
   );
 }
 

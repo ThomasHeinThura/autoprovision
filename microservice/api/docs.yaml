@@ -1,5 +1,5 @@
-# TaskDesk backend API — OpenAPI spec (generated from app1 /openapi/v1.json).
-# Regenerate: see microservice/api/README.md.
+# TaskDesk Core API (app1) — OpenAPI spec (YAML snapshot of the live /openapi/v1.json).
+# Served at /api/docs.yaml. Regenerate after route changes: see microservice/api/README.md.
 openapi: 3.1.1
 info:
   title: TaskDesk.Api | v1
@@ -74,6 +74,34 @@ paths:
       responses:
         '200':
           description: OK
+  /api/v1/workitems:
+    get:
+      tags:
+      - TaskDesk
+      parameters:
+      - name: customer
+        in: query
+        schema:
+          type: string
+      - name: status
+        in: query
+        schema:
+          type: string
+      responses:
+        '200':
+          description: OK
+    post:
+      tags:
+      - TaskDesk
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateWorkItem'
+        required: true
+      responses:
+        '200':
+          description: OK
   /api/v1/workitems/{key}:
     get:
       tags:
@@ -84,19 +112,6 @@ paths:
         required: true
         schema:
           type: string
-      responses:
-        '200':
-          description: OK
-  /api/v1/workitems:
-    post:
-      tags:
-      - TaskDesk
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/CreateWorkItem'
-        required: true
       responses:
         '200':
           description: OK
