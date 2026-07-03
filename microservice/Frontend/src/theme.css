@@ -124,6 +124,26 @@ a{cursor:pointer}
 .composer-actions{display:flex;align-items:center;gap:10px;margin-top:6px}
 .toggle{display:flex;align-items:center;gap:7px;font-size:12.5px;color:var(--muted);font-weight:600;margin-right:auto}
 
+/* modal (create-ticket dialog) — mirrors the prototype */
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:80;opacity:0;pointer-events:none;transition:opacity .18s;backdrop-filter:blur(2px)}
+.modal-overlay.open{opacity:1;pointer-events:auto}
+.modal{position:fixed;z-index:81;left:50%;top:50%;transform:translate(-50%,-48%) scale(.97);opacity:0;pointer-events:none;
+  width:min(600px,94vw);max-height:88vh;background:var(--surface);border:1px solid var(--border);border-radius:14px;
+  box-shadow:var(--shadow-lg);display:flex;flex-direction:column;transition:opacity .18s,transform .18s}
+.modal.open{opacity:1;pointer-events:auto;transform:translate(-50%,-50%) scale(1)}
+.modal-head{padding:18px 22px;border-bottom:1px solid var(--border);display:flex;align-items:flex-start;gap:12px}
+.modal-head h2{margin:0;font-size:16px;letter-spacing:-.01em}
+.modal-head p{margin:3px 0 0;color:var(--muted);font-size:12.5px}
+.modal-body{padding:20px 22px;overflow:auto}
+.modal-foot{padding:13px 22px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:10px;background:var(--surface-2);border-radius:0 0 14px 14px}
+.form-row{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.req{color:var(--breach);margin-left:1px}
+.segpri{display:flex;gap:6px}
+.segpri button{flex:1;display:flex;align-items:center;justify-content:center;gap:6px;border:1px solid var(--border-strong);background:var(--surface);color:var(--muted);border-radius:var(--radius-sm);padding:7px 4px;font-weight:600;font-size:12.5px}
+.segpri button:hover{border-color:var(--faint)}
+.segpri button.active{border-color:var(--primary);color:var(--text);background:var(--primary-weak)}
+.segpri .pdot{width:8px;height:8px;border-radius:2px;transform:rotate(45deg)}
+
 /* portal ticket list + filters + form */
 .trow{display:flex;align-items:center;gap:12px;padding:11px 14px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);margin-bottom:8px;cursor:pointer;transition:border-color .12s}
 .trow:hover{border-color:var(--border-strong)}

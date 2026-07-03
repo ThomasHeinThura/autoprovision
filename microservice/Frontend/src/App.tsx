@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { get, post } from "./api";
 import { useRealtime } from "./useRealtime";
 import { Avatar, Burn, Chip, COLS, Pri, Sla, StatTile, STATUS, TypeTag } from "./ui";
@@ -47,16 +47,18 @@ function Shell({ role, dark, toggleTheme, onLogout }: { role: Role; dark: boolea
   const [view, setView] = useState<string>(role === "team" ? "dashboard" : "portal");
   const [projectKey, setProjectKey] = useState<string | null>(null);
   const [openKey, setOpenKey] = useState<string | null>(null);
+  const [newTicket, setNewTicket] = useState(false);
   const [rev, setRev] = useState(0);
   const live = useRealtime(() => setRev((r) => r + 1));
 
   const openBoard = (key: string) => { setProjectKey(key); setView("board"); };
   const bump = () => setRev((r) => r + 1);
+  const onNew = () => setNewTicket(true);
 
   const nav =
     role === "team"
       ? [["dashboard", "Dashboard"], ["projects", "Projects"]]
-      : [["portal", "Overview"], ["mytickets", "My tickets"], ["projects", "Projects"], ["submit", "Submit ticket"]];
+      : [["portal", "Overview"], ["mytickets", "My tickets"], ["projects", "Projects"]];
 
   return (
     <>
@@ -82,15 +84,15 @@ function Shell({ role, dark, toggleTheme, onLogout }: { role: Role; dark: boolea
 
         <main className="main">
           {view === "dashboard" && <Dashboard rev={rev} openBoard={openBoard} />}
-          {view === "portal" && <PortalHome rev={rev} openBoard={openBoard} openItem={setOpenKey} />}
-          {view === "mytickets" && <MyTickets rev={rev} openItem={setOpenKey} />}
-          {view === "submit" && <SubmitTicket onDone={() => { bump(); setView("mytickets"); }} />}
+          {view === "portal" && <PortalHome rev={rev} openBoard={openBoard} openItem={setOpenKey} onNew={onNew} />}
+          {view === "mytickets" && <MyTickets rev={rev} openItem={setOpenKey} onNew={onNew} />}
           {view === "projects" && <Projects openBoard={openBoard} rev={rev} customer={role === "customer" ? CUSTOMER.key : undefined} />}
           {view === "board" && projectKey && <Board projectKey={projectKey} role={role} rev={rev} bump={bump} openItem={setOpenKey} back={() => setView("projects")} />}
         </main>
       </div>
 
       {openKey && <Drawer itemKey={openKey} role={role} onClose={() => setOpenKey(null)} bump={() => setRev((r) => r + 1)} />}
+      <NewTicketModal open={newTicket} onClose={() => setNewTicket(false)} onDone={() => { setNewTicket(false); bump(); setView("mytickets"); }} />
     </>
   );
 }
@@ -164,7 +166,7 @@ function TicketRow({ w, onOpen }: { w: any; onOpen: () => void }) {
   );
 }
 
-function PortalHome({ rev, openBoard, openItem }: { rev: number; openBoard: (k: string) => void; openItem: (k: string) => void }) {
+function PortalHome({ rev, openBoard, openItem, onNew }: { rev: number; openBoard: (k: string) => void; openItem: (k: string) => void; onNew: () => void }) {
   const [ps, setPs] = useState<any[] | null>(null);
   const [tks, setTks] = useState<any[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -186,7 +188,10 @@ function PortalHome({ rev, openBoard, openItem }: { rev: number; openBoard: (k: 
         <StatTile n={atRisk} label="SLA at risk" color="var(--breach)" />
         <StatTile n={resolved} label="Resolved" color="var(--green)" />
       </div>
-      <h3 className="section">Recent tickets</h3>
+      <div style={{ display: "flex", alignItems: "center", marginTop: 22, marginBottom: 10 }}>
+        <h3 className="section" style={{ margin: 0, flex: 1 }}>Recent tickets</h3>
+        <button className="btn primary sm" onClick={onNew}>New ticket</button>
+      </div>
       {open.slice(0, 6).map((t) => <TicketRow key={t.key} w={t} onOpen={() => openItem(t.key)} />)}
       {open.length === 0 && <div className="empty">No open tickets. 🎉</div>}
       <h3 className="section">Your projects</h3>
@@ -195,7 +200,7 @@ function PortalHome({ rev, openBoard, openItem }: { rev: number; openBoard: (k: 
   );
 }
 
-function MyTickets({ rev, openItem }: { rev: number; openItem: (k: string) => void }) {
+function MyTickets({ rev, openItem, onNew }: { rev: number; openItem: (k: string) => void; onNew: () => void }) {
   const [tks, setTks] = useState<any[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [filter, setFilter] = useState("all");
@@ -206,7 +211,8 @@ function MyTickets({ rev, openItem }: { rev: number; openItem: (k: string) => vo
   if (err) return <ErrorCard msg={err} />;
   return (
     <>
-      <PageHead title="My tickets" sub="All requests across your projects, with live SLA." />
+      <PageHead title="My tickets" sub="All requests across your projects, with live SLA."
+        action={<button className="btn primary" onClick={onNew}>New ticket</button>} />
       <div className="filterbar">
         {[["all", "All"], ...COLS.map((c) => [c, STATUS[c].label])].map(([k, label]) => (
           <button key={k} className={filter === k ? "active" : ""} onClick={() => setFilter(k)}>{label}</button>
@@ -218,44 +224,87 @@ function MyTickets({ rev, openItem }: { rev: number; openItem: (k: string) => vo
   );
 }
 
-function SubmitTicket({ onDone }: { onDone: () => void }) {
+// "New ticket" is a header-button-triggered modal (mirrors the prototype), not a nav page.
+const TICKET_PRIS = ["low", "med", "high", "urgent"];
+function NewTicketModal({ open, onClose, onDone }: { open: boolean; onClose: () => void; onDone: () => void }) {
   const [ps, setPs] = useState<any[]>([]);
   const [projectKey, setProjectKey] = useState("");
   const [priority, setPriority] = useState("med");
+  const [type, setType] = useState("ticket");
   const [title, setTitle] = useState("");
   const [desc, setDesc] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  useEffect(() => { get(`/bff/projects?customer=${CUSTOMER.key}`).then((r) => { setPs(r); if (r[0]) setProjectKey(r[0].key); }); }, []);
+
+  // Load the customer's projects and reset the form each time the modal opens.
+  useEffect(() => {
+    if (!open) return;
+    setTitle(""); setDesc(""); setPriority("med"); setType("ticket"); setErr(null);
+    get(`/bff/projects?customer=${CUSTOMER.key}`).then((r) => { setPs(r); if (r[0]) setProjectKey(r[0].key); });
+  }, [open]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    if (open) document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
 
   const submit = async () => {
-    if (!projectKey || !title.trim()) { setErr("Pick a project and enter a title."); return; }
+    if (!projectKey || !title.trim()) { setErr("Pick a project and enter a summary."); return; }
     setBusy(true); setErr(null);
     try {
-      await post("/bff/workitems", { projectKey, type: "ticket", title, description: desc, priority, requester: CUSTOMER.contact, assignee: null });
-      onDone();
+      await post("/bff/workitems", { projectKey, type, title, description: desc, priority, requester: CUSTOMER.contact, assignee: null });
+      setBusy(false); onDone();
     } catch (e: any) { setErr(e.message); setBusy(false); }
   };
 
   return (
     <>
-      <PageHead title="Submit a ticket" sub="Raise a support request — we'll triage and respond per your SLA." />
-      <div className="card form-card">
-        <label className="fld"><span>Project</span>
-          <select value={projectKey} onChange={(e) => setProjectKey(e.target.value)}>
-            {ps.map((p) => <option key={p.key} value={p.key}>{p.key} — {p.name}</option>)}
-          </select>
-        </label>
-        <label className="fld"><span>Priority</span>
-          <select value={priority} onChange={(e) => setPriority(e.target.value)}>
-            <option value="low">Low</option><option value="med">Medium</option>
-            <option value="high">High</option><option value="urgent">Urgent</option>
-          </select>
-        </label>
-        <label className="fld"><span>Title</span><input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Short summary of the issue" /></label>
-        <label className="fld"><span>Description</span><textarea style={{ minHeight: 110 }} value={desc} onChange={(e) => setDesc(e.target.value)} placeholder="What happened, steps to reproduce, impact…" /></label>
-        {err && <div className="muted" style={{ color: "var(--breach)", marginBottom: 10 }}>{err}</div>}
-        <button className="btn primary" disabled={busy} onClick={submit}>{busy ? "Submitting…" : "Submit ticket"}</button>
+      <div className={"modal-overlay" + (open ? " open" : "")} onClick={onClose} />
+      <div className={"modal" + (open ? " open" : "")} role="dialog" aria-modal="true">
+        {open && (
+          <>
+            <div className="modal-head">
+              <div style={{ flex: 1 }}><h2>Create ticket</h2><p>We'll start the SLA clock as soon as you submit.</p></div>
+              <button className="close" onClick={onClose}>✕</button>
+            </div>
+            <div className="modal-body">
+              <label className="fld"><span>Project <span className="req">*</span></span>
+                <select value={projectKey} onChange={(e) => setProjectKey(e.target.value)}>
+                  {ps.map((p) => <option key={p.key} value={p.key}>{p.name} · {p.key}</option>)}
+                </select>
+              </label>
+              <label className="fld"><span>Summary <span className="req">*</span></span>
+                <input autoFocus value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Short summary of the issue" />
+              </label>
+              <div className="form-row">
+                <label className="fld"><span>Type</span>
+                  <select value={type} onChange={(e) => setType(e.target.value)}>
+                    <option value="ticket">Incident</option><option value="task">Service request</option><option value="bug">Question</option>
+                  </select>
+                </label>
+                <div>
+                  <span style={{ display: "block", fontWeight: 600, fontSize: 12.5, marginBottom: 6 }}>Priority</span>
+                  <div className="segpri">
+                    {TICKET_PRIS.map((v) => (
+                      <button type="button" key={v} className={v === priority ? "active" : ""} onClick={() => setPriority(v)}>
+                        <span className="pdot" style={{ background: `var(--${v})` }} />{v[0].toUpperCase() + v.slice(1)}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+              <label className="fld"><span>Description</span>
+                <textarea rows={4} value={desc} onChange={(e) => setDesc(e.target.value)} placeholder="What happened? What did you expect? Steps to reproduce…" />
+              </label>
+              {err && <div className="muted" style={{ color: "var(--breach)" }}>{err}</div>}
+            </div>
+            <div className="modal-foot">
+              <button className="btn" onClick={onClose}>Cancel</button>
+              <button className="btn primary" disabled={busy} onClick={submit}>{busy ? "Creating…" : "Create ticket"}</button>
+            </div>
+          </>
+        )}
       </div>
     </>
   );
@@ -448,8 +497,13 @@ function ContractPanel({ projectKey, rev }: { projectKey: string; rev: number })
 }
 
 /* ---------------- bits ---------------- */
-function PageHead({ title, sub }: { title: string; sub?: string }) {
-  return <div className="page-head"><div><h1>{title}</h1>{sub && <p>{sub}</p>}</div></div>;
+function PageHead({ title, sub, action }: { title: string; sub?: string; action?: ReactNode }) {
+  return (
+    <div className="page-head" style={{ display: "flex", alignItems: "center", gap: 12 }}>
+      <div style={{ flex: 1 }}><h1>{title}</h1>{sub && <p>{sub}</p>}</div>
+      {action}
+    </div>
+  );
 }
 function Field({ k, children }: any) { return <div className="field"><div className="fk">{k}</div>{children}</div>; }
 function ErrorCard({ msg }: { msg: string }) {
