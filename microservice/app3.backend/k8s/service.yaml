@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: app3               # nginx (frontend) proxies to http://app3:8082 — keep this name.
+  namespace: taskdesk
+  labels: { app: app3-node, part-of: taskdesk }
+spec:
+  selector: { app: app3-node }
+  ports:
+    - name: http
+      port: 8082
+      targetPort: 8082

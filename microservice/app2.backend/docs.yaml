@@ -1,0 +1,82 @@
+openapi: 3.1.0
+info:
+  title: TaskDesk Workers (app2)
+  version: 1.0.0
+  description: >
+    Background/async plane. On a ticker it scans the core API (app1), computes an
+    overview / SLA-risk snapshot, caches it in Valkey, and publishes an event.
+    This HTTP surface is for health + inspecting the last run (it is NOT a read plane).
+servers:
+- url: http://localhost:8081/
+paths:
+  /healthz:
+    get:
+      summary: Liveness probe
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+  /readyz:
+    get:
+      summary: Readiness probe (pings Valkey when configured)
+      responses:
+        '200':
+          description: Ready
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ready }
+        '503':
+          description: Redis/Valkey unavailable
+  /workers/status:
+    get:
+      summary: Worker runtime status + last computed overview
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  apiBase: { type: string }
+                  redis: { type: boolean }
+                  scans: { type: integer }
+                  interval: { type: string, example: 20s }
+                  latest: { $ref: '#/components/schemas/Overview' }
+  /reports/overview:
+    get:
+      summary: Latest overview / SLA-risk snapshot
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Overview'
+  /api/docs.yaml:
+    get:
+      summary: This OpenAPI document (YAML)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/yaml: {}
+components:
+  schemas:
+    Overview:
+      type: object
+      properties:
+        projects: { type: integer }
+        open: { type: integer }
+        resolved: { type: integer }
+        unassigned: { type: integer }
+        urgentOpen: { type: integer, description: Stand-in for SLA-risk until app1 exposes SLA timers }
+        lastScan: { type: string, format: date-time }

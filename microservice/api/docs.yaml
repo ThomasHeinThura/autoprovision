@@ -1,0 +1,294 @@
+# TaskDesk backend API — OpenAPI spec (generated from app1 /openapi/v1.json).
+# Regenerate: curl -s http://localhost:8080/openapi/v1.json | ... (see api/README).
+openapi: 3.1.1
+info:
+  title: TaskDesk.Api | v1
+  version: 1.0.0
+servers:
+- url: http://localhost:8080/
+paths:
+  /api/v1/customers:
+    get:
+      tags:
+      - TaskDesk
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/AnonymousTypeOfstringAndstringAndstringAndint'
+  /api/v1/projects:
+    get:
+      tags:
+      - TaskDesk
+      parameters:
+      - name: customer
+        in: query
+        schema:
+          type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+    post:
+      tags:
+      - TaskDesk
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateProject'
+        required: true
+      responses:
+        '200':
+          description: OK
+  /api/v1/projects/{key}:
+    get:
+      tags:
+      - TaskDesk
+      parameters:
+      - name: key
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: OK
+  /api/v1/projects/{key}/workitems:
+    get:
+      tags:
+      - TaskDesk
+      parameters:
+      - name: key
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: OK
+  /api/v1/workitems/{key}:
+    get:
+      tags:
+      - TaskDesk
+      parameters:
+      - name: key
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: OK
+  /api/v1/workitems:
+    post:
+      tags:
+      - TaskDesk
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateWorkItem'
+        required: true
+      responses:
+        '200':
+          description: OK
+  /api/v1/workitems/{key}/transition:
+    post:
+      tags:
+      - TaskDesk
+      parameters:
+      - name: key
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Transition'
+        required: true
+      responses:
+        '200':
+          description: OK
+  /api/v1/workitems/{key}/comments:
+    post:
+      tags:
+      - TaskDesk
+      parameters:
+      - name: key
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddComment'
+        required: true
+      responses:
+        '200':
+          description: OK
+  /api/v1/reports/overview:
+    get:
+      tags:
+      - TaskDesk
+      parameters:
+      - name: customer
+        in: query
+        schema:
+          type: string
+      responses:
+        '200':
+          description: OK
+  /api/v1/modules:
+    get:
+      tags:
+      - TaskDesk
+      parameters:
+      - name: customer
+        in: query
+        schema:
+          type: string
+      responses:
+        '200':
+          description: OK
+  /api/v1/modules/{key}/toggle:
+    post:
+      tags:
+      - TaskDesk
+      parameters:
+      - name: key
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ToggleModule'
+        required: true
+      responses:
+        '200':
+          description: OK
+components:
+  schemas:
+    AddComment:
+      required:
+      - author
+      - body
+      - isInternal
+      type: object
+      properties:
+        author:
+          type: string
+        body:
+          type: string
+        isInternal:
+          type: boolean
+    AnonymousTypeOfstringAndstringAndstringAndint:
+      required:
+      - key
+      - name
+      - plan
+      - projects
+      type: object
+      properties:
+        key:
+          type:
+          - 'null'
+          - string
+        name:
+          type:
+          - 'null'
+          - string
+        plan:
+          type:
+          - 'null'
+          - string
+        projects:
+          pattern: ^-?(?:0|[1-9]\d*)$
+          type:
+          - integer
+          - string
+          format: int32
+    CreateProject:
+      required:
+      - key
+      - name
+      - customerKey
+      - type
+      - serviceType
+      - lead
+      type: object
+      properties:
+        key:
+          type: string
+        name:
+          type: string
+        customerKey:
+          type: string
+        type:
+          type: string
+        serviceType:
+          type: string
+        lead:
+          type: string
+    CreateWorkItem:
+      required:
+      - projectKey
+      - type
+      - title
+      - description
+      - priority
+      - requester
+      - assignee
+      type: object
+      properties:
+        projectKey:
+          type: string
+        type:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+        priority:
+          type: string
+        requester:
+          type: string
+        assignee:
+          type:
+          - 'null'
+          - string
+    ToggleModule:
+      required:
+      - enabled
+      - customerKey
+      type: object
+      properties:
+        enabled:
+          type: boolean
+        customerKey:
+          type:
+          - 'null'
+          - string
+    Transition:
+      required:
+      - status
+      type: object
+      properties:
+        status:
+          type: string
+tags:
+- name: TaskDesk

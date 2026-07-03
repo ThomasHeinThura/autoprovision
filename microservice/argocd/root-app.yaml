@@ -1,0 +1,27 @@
+# App-of-apps root: point ArgoCD at this one Application and it pulls in every child
+# Application under microservice/argocd/apps (app1 today; Go/Node/Frontend/Valkey/Keycloak next).
+#   kubectl apply -f microservice/argocd/root-app.yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: taskdesk-root
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/ThomasHeinThura/autoprovision.git
+    targetRevision: main
+    path: microservice/argocd/apps
+    directory:
+      recurse: false
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ApplyOutOfSyncOnly=true
