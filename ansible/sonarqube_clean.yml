@@ -1,0 +1,85 @@
+# Uninstall / RESET SonarQube so sonarqube_stack.yml can reinstall from a CLEAN state.
+#
+# Use this when the customer wants to fully remove SonarQube and reinstall it. It removes ONLY the
+# SonarQube layer that sonarqube_stack.yml builds — it never touches the shared platform services:
+#   - Container: stops and removes the `sonarqube` container.
+#   - Volumes: removes the SonarQube named volumes (data, logs, extensions) so the reinstall starts
+#     with an empty SonarQube — plugins, index and app state are wiped.
+#   - Database: drops ONLY the `sonarqube` database from the shared pg-platform Postgres (guarded by
+#     purge_data). sonarqube_stack.yml recreates this database on the next run.
+#
+# It does NOT touch GitLab in any way: GitLab uses a SEPARATE database named `gitlab` on the same
+# Postgres — that database, the GitLab container and its volumes are NEVER removed. It also does NOT
+# stop or remove Postgres (pg-platform), Traefik, or the `platform` network. All left fully intact.
+#
+# Variables:
+#   purge_data  (default true)  -> also drop the `sonarqube` database + remove the volumes (full wipe).
+#                                  Set to false to only remove the container (keep data for a re-up).
+#
+# After it finishes, run the 'SonarQube — Install / Reinstall' workload (sonarqube_stack.yml directly)
+# to reinstall SonarQube ONLY — do NOT re-run the combined GitLab + SonarQube build.
+
+- name: Uninstall SonarQube (clean state for reinstall)
+  hosts: docker_vm
+  become: true
+  vars:
+    repo_root: "/home/{{ ansible_user }}/autoprovision"
+    compose_dir: "{{ repo_root }}/docker"
+    purge_data_eff: "{{ purge_data | default(true) | bool }}"
+  tasks:
+    - name: Show what will be removed
+      debug:
+        msg: >
+          Removing SonarQube container{{ ' + volumes + database (full wipe)' if purge_data_eff
+          else ' only (data kept)' }}. Platform Postgres/Traefik/network left intact.
+
+    # ── Container: stop + remove the sonarqube container (works even if compose files are gone) ──
+    - name: Stop and remove the sonarqube container
+      shell: |
+        docker rm -f sonarqube
+      register: rm_container
+      failed_when: false
+      changed_when: "'sonarqube' in (rm_container.stdout | default(''))"
+
+    # ── Volumes: remove the SonarQube named volumes (only when doing a full wipe) ──
+    - name: Find SonarQube named volumes
+      shell: |
+        docker volume ls -q | grep -E '(^|_)sonarqube_(data|logs|extensions)$' || true
+      register: sonar_volumes
+      changed_when: false
+      when: purge_data_eff
+
+    - name: Remove SonarQube named volumes
+      shell: "docker volume rm {{ item }}"
+      loop: "{{ sonar_volumes.stdout_lines | default([]) }}"
+      failed_when: false
+      changed_when: true
+      when: purge_data_eff and (sonar_volumes.stdout_lines | default([]) | length > 0)
+
+    # ── Database: drop the sonarqube DB from the shared pg-platform (only on full wipe) ──
+    # DROP DATABASE fails if any session is still connected, so terminate them first. The container
+    # is already gone above, so nothing should be holding a connection by now.
+    - name: Terminate lingering connections to the sonarqube database
+      shell: >
+        docker exec pg-platform psql -U platform -d postgres -c
+        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='sonarqube' AND pid <> pg_backend_pid();"
+      failed_when: false
+      changed_when: false
+      when: purge_data_eff
+
+    - name: Drop the sonarqube database (IF EXISTS)
+      shell: >
+        docker exec pg-platform psql -U platform -d postgres -c "DROP DATABASE IF EXISTS sonarqube;"
+      register: drop_db
+      failed_when: false
+      changed_when: "'DROP DATABASE' in (drop_db.stdout | default(''))"
+      when: purge_data_eff
+
+    - name: Uninstall summary
+      debug:
+        msg:
+          - "SonarQube uninstall complete."
+          - "Removed: sonarqube container{{ ', volumes (data/logs/extensions), sonarqube database' if purge_data_eff else ' (volumes + database KEPT — purge_data=false)' }}."
+          - "GitLab left FULLY intact: its `gitlab` database, container and volumes were NOT touched."
+          - "Left intact: pg-platform Postgres, Traefik, the platform network, and all other stacks."
+          - "Now run 'SonarQube — Install / Reinstall' (sonarqube_stack.yml) — do NOT re-run the GitLab build."

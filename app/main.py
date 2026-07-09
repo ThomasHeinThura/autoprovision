@@ -490,6 +490,40 @@ def _track_plan(action: str, body: dict) -> dict:
             ],
         }
 
+    # Install / reinstall SonarQube ONLY (no GitLab). sonarqube_stack.yml ensures the sonarqube DB
+    # exists and force-recreates just the `sonarqube` service, so Postgres/GitLab are left running.
+    # Run this after 'SonarQube — Uninstall / Reset' to reinstall without touching GitLab.
+    if action == "sonarqube-up":
+        ip = (body.get("docker_ip") or "").strip()
+        if not ip:
+            raise ValueError("docker_ip (GitLab VM IP) is required")
+        return {
+            "inventory": {"docker_vm": [ip]},
+            "steps": [{
+                "playbook": "ansible/sonarqube_stack.yml",
+                "extra_vars": {"sonarqube_domain": body.get("sonarqube_domain") or "sonar.example.com"},
+                "label": "SonarQube (install / reinstall only)",
+            }],
+        }
+
+    # Uninstall SonarQube (container + volumes + database) so 'SonarQube — Install / Reinstall' can
+    # rebuild it from a clean state. Drops ONLY the sonarqube DB — the GitLab `gitlab` database, its
+    # container and volumes are never touched. Leaves Postgres/Traefik/network and every other stack
+    # intact. See ansible/sonarqube_clean.yml. purge_data=false keeps the volumes + database.
+    if action == "sonarqube-clean":
+        ip = (body.get("docker_ip") or "").strip()
+        if not ip:
+            raise ValueError("docker_ip (GitLab VM IP) is required")
+        purge = str(body.get("purge_data", "true")).strip().lower() not in ("false", "0", "no", "")
+        return {
+            "inventory": {"docker_vm": [ip]},
+            "steps": [{
+                "playbook": "ansible/sonarqube_clean.yml",
+                "extra_vars": {"purge_data": purge},
+                "label": "SonarQube uninstall (then re-run GitLab + SonarQube)",
+            }],
+        }
+
     if action == "traefik-cert-apply":
         ips = _parse_ip_list(body.get("docker_ips"))
         if not ips:
