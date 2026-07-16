@@ -28,6 +28,7 @@ data/
 *.key
 *.csr
 *.srl
+.claude
 WSO2_APIM_KUBE_ISTIO/certificates/
 docker/traefik/certs/
 
