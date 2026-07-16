@@ -1,7 +1,0 @@
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: taskdesk
-  labels:
-    # Enroll in the Istio ambient mesh, matching echo.yaml / the platform convention.
-    istio.io/dataplane-mode: ambient
