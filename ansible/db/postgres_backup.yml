@@ -1,0 +1,120 @@
+---
+# PostgreSQL backups with pgBackRest.
+#
+# Physical, incremental, parallel, verified, with point-in-time recovery.
+# pg_dump is a logical export, not a backup strategy — it cannot do PITR and it
+# takes proportionally longer as the database grows.
+
+- name: PostgreSQL backups
+  hosts: db_backup
+  become: true
+  vars:
+    pg_version: "17"
+    backup_dir: "/var/backups/postgres"
+    retention_days: 7
+    stanza: "main"
+
+  tasks:
+    - name: Install pgBackRest
+      ansible.builtin.apt: {name: pgbackrest, state: present, update_cache: true}
+
+    - name: Create the repository directory
+      ansible.builtin.file:
+        path: "{{ backup_dir }}"
+        state: directory
+        owner: postgres
+        group: postgres
+        mode: "0750"
+
+    - name: Warn when the repository is on the same host
+      ansible.builtin.debug:
+        msg: >-
+          {{ backup_dir }} appears to be local storage. Mount NFS or NAS here — a
+          backup on the same disk as the database does not survive the VM.
+      when: not backup_dir.startswith('/mnt') and not backup_dir.startswith('/nfs')
+
+    - name: Configure pgBackRest
+      ansible.builtin.copy:
+        dest: /etc/pgbackrest.conf
+        owner: postgres
+        group: postgres
+        mode: "0640"
+        content: |
+          # Managed by Autoprovision — ansible/db/postgres_backup.yml
+          [global]
+          repo1-path={{ backup_dir }}
+          repo1-retention-full=2
+          repo1-retention-diff={{ retention_days }}
+          repo1-bundle=y
+          repo1-block=y
+          compress-type=zst
+          process-max=4
+          log-level-console=info
+          start-fast=y
+
+          [{{ stanza }}]
+          pg1-path=/var/lib/postgresql/{{ pg_version }}/main
+          pg1-port=5432
+
+    - name: Enable WAL archiving
+      ansible.builtin.lineinfile:
+        path: "/etc/postgresql/{{ pg_version }}/main/postgresql.conf"
+        regexp: "^#?{{ item.k }}"
+        line: "{{ item.k }} = {{ item.v }}"
+      loop:
+        - {k: archive_mode, v: "on"}
+        - {k: archive_command, v: "'pgbackrest --stanza={{ stanza }} archive-push %p'"}
+        - {k: wal_level, v: replica}
+      notify: restart postgresql
+
+    - name: Flush handlers
+      ansible.builtin.meta: flush_handlers
+
+    - name: Create the stanza
+      become_user: postgres
+      ansible.builtin.command: "pgbackrest --stanza={{ stanza }} stanza-create"
+      register: stanza_out
+      changed_when: "'completed successfully' in stanza_out.stderr"
+      failed_when: stanza_out.rc != 0 and 'already exists' not in stanza_out.stderr
+
+    - name: Take a full backup now
+      become_user: postgres
+      ansible.builtin.command: "pgbackrest --stanza={{ stanza }} --type=full backup"
+      register: first_backup
+      changed_when: true
+
+    - name: Schedule full weekly and incremental every 15 minutes
+      ansible.builtin.cron:
+        name: "pgbackrest {{ item.name }}"
+        user: postgres
+        job: "pgbackrest --stanza={{ stanza }} --type={{ item.type }} backup"
+        minute: "{{ item.minute }}"
+        hour: "{{ item.hour }}"
+        weekday: "{{ item.weekday | default('*') }}"
+      loop:
+        - {name: full, type: full, minute: "0", hour: "1", weekday: "0"}
+        - {name: diff, type: diff, minute: "0", hour: "2"}
+        - {name: incr, type: incr, minute: "*/15", hour: "*"}
+
+    # A backup nobody has restored is a hypothesis, not a backup.
+    - name: Verify the repository weekly
+      ansible.builtin.cron:
+        name: pgbackrest verify
+        user: postgres
+        job: "pgbackrest --stanza={{ stanza }} verify"
+        minute: "0"
+        hour: "5"
+        weekday: "0"
+
+    - name: Show the backup set
+      become_user: postgres
+      ansible.builtin.command: "pgbackrest --stanza={{ stanza }} info"
+      register: info_out
+      changed_when: false
+
+    - name: Report
+      ansible.builtin.debug: {var: info_out.stdout_lines}
+
+  handlers:
+    - name: restart postgresql
+      ansible.builtin.systemd: {name: "postgresql@{{ pg_version }}-main", state: restarted}

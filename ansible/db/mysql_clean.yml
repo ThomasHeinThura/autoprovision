@@ -1,0 +1,44 @@
+---
+# DESTRUCTIVE — dissolve an InnoDB Cluster so it can be rebuilt from clean.
+# Leaves MySQL installed and user databases intact.
+- name: MySQL cluster teardown
+  hosts: db_mysql
+  become: true
+  vars:
+    cluster_label: "mysqlcluster"
+    db_admin_user: "provisioner"
+    db_admin_password: ""
+  tasks:
+    - name: Dissolve the cluster
+      when: inventory_hostname == ansible_play_hosts[0]
+      ansible.builtin.command: >-
+        mysqlsh --uri {{ db_admin_user }}@{{ inventory_hostname }}:3306
+        --password={{ db_admin_password }} --js
+        -e "try { dba.getCluster('{{ cluster_label }}').dissolve({force: true}); print('dissolved'); }
+            catch(e) { print('no cluster: ' + e.message); }"
+      register: dissolve
+      changed_when: "'dissolved' in dissolve.stdout"
+      failed_when: false
+      no_log: true
+    - name: Stop Group Replication on every node
+      community.mysql.mysql_query:
+        query: "STOP GROUP_REPLICATION"
+        login_user: "{{ db_admin_user }}"
+        login_password: "{{ db_admin_password }}"
+        login_host: 127.0.0.1
+      failed_when: false
+      no_log: true
+    - name: Remove the Group Replication configuration
+      ansible.builtin.file: {path: /etc/mysql/mysql.conf.d/group-replication.cnf, state: absent}
+      notify: restart mysql
+    - name: Stop MySQL Router
+      ansible.builtin.systemd: {name: mysqlrouter, state: stopped, enabled: false}
+      failed_when: false
+    - name: Report
+      ansible.builtin.debug:
+        msg: >-
+          Cluster dissolved on {{ inventory_hostname }}. MySQL is still installed and
+          your databases are untouched. Re-run the Database engine workload with Force.
+  handlers:
+    - name: restart mysql
+      ansible.builtin.systemd: {name: mysql, state: restarted}

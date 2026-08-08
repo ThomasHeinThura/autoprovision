@@ -1,0 +1,156 @@
+---
+# PostgreSQL 17 — single instance on Ubuntu 24.04.
+#
+# Installs from the PGDG repository, moves the data directory onto its own disk,
+# and sets scram-sha-256 authentication. It deliberately does NOT create any
+# application role — that is db/postgres_users.yml, so the engine is never usable
+# by an application until a least-privilege login exists.
+
+- name: PostgreSQL single instance
+  hosts: db_postgres
+  become: true
+  vars:
+    pg_version: "17"
+    db_port: "5432"
+    db_data_dir: "/var/lib/postgresql/17/main"
+    db_admin_user: "provisioner"
+    db_admin_password: ""
+    listen_cidr: "0.0.0.0/0"
+
+  pre_tasks:
+    - name: Fail early on an unsupported release
+      ansible.builtin.assert:
+        that: ansible_distribution == 'Ubuntu' and ansible_distribution_major_version | int >= 22
+        fail_msg: >-
+          PostgreSQL {{ pg_version }} is packaged for Ubuntu 22.04 and newer;
+          this host reports {{ ansible_distribution }} {{ ansible_distribution_version }}.
+        success_msg: "{{ ansible_distribution }} {{ ansible_distribution_version }}"
+
+    - name: Require a provisioning password
+      ansible.builtin.assert:
+        that: db_admin_password | length >= 12
+        fail_msg: >-
+          db_admin_password must be at least 12 characters. This account creates every
+          database and role on the instance.
+      no_log: true
+
+  tasks:
+    - name: Install prerequisites
+      ansible.builtin.apt:
+        name: [ca-certificates, curl, gnupg, python3-psycopg2, acl]
+        state: present
+        update_cache: true
+
+    - name: Add the PGDG signing key
+      ansible.builtin.get_url:
+        url: https://www.postgresql.org/media/keys/ACCC4CF8.asc
+        dest: /etc/apt/trusted.gpg.d/pgdg.asc
+        mode: "0644"
+
+    - name: Add the PGDG repository
+      ansible.builtin.apt_repository:
+        repo: "deb http://apt.postgresql.org/pub/repos/apt {{ ansible_distribution_release }}-pgdg main"
+        filename: pgdg
+        state: present
+
+    - name: Install PostgreSQL {{ pg_version }}
+      ansible.builtin.apt:
+        name: ["postgresql-{{ pg_version }}", "postgresql-client-{{ pg_version }}"]
+        state: present
+        update_cache: true
+
+    - name: Ensure the data directory exists and is owned by postgres
+      ansible.builtin.file:
+        path: "{{ db_data_dir }}"
+        state: directory
+        owner: postgres
+        group: postgres
+        mode: "0700"
+
+    - name: Point the cluster at the data directory
+      ansible.builtin.lineinfile:
+        path: "/etc/postgresql/{{ pg_version }}/main/postgresql.conf"
+        regexp: "^#?data_directory"
+        line: "data_directory = '{{ db_data_dir }}'"
+      notify: restart postgresql
+
+    - name: Listen on all interfaces
+      ansible.builtin.lineinfile:
+        path: "/etc/postgresql/{{ pg_version }}/main/postgresql.conf"
+        regexp: "^#?listen_addresses"
+        line: "listen_addresses = '*'"
+      notify: restart postgresql
+
+    - name: Set the port
+      ansible.builtin.lineinfile:
+        path: "/etc/postgresql/{{ pg_version }}/main/postgresql.conf"
+        regexp: "^#?port"
+        line: "port = {{ db_port }}"
+      notify: restart postgresql
+
+    # scram-sha-256, never md5 and never trust. md5 is broken for password storage
+    # and trust means any host that can reach the port is already authenticated.
+    - name: Require scram-sha-256 for password authentication
+      ansible.builtin.lineinfile:
+        path: "/etc/postgresql/{{ pg_version }}/main/postgresql.conf"
+        regexp: "^#?password_encryption"
+        line: "password_encryption = scram-sha-256"
+      notify: restart postgresql
+
+    - name: Write pg_hba.conf
+      ansible.builtin.copy:
+        dest: "/etc/postgresql/{{ pg_version }}/main/pg_hba.conf"
+        owner: postgres
+        group: postgres
+        mode: "0640"
+        content: |
+          # Managed by Autoprovision — ansible/db/postgres_single.yml
+          local   all   postgres                 peer
+          local   all   all                      scram-sha-256
+          host    all   all      127.0.0.1/32    scram-sha-256
+          host    all   all      ::1/128         scram-sha-256
+          host    all   all      {{ listen_cidr }}  scram-sha-256
+      notify: restart postgresql
+
+    - name: Start and enable PostgreSQL
+      ansible.builtin.systemd:
+        name: "postgresql@{{ pg_version }}-main"
+        state: started
+        enabled: true
+
+    - name: Flush handlers so the instance is live before roles are created
+      ansible.builtin.meta: flush_handlers
+
+    - name: Wait for the port to answer
+      ansible.builtin.wait_for:
+        port: "{{ db_port | int }}"
+        host: 127.0.0.1
+        timeout: 120
+
+    # The provisioning admin. Ansible uses this and nothing else; applications get
+    # their own roles from postgres_users.yml.
+    - name: Create the provisioning admin role
+      become_user: postgres
+      community.postgresql.postgresql_user:
+        name: "{{ db_admin_user }}"
+        password: "{{ db_admin_password }}"
+        role_attr_flags: CREATEDB,CREATEROLE,LOGIN
+        port: "{{ db_port }}"
+      no_log: true
+
+    - name: Report the version
+      become_user: postgres
+      community.postgresql.postgresql_query:
+        query: "SELECT version()"
+        port: "{{ db_port }}"
+      register: pg_version_out
+
+    - name: Show what is running
+      ansible.builtin.debug:
+        msg: "{{ pg_version_out.query_result[0].version }}"
+
+  handlers:
+    - name: restart postgresql
+      ansible.builtin.systemd:
+        name: "postgresql@{{ pg_version }}-main"
+        state: restarted

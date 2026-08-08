@@ -1,0 +1,143 @@
+---
+# MySQL 8.4 LTS — single instance on Ubuntu 24.04.
+#
+# Installs from the MySQL APT repository, relocates the data directory, and does
+# the equivalent of mysql_secure_installation as idempotent tasks. Creates no
+# application account — that is db/mysql_users.yml.
+
+- name: MySQL single instance
+  hosts: db_mysql
+  become: true
+  vars:
+    mysql_series: "8.4-lts"
+    db_port: "3306"
+    db_data_dir: "/var/lib/mysql"
+    db_admin_user: "provisioner"
+    db_admin_password: ""
+    admin_host: "%"
+    server_id: "{{ 1 + (ansible_play_hosts.index(inventory_hostname)) }}"
+
+  pre_tasks:
+    - name: Require a provisioning password
+      ansible.builtin.assert:
+        that: db_admin_password | length >= 12
+        fail_msg: "db_admin_password must be at least 12 characters."
+      no_log: true
+
+  tasks:
+    - name: Install prerequisites
+      ansible.builtin.apt:
+        name: [ca-certificates, curl, gnupg, python3-pymysql]
+        state: present
+        update_cache: true
+
+    - name: Add the MySQL signing key
+      ansible.builtin.get_url:
+        url: https://repo.mysql.com/RPM-GPG-KEY-mysql-2023
+        dest: /etc/apt/trusted.gpg.d/mysql.asc
+        mode: "0644"
+
+    - name: Add the MySQL repository
+      ansible.builtin.apt_repository:
+        repo: "deb http://repo.mysql.com/apt/ubuntu/ {{ ansible_distribution_release }} mysql-{{ mysql_series }}"
+        filename: mysql
+        state: present
+
+    - name: Install MySQL server
+      ansible.builtin.apt:
+        name: mysql-server
+        state: present
+        update_cache: true
+
+    - name: Ensure the data directory exists
+      ansible.builtin.file:
+        path: "{{ db_data_dir }}"
+        state: directory
+        owner: mysql
+        group: mysql
+        mode: "0750"
+
+    - name: Write the server configuration
+      ansible.builtin.copy:
+        dest: /etc/mysql/mysql.conf.d/autoprovision.cnf
+        mode: "0644"
+        content: |
+          # Managed by Autoprovision — ansible/db/mysql_single.yml
+          [mysqld]
+          server-id                = {{ server_id }}
+          port                     = {{ db_port }}
+          datadir                  = {{ db_data_dir }}
+          bind-address             = 0.0.0.0
+
+          # Required for Group Replication later, and good practice regardless:
+          # every table needs a primary key for row-based replication to be sane.
+          gtid_mode                = ON
+          enforce_gtid_consistency = ON
+          binlog_format            = ROW
+
+          # Never load data from arbitrary client-side files.
+          local_infile             = OFF
+          # Do not resolve client hostnames — it is slow and it makes host-based
+          # grants depend on DNS, which is a bad thing to depend on.
+          skip_name_resolve        = ON
+      notify: restart mysql
+
+    - name: Start and enable MySQL
+      ansible.builtin.systemd:
+        name: mysql
+        state: started
+        enabled: true
+
+    - name: Flush handlers
+      ansible.builtin.meta: flush_handlers
+
+    - name: Wait for the port
+      ansible.builtin.wait_for:
+        port: "{{ db_port | int }}"
+        host: 127.0.0.1
+        timeout: 120
+
+    - name: Create the provisioning admin
+      community.mysql.mysql_user:
+        name: "{{ db_admin_user }}"
+        host: "{{ admin_host }}"
+        password: "{{ db_admin_password }}"
+        priv: "*.*:ALL,GRANT"
+        login_unix_socket: /var/run/mysqld/mysqld.sock
+        state: present
+      no_log: true
+
+    # The equivalent of mysql_secure_installation, as idempotent tasks.
+    - name: Remove anonymous accounts
+      community.mysql.mysql_user:
+        name: ""
+        host_all: true
+        state: absent
+        login_unix_socket: /var/run/mysqld/mysqld.sock
+
+    - name: Remove the test database
+      community.mysql.mysql_db:
+        name: test
+        state: absent
+        login_unix_socket: /var/run/mysqld/mysqld.sock
+
+    - name: Confirm no anonymous or wildcard-host account survived
+      community.mysql.mysql_query:
+        query: >-
+          SELECT user, host FROM mysql.user
+          WHERE user = '' OR (host = '%' AND user NOT IN ('{{ db_admin_user }}'))
+        login_unix_socket: /var/run/mysqld/mysqld.sock
+      register: loose_accounts
+
+    - name: Report loose accounts
+      ansible.builtin.debug:
+        msg: >-
+          {{ 'No anonymous or unexpected wildcard accounts.'
+             if loose_accounts.query_result[0] | length == 0
+             else loose_accounts.query_result[0] }}
+
+  handlers:
+    - name: restart mysql
+      ansible.builtin.systemd:
+        name: mysql
+        state: restarted

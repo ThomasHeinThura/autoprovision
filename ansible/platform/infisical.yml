@@ -1,0 +1,128 @@
+---
+# Infisical — self-hosted secrets management.
+#
+# The point of this workload: provisioning passwords currently travel to Ansible
+# via --extra-vars, which puts them in the process list for the length of a run.
+# Anyone with shell access to the jump host can read them with ps. Once Infisical
+# holds them, playbooks fetch at run time and nothing sensitive appears on a
+# command line.
+
+- name: Infisical vault
+  hosts: docker_vm
+  become: true
+  vars:
+    vault_domain: "vault.example.com"
+    vault_admin_password: ""
+    project_slug: "autoprovision"
+    install_dir: /opt/infisical
+
+  pre_tasks:
+    - name: Require an admin password
+      ansible.builtin.assert:
+        that: vault_admin_password | length >= 14
+        fail_msg: >-
+          This account can read every credential the platform uses. Use at least
+          14 characters.
+      no_log: true
+
+  tasks:
+    - name: Create the install directory
+      ansible.builtin.file:
+        path: "{{ install_dir }}"
+        state: directory
+        mode: "0750"
+
+    - name: Generate the encryption and auth keys once
+      ansible.builtin.shell: |
+        set -o pipefail
+        test -f {{ install_dir }}/.keys || {
+          umask 077
+          {
+            echo "ENCRYPTION_KEY=$(openssl rand -hex 16)"
+            echo "AUTH_SECRET=$(openssl rand -base64 32)"
+          } > {{ install_dir }}/.keys
+        }
+      args:
+        executable: /bin/bash
+        creates: "{{ install_dir }}/.keys"
+
+    - name: Read the generated keys
+      ansible.builtin.slurp:
+        src: "{{ install_dir }}/.keys"
+      register: infisical_keys
+      no_log: true
+
+    - name: Write the compose file
+      ansible.builtin.copy:
+        dest: "{{ install_dir }}/docker-compose.yml"
+        mode: "0640"
+        content: |
+          # Managed by Autoprovision — ansible/platform/infisical.yml
+          services:
+            db:
+              image: postgres:17-alpine
+              restart: unless-stopped
+              environment:
+                POSTGRES_PASSWORD: {{ vault_admin_password }}
+                POSTGRES_USER: infisical
+                POSTGRES_DB: infisical
+              volumes: [infisical-db:/var/lib/postgresql/data]
+              healthcheck:
+                test: ["CMD-SHELL", "pg_isready -U infisical"]
+                interval: 5s
+                retries: 20
+              networks: [platform]
+
+            redis:
+              image: redis:7-alpine
+              restart: unless-stopped
+              networks: [platform]
+
+            backend:
+              image: infisical/infisical:latest-postgres
+              restart: unless-stopped
+              depends_on:
+                db: {condition: service_healthy}
+              environment:
+                DB_CONNECTION_URI: postgres://infisical:{{ vault_admin_password }}@db:5432/infisical
+                REDIS_URL: redis://redis:6379
+                SITE_URL: https://{{ vault_domain }}
+                {{ (infisical_keys.content | b64decode).split('\n')[0] }}
+                {{ (infisical_keys.content | b64decode).split('\n')[1] }}
+              labels:
+                - traefik.enable=true
+                - traefik.http.routers.infisical.rule=Host(`{{ vault_domain }}`)
+                - traefik.http.routers.infisical.tls=true
+                - traefik.http.services.infisical.loadbalancer.server.port=8080
+              networks: [platform]
+
+          volumes:
+            infisical-db:
+
+          networks:
+            platform:
+              external: true
+      no_log: true
+
+    - name: Start Infisical
+      community.docker.docker_compose_v2:
+        project_src: "{{ install_dir }}"
+        state: present
+
+    - name: Wait for it to answer
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:8080/api/status"
+        status_code: [200, 404]
+      register: infisical_up
+      retries: 30
+      delay: 5
+      until: infisical_up.status in [200, 404]
+
+    - name: Report next steps
+      ansible.builtin.debug:
+        msg:
+          - "Infisical is up at https://{{ vault_domain }}"
+          - "Create the first admin account in the browser — it is not seeded here,"
+          - "because a seeded admin password would have to be written somewhere."
+          - "Then create project '{{ project_slug }}' and a machine identity for the"
+          - "jump host, and store its token in ~/.infisical-token (mode 0600)."

@@ -1,4 +1,9 @@
-fastapi
-uvicorn[standard]
-ansible
-ansible-runner
+# Jump-host runtime. Deliberately small — the console is prebuilt and committed,
+# so nothing here needs Node or a registry.
+fastapi>=0.115
+uvicorn[standard]>=0.34
+ansible>=11.0
+ansible-runner>=2.4
+
+# Development only:
+#   pytest httpx pytest-asyncio ruff pre-commit

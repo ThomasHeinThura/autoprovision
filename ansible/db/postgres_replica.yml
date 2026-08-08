@@ -1,0 +1,104 @@
+---
+# PostgreSQL two-node streaming replication.
+#
+# A primary and one hot standby. There is no arbiter, so failover is MANUAL by
+# design: an automatic promotion with two nodes cannot distinguish "the primary
+# died" from "the network between us died", and guessing wrong gives two
+# primaries and divergent data.
+
+- name: PostgreSQL streaming replication
+  hosts: db_postgres
+  become: true
+  vars:
+    pg_version: "17"
+    db_port: "5432"
+    db_admin_user: "provisioner"
+    db_admin_password: ""
+    db_data_dir: "/var/lib/postgresql/17/main"
+
+  pre_tasks:
+    - name: Require exactly two nodes
+      ansible.builtin.assert:
+        that: ansible_play_hosts | length == 2
+        fail_msg: "This shape is exactly two nodes. Use Patroni for three or more."
+
+    - name: State the failover model plainly
+      ansible.builtin.debug:
+        msg: >-
+          Failover is manual. Promote with 'pg_ctl promote' after confirming the
+          primary is genuinely down — not merely unreachable from here.
+
+  tasks:
+    - name: Create the replication role on the primary
+      when: inventory_hostname == ansible_play_hosts[0]
+      become_user: postgres
+      community.postgresql.postgresql_user:
+        name: replicator
+        password: "{{ db_admin_password }}"
+        role_attr_flags: REPLICATION,LOGIN
+        port: "{{ db_port }}"
+      no_log: true
+
+    - name: Allow replication connections from the standby
+      when: inventory_hostname == ansible_play_hosts[0]
+      ansible.builtin.lineinfile:
+        path: "/etc/postgresql/{{ pg_version }}/main/pg_hba.conf"
+        line: "host replication replicator {{ ansible_play_hosts[1] }}/32 scram-sha-256"
+      notify: reload postgresql
+
+    - name: Enable WAL settings for replication
+      when: inventory_hostname == ansible_play_hosts[0]
+      ansible.builtin.lineinfile:
+        path: "/etc/postgresql/{{ pg_version }}/main/postgresql.conf"
+        regexp: "^#?{{ item.k }}"
+        line: "{{ item.k }} = {{ item.v }}"
+      loop:
+        - {k: wal_level, v: replica}
+        - {k: max_wal_senders, v: 10}
+        - {k: max_replication_slots, v: 10}
+        - {k: hot_standby, v: "on"}
+      notify: restart postgresql
+
+    - name: Flush handlers
+      ansible.builtin.meta: flush_handlers
+
+    - name: Base-backup the standby from the primary
+      when: inventory_hostname == ansible_play_hosts[1]
+      become_user: postgres
+      ansible.builtin.command: >-
+        pg_basebackup -h {{ ansible_play_hosts[0] }} -D {{ db_data_dir }}
+        -U replicator -Fp -Xs -P -R -S standby1 -C
+      environment:
+        PGPASSWORD: "{{ db_admin_password }}"
+      args:
+        creates: "{{ db_data_dir }}/standby.signal"
+      no_log: true
+
+    - name: Start the standby
+      when: inventory_hostname == ansible_play_hosts[1]
+      ansible.builtin.systemd:
+        name: "postgresql@{{ pg_version }}-main"
+        state: started
+        enabled: true
+
+    - name: Confirm replication is streaming
+      when: inventory_hostname == ansible_play_hosts[0]
+      become_user: postgres
+      community.postgresql.postgresql_query:
+        query: "SELECT client_addr, state, sync_state FROM pg_stat_replication"
+        port: "{{ db_port }}"
+      register: repl
+      retries: 12
+      delay: 5
+      until: repl.query_result | length > 0
+
+    - name: Report
+      when: inventory_hostname == ansible_play_hosts[0]
+      ansible.builtin.debug:
+        var: repl.query_result
+
+  handlers:
+    - name: reload postgresql
+      ansible.builtin.systemd: {name: "postgresql@{{ pg_version }}-main", state: reloaded}
+    - name: restart postgresql
+      ansible.builtin.systemd: {name: "postgresql@{{ pg_version }}-main", state: restarted}

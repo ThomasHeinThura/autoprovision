@@ -1,0 +1,102 @@
+---
+# Engine-agnostic hardening, run immediately after any database install.
+#
+# Deliberately does NOT touch built-in superusers — that happens in
+# lock_builtins.yml after the application accounts exist, because disabling `sa`
+# before anything else can log in leaves you locked out of your own database.
+
+- name: Harden the database host
+  hosts: all
+  become: true
+  vars:
+    db_engine: "mssql"
+    db_port: "1433"
+
+  tasks:
+    - name: Disable transparent huge pages for this boot
+      ansible.builtin.shell: |
+        if [ -w /sys/kernel/mm/transparent_hugepage/enabled ]; then
+          echo never > /sys/kernel/mm/transparent_hugepage/enabled
+        fi
+      changed_when: false
+      failed_when: false
+
+    - name: Persist the transparent huge pages setting across reboots
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/disable-thp.service
+        mode: "0644"
+        content: |
+          # Managed by Autoprovision. Transparent huge pages cause latency spikes
+          # under database allocation patterns; every major engine recommends off.
+          [Unit]
+          Description=Disable transparent huge pages
+          After=sysinit.target local-fs.target
+
+          [Service]
+          Type=oneshot
+          ExecStart=/bin/sh -c "echo never > /sys/kernel/mm/transparent_hugepage/enabled"
+          RemainAfterExit=yes
+
+          [Install]
+          WantedBy=basic.target
+      notify: reload systemd
+
+    - name: Enable the transparent huge pages unit
+      ansible.builtin.systemd:
+        name: disable-thp
+        enabled: true
+        daemon_reload: true
+
+    # Databases mmap and cache aggressively. Swapping a hot buffer pool to disk
+    # produces latency that looks like a failing disk.
+    - name: Discourage swapping
+      ansible.posix.sysctl:
+        name: vm.swappiness
+        value: "1"
+        sysctl_file: /etc/sysctl.d/60-autoprovision-db.conf
+        state: present
+        reload: true
+
+    - name: Raise the open file limit
+      ansible.builtin.copy:
+        dest: /etc/security/limits.d/60-autoprovision-db.conf
+        mode: "0644"
+        content: |
+          # Managed by Autoprovision
+          *  soft  nofile  65536
+          *  hard  nofile  65536
+
+    - name: Install chrony
+      ansible.builtin.apt:
+        name: chrony
+        state: present
+        update_cache: true
+
+    # Clock skew between nodes breaks certificate exchange during availability
+    # group setup, and the error it produces names neither the clock nor the node.
+    - name: Start chrony
+      ansible.builtin.systemd:
+        name: chrony
+        state: started
+        enabled: true
+
+    - name: Report clock offset
+      ansible.builtin.command: chronyc tracking
+      register: chrony_out
+      changed_when: false
+      failed_when: false
+
+    - name: Show clock state
+      ansible.builtin.debug:
+        msg: "{{ chrony_out.stdout_lines | select('search', 'System time') | list }}"
+
+    - name: Confirm the engine is listening
+      ansible.builtin.wait_for:
+        port: "{{ db_port | int }}"
+        host: 127.0.0.1
+        timeout: 60
+
+  handlers:
+    - name: reload systemd
+      ansible.builtin.systemd:
+        daemon_reload: true

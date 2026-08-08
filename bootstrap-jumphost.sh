@@ -12,7 +12,7 @@ set -euo pipefail
 #
 # Note: talosctl and the cilium CLI are NOT installed — the stack moved from
 # Talos+Cilium to RKE2 (Canal CNI). RKE2 itself is installed on the cluster nodes
-# by Ansible (ansible/rke2_cluster.yml), not from the jump host.
+# by Ansible (ansible/k8s/rke2_cluster.yml), not from the jump host.
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV_DIR="$REPO_ROOT/.venv"
@@ -146,6 +146,15 @@ start_web_ui() {
   source "$VENV_DIR/bin/activate"
 
   # Stop any previous instance so re-runs are clean.
+  # The console is built off-host and committed. If app/dist/ is missing the jump
+  # host cannot build it — it has no Node by design — so say so plainly rather
+  # than serving a 503 the operator has to go and decode.
+  if [ ! -f "$REPO_ROOT/app/dist/index.html" ]; then
+    warn "app/dist/ is missing — the console will not render."
+    warn "Build it on a workstation and commit the output:"
+    warn "    cd console && npm ci && npm run build"
+  fi
+
   pkill -f "uvicorn app.main:app" >/dev/null 2>&1 || true
 
   if [ -f "$REPO_ROOT/app/main.py" ]; then

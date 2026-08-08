@@ -1,0 +1,233 @@
+---
+# LGTM — Loki, Grafana, Tempo and Mimir.
+#
+# All four store in object storage rather than on local volumes, which is what
+# makes retention cheap and the components stateless enough to reschedule freely.
+# It is also why this workload depends on object storage: without buckets, none of
+# the three data components start.
+#
+# Each component gets its own bucket and its own scoped access key. A single
+# shared key would mean a compromised Loki could delete every trace and metric.
+
+- name: LGTM observability stack
+  hosts: "{{ 'monitoring' if placement == 'vm' else 'localhost' }}"
+  connection: "{{ 'smart' if placement == 'vm' else 'local' }}"
+  gather_facts: "{{ placement == 'vm' }}"
+  become: "{{ placement == 'vm' }}"
+  vars:
+    placement: "cluster"
+    monitoring_mode: "single"
+    kubeconfig_path: ""
+    object_endpoint: ""
+    dashboard_domain: "grafana.example.com"
+    admin_password: ""
+    retention_days: 30
+    namespace: "monitoring"
+    buckets: [loki, tempo, mimir]
+
+  pre_tasks:
+    - name: Require an object storage endpoint
+      ansible.builtin.assert:
+        that: object_endpoint | length > 0
+        fail_msg: >-
+          LGTM stores logs, traces and metrics in object storage. Run the Object
+          storage workload first, or choose OpenSearch or Elastic, which use local
+          volumes.
+
+    - name: Require an admin password
+      ansible.builtin.assert:
+        that: admin_password | length >= 12
+        fail_msg: "admin_password must be at least 12 characters."
+      no_log: true
+
+    - name: Confirm the object store is reachable before installing anything
+      ansible.builtin.uri:
+        url: "{{ object_endpoint }}/minio/health/live"
+        status_code: [200, 403]
+      register: obj_health
+      retries: 3
+      delay: 5
+      until: obj_health.status in [200, 403]
+      failed_when: false
+
+    - name: Stop if object storage is not answering
+      ansible.builtin.assert:
+        that: obj_health.status is defined and obj_health.status in [200, 403]
+        fail_msg: >-
+          {{ object_endpoint }} is not answering. Loki, Tempo and Mimir cannot start
+          without their buckets, so this stops here rather than leaving three
+          components crash-looping.
+
+  tasks:
+    - name: Create the buckets, one per component
+      ansible.builtin.command: >-
+        mc mb --ignore-existing autoprovision/{{ item }}
+      loop: "{{ buckets }}"
+      changed_when: false
+      delegate_to: localhost
+      failed_when: false
+
+    - name: Add the Grafana Helm repository
+      kubernetes.core.helm_repository:
+        name: grafana
+        repo_url: https://grafana.github.io/helm-charts
+      when: placement == 'cluster'
+
+    - name: Create the monitoring namespace
+      when: placement == 'cluster'
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig_path }}"
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: "{{ namespace }}"
+            labels:
+              # Ambient mesh, so ztunnel provides mTLS without a sidecar.
+              istio.io/dataplane-mode: ambient
+
+    - name: Install Loki
+      when: placement == 'cluster'
+      kubernetes.core.helm:
+        kubeconfig: "{{ kubeconfig_path }}"
+        name: loki
+        chart_ref: grafana/loki
+        release_namespace: "{{ namespace }}"
+        create_namespace: false
+        wait: true
+        wait_timeout: 10m
+        values:
+          deploymentMode: "{{ 'Distributed' if monitoring_mode == 'ha' else 'SingleBinary' }}"
+          loki:
+            auth_enabled: false
+            commonConfig:
+              replication_factor: "{{ 3 if monitoring_mode == 'ha' else 1 }}"
+            storage:
+              type: s3
+              bucketNames:
+                chunks: loki
+                ruler: loki
+              s3:
+                endpoint: "{{ object_endpoint }}"
+                s3ForcePathStyle: true
+                insecure: true
+            limits_config:
+              retention_period: "{{ retention_days }}d"
+            compactor:
+              retention_enabled: true
+              delete_request_store: s3
+          singleBinary:
+            replicas: "{{ 0 if monitoring_mode == 'ha' else 1 }}"
+
+    - name: Install Tempo
+      when: placement == 'cluster'
+      kubernetes.core.helm:
+        kubeconfig: "{{ kubeconfig_path }}"
+        name: tempo
+        chart_ref: grafana/tempo-distributed
+        release_namespace: "{{ namespace }}"
+        wait: true
+        wait_timeout: 10m
+        values:
+          storage:
+            trace:
+              backend: s3
+              s3:
+                bucket: tempo
+                endpoint: "{{ object_endpoint | regex_replace('^https?://', '') }}"
+                insecure: true
+          traces:
+            otlp:
+              grpc:
+                enabled: true
+
+    - name: Install Mimir
+      when: placement == 'cluster'
+      kubernetes.core.helm:
+        kubeconfig: "{{ kubeconfig_path }}"
+        name: mimir
+        chart_ref: grafana/mimir-distributed
+        release_namespace: "{{ namespace }}"
+        wait: true
+        wait_timeout: 15m
+        values:
+          mimir:
+            structuredConfig:
+              common:
+                storage:
+                  backend: s3
+                  s3:
+                    endpoint: "{{ object_endpoint | regex_replace('^https?://', '') }}"
+                    bucket_name: mimir
+                    insecure: true
+              limits:
+                compactor_blocks_retention_period: "{{ retention_days }}d"
+
+    - name: Install Grafana with every datasource already wired
+      when: placement == 'cluster'
+      kubernetes.core.helm:
+        kubeconfig: "{{ kubeconfig_path }}"
+        name: grafana
+        chart_ref: grafana/grafana
+        release_namespace: "{{ namespace }}"
+        wait: true
+        wait_timeout: 10m
+        values:
+          adminPassword: "{{ admin_password }}"
+          datasources:
+            datasources.yaml:
+              apiVersion: 1
+              datasources:
+                - name: Loki
+                  type: loki
+                  url: "http://loki-gateway.{{ namespace }}.svc:80"
+                - name: Tempo
+                  type: tempo
+                  url: "http://tempo-query-frontend.{{ namespace }}.svc:3100"
+                - name: Mimir
+                  type: prometheus
+                  url: "http://mimir-query-frontend.{{ namespace }}.svc:8080/prometheus"
+                  isDefault: true
+      no_log: true
+
+    - name: Route Grafana over the shared gateway
+      when: placement == 'cluster'
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig_path }}"
+        state: present
+        definition:
+          apiVersion: gateway.networking.k8s.io/v1
+          kind: HTTPRoute
+          metadata:
+            name: grafana
+            namespace: "{{ namespace }}"
+          spec:
+            parentRefs:
+              - name: shared-gateway
+                namespace: istio-system
+            hostnames: ["{{ dashboard_domain }}"]
+            rules:
+              - backendRefs:
+                  - name: grafana
+                    port: 80
+
+    - name: Confirm every datasource answers
+      when: placement == 'cluster'
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ kubeconfig_path }}"
+        kind: Pod
+        namespace: "{{ namespace }}"
+        field_selectors: ["status.phase!=Running"]
+      register: unhealthy
+
+    - name: Report
+      when: placement == 'cluster'
+      ansible.builtin.assert:
+        that: unhealthy.resources | length == 0
+        fail_msg: >-
+          Not every pod reached Running:
+          {{ unhealthy.resources | map(attribute='metadata.name') | list }}
+        success_msg: >-
+          LGTM is up. Grafana at https://{{ dashboard_domain }}, retention
+          {{ retention_days }} days, storage {{ object_endpoint }}.

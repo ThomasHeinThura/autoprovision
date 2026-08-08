@@ -3,8 +3,8 @@
 This repository contains Kubernetes deployment configurations for WSO2 API Manager integrated with **Istio in ambient mode**. Ingress is handled by the **Kubernetes Gateway API** (`gatewayClassName: istio`); there is **no `istio-ingressgateway`** and **no sidecars** — workload namespaces join the mesh via the `istio.io/dataplane-mode=ambient` label (ztunnel provides L4 mTLS).
 
 > In this lab these steps are normally run for you by the Ansible playbooks
-> [`ansible/k8s_addons.yml`](../ansible/k8s_addons.yml) (`component=istio`) and
-> [`ansible/k8s_wso2.yml`](../ansible/k8s_wso2.yml). The manual steps below are the equivalent.
+> [`ansible/k8s/addons.yml`](../ansible/k8s/addons.yml) (`component=istio`) and
+> [`ansible/k8s/wso2.yml`](../ansible/k8s/wso2.yml). The manual steps below are the equivalent.
 
 ## Prerequisites
 

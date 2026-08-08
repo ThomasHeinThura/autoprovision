@@ -1,0 +1,95 @@
+---
+# MySQL backups with Percona XtraBackup.
+#
+# Physical hot backup plus binary logs for point-in-time recovery. mysqldump is a
+# logical export — fine for a small schema, wrong for anything you would miss.
+
+- name: MySQL backups
+  hosts: db_backup
+  become: true
+  vars:
+    db_admin_user: "provisioner"
+    db_admin_password: ""
+    backup_dir: "/var/backups/mysql"
+    retention_days: 7
+
+  tasks:
+    - name: Install XtraBackup
+      ansible.builtin.apt: {name: percona-xtrabackup-84, state: present, update_cache: true}
+      failed_when: false
+      register: xtrabackup_install
+
+    - name: Fall back to the distribution package
+      when: xtrabackup_install is failed
+      ansible.builtin.apt: {name: percona-xtrabackup, state: present}
+
+    - name: Create the backup directory
+      ansible.builtin.file:
+        path: "{{ backup_dir }}"
+        state: directory
+        owner: mysql
+        group: mysql
+        mode: "0750"
+
+    - name: Install the backup script
+      ansible.builtin.copy:
+        dest: /usr/local/sbin/mysql-backup.sh
+        owner: root
+        group: root
+        mode: "0700"          # root-only: it holds credentials
+        content: |
+          #!/bin/bash
+          # Managed by Autoprovision — ansible/db/mysql_backup.yml
+          set -euo pipefail
+          DIR="{{ backup_dir }}"
+          USER="{{ db_admin_user }}"
+          PASS="{{ db_admin_password }}"
+          KEEP={{ retention_days }}
+          MODE="${1:-full}"
+
+          # Only the current primary backs up, so backups follow a failover. A
+          # standalone instance reports no group membership and counts as primary.
+          ROLE=$(mysql -u"$USER" -p"$PASS" -N -B -e \
+            "SELECT IFNULL((SELECT MEMBER_ROLE FROM performance_schema.replication_group_members
+              WHERE MEMBER_HOST = @@hostname), 'PRIMARY')" 2>/dev/null || echo PRIMARY)
+          if [ "$ROLE" != "PRIMARY" ]; then
+            echo "$(date -Is) this node is $ROLE, skipping"; exit 0
+          fi
+
+          STAMP=$(date +%Y%m%d-%H%M%S)
+          if [ "$MODE" = "full" ]; then
+            xtrabackup --backup --user="$USER" --password="$PASS" \
+              --target-dir="$DIR/full-$STAMP"
+            ln -sfn "$DIR/full-$STAMP" "$DIR/latest-full"
+          else
+            xtrabackup --backup --user="$USER" --password="$PASS" \
+              --target-dir="$DIR/incr-$STAMP" \
+              --incremental-basedir="$(readlink -f "$DIR/latest-full")"
+          fi
+
+          find "$DIR" -maxdepth 1 -type d -name 'full-*' -mtime +"$KEEP" -exec rm -rf {} +
+          find "$DIR" -maxdepth 1 -type d -name 'incr-*' -mtime +"$KEEP" -exec rm -rf {} +
+          echo "$(date -Is) $MODE backup complete"
+      no_log: true
+
+    - name: Take a full backup now, so the schedule has a base
+      ansible.builtin.command: /usr/local/sbin/mysql-backup.sh full
+      changed_when: true
+
+    - name: Schedule full daily and incremental every 15 minutes
+      ansible.builtin.cron:
+        name: "mysql {{ item.name }} backup"
+        user: root
+        job: "/usr/local/sbin/mysql-backup.sh {{ item.name }} >> /var/log/mysql-backup.log 2>&1"
+        minute: "{{ item.minute }}"
+        hour: "{{ item.hour }}"
+      loop:
+        - {name: full, minute: "0", hour: "1"}
+        - {name: incr, minute: "*/15", hour: "*"}
+
+    - name: Report
+      ansible.builtin.debug:
+        msg: >-
+          Full daily at 01:00, incremental every 15 minutes, {{ retention_days }} day
+          retention, into {{ backup_dir }}. Point that at NFS or NAS if it is not
+          already — a backup on the same disk does not survive the VM.

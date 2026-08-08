@@ -1,428 +1,225 @@
-# Autoprovision — RKE2 + Istio Control Plane
+# Autoprovision
 
-End-to-end automation for the production + UAT rollout: one jump host runs a Python control plane
-that installs **RKE2 Kubernetes clusters, Docker platform stacks (GitLab + ELK), and SQL Server**
-— all in **parallel** — then per-cluster add-ons (Istio, cert-manager, ArgoCD, Headlamp) and
-**WSO2** are deployed from the team's repo.
+On-premise infrastructure provisioning, driven from one jump host.
 
-> **What changed from the original design:** the Kubernetes layer moved from
-> **Talos + Cilium + Envoy Gateway** to **RKE2 + default CNI (Canal) + Istio ambient**. SQL Server
-> runs on dedicated VMs installed by Ansible, and the control plane runs multiple stacks at once.
-> The requirement docs are under [`planning/`](planning/) — start with
-> [planning/00-old-vs-new.md](planning/00-old-vs-new.md) for the old-vs-new summary.
+A FastAPI control plane runs Ansible against your VMs and installs RKE2 clusters,
+databases, object storage, monitoring, the Docker platform stack and WSO2 —
+several at once, on execution day. Every workload carries its own requirements,
+operator guide and design reasoning, so the person running it does not need the
+person who built it.
 
----
-
-## Versions (pinned)
-
-| Layer | Pin |
-| ----- | --- |
-| RKE2 | **v1.36.1+rke2r2** (Kubernetes v1.36.1) |
-| CNI | **Canal** (default, bundled with RKE2) — kube-proxy kept |
-| K8s ingress | **Istio 1.30 ambient** (`profile=ambient`; ingress via Kubernetes Gateway API) |
-| SQL Server | **2025** (default; 2022 selectable per card) — Prod HA AG (3 nodes, Pacemaker), UAT single instance |
-| WSO2 | APIM 4.7.0 / IS 7.3.0 via [`WSO2_APIM_KUBE_ISTIO/`](WSO2_APIM_KUBE_ISTIO/README.md) |
-| Docker platform | GitLab CE 19.0.1, ELK 9.1.4, PostgreSQL 17.10, Traefik v3.7.1, SonarQube, ElastAlert2 |
-
-Full matrix: [planning/version-rke2.md](planning/version-rke2.md).
-
-> **RKE2 v1.36 note:** the RKE2-bundled ingress is now Traefik (ingress-nginx retired upstream).
-> Because **Istio** owns Kubernetes ingress, the RKE2 server config disables the bundled ingress
-> (`disable: [rke2-ingress-nginx, rke2-traefik]`) — handled automatically by `rke2_cluster.yml`.
-> This is unrelated to the Docker-platform Traefik on the GitLab/ELK VMs.
+- **[techstack.md](techstack.md)** — every component, why it was chosen, and what was rejected
+- **[FEATURES.md](FEATURES.md)** — what works, what is specified, what is still a decision
+- **[CHANGELOG.md](CHANGELOG.md)** — what changed and why
+- **[docs/status/service-status.md](docs/status/service-status.md)** — what has actually been tested in the lab
 
 ---
 
-## Topology (19 VMs)
+## Start here
 
-| Env | VMs |
-| --- | --- |
-| **Production (12)** | 3 RKE2 control plane + 5 RKE2 workers · 1 ELK · 3 MSSQL (read-scale AG) |
-| **UAT (5)** | 1 RKE2 control plane + 2 RKE2 workers · 1 MSSQL (single) · 1 ELK |
-| **Shared (2)** | 1 GitLab (Docker) · 1 jump host |
+### 1 · Prepare one VM
 
-Sizing: [planning/vm-requirements-rke2.md](planning/vm-requirements-rke2.md).
+You need a **jump host** — 2 vCPU, 4 GB RAM, Ubuntu 24.04 — that can reach every
+target on `22/tcp`. Nothing else is required to begin.
 
-## What is automated vs documented
-
-| Step | How |
-| ---- | --- |
-| Docker base + GitLab + SonarQube + ELK | **Ansible** (web UI tracks) |
-| SQL Server (single + HA AG + cleanup/reset) | **Ansible** (web UI tracks) |
-| RKE2 cluster install + scale (servers + agents) | **Ansible** (web UI tracks) |
-| MetalLB, Istio **ambient** + shared Gateway, cert-manager + internal CA, ArgoCD, Headlamp | **Ansible** (web UI cards → `k8s_addons.yml`); runbook = manual reference ([rke2-cluster/](rke2-cluster/)) |
-| WSO2 APIM + IS | **Ansible** (web UI cards → `k8s_wso2.yml`, renders the team repo [WSO2_APIM_KUBE_ISTIO](WSO2_APIM_KUBE_ISTIO/README.md)) |
-| TLS certs (Traefik VMs + K8s secret, PEM or cert-manager auto-renew) | **Ansible** (web UI Certificates cards) |
-| Backups — RKE2 etcd snapshots + MSSQL FULL/LOG | **Ansible** (web UI Backups & DR cards) |
-| OpenTelemetry Collector | **Runbook** ([rke2-cluster/](rke2-cluster/)) |
-
----
-
-# Operator flow (start to finish)
-
-## Step 0 — Prepare each target VM (one-time)
-
-On **every** target VM (RKE2 nodes, ELK VMs, GitLab VM, MSSQL VMs), create the automation user
-Ansible logs in as:
+### 2 · Bootstrap it
 
 ```bash
-ssh <existing-admin>@<vm-ip>
-sudo adduser autoprovision
-sudo usermod -aG sudo autoprovision
-echo 'autoprovision ALL=(ALL) NOPASSWD:ALL' | sudo tee /etc/sudoers.d/autoprovision
-```
-
-Customer prerequisites (manual): DNS records, firewall rules, NFS/NAS export, the RKE2
-registration address / VIP, and TLS cert handover if not self-signing.
-
-## Step 1 — SSH into the jump host and bootstrap
-
-```bash
-ssh <username>@<jump-host-ip>
-
-# Base tooling
-sudo apt update
-sudo apt install -y git curl wget sshpass
-
-# Get the repo and run the one-shot bootstrap
-cd ~
+ssh <you>@<jump-host>
+sudo apt update && sudo apt install -y git curl
 git clone https://github.com/ThomasHeinThura/autoprovision.git
 cd autoprovision
-chmod +x bootstrap-jumphost.sh
 ./bootstrap-jumphost.sh
 ```
 
-`bootstrap-jumphost.sh` installs Python + venv, Ansible + ansible-runner, **kubectl, helm,
-istioctl**, creates `data/` (state, logs, per-job inventory), and starts the FastAPI web UI on
-port **3000**. It prints:
+This installs Python, Ansible, `kubectl`, `helm` and `istioctl`, then starts the
+console on port **3000**. It needs no Node and no npm registry — the console is
+built off-host and committed, so an air-gapped jump host works.
 
 ```text
 [INFO]  Bootstrap complete.
 Open: http://<jump-host-ip>:3000/
 ```
 
-Stop / restart the UI:
+Stop it with `scripts/stop-console.sh`; start it again by re-running the bootstrap.
+
+### 3 · Prepare the targets
+
+The console's **Host bootstrap** workload creates the `autoprovision` account and
+installs the jump host's SSH key across every VM at once. That replaces nineteen
+manual SSH sessions and moves the whole system onto key authentication.
+
+To do it by hand instead, on each target:
 
 ```bash
-pkill -f "uvicorn app.main:app"     # stop
-./bootstrap-jumphost.sh             # restart
+sudo adduser autoprovision
+sudo usermod -aG sudo autoprovision
+echo 'autoprovision ALL=(ALL) NOPASSWD:ALL' | sudo tee /etc/sudoers.d/autoprovision
 ```
 
-## Step 2 — Open the parallel control plane
+Customer prerequisites stay manual: DNS records, firewall rules, NFS or NAS
+exports, the cluster registration address, and TLS certificate handover if you are
+not self-signing.
 
-```text
-http://<jump-host-ip>:3000/
-```
+### 4 · Work through the run sheet
 
-The home page is the **multi-track dashboard**. Each track is a card you run independently and
-**concurrently** — every job gets its own inventory file (`data/inventory/<job_id>.ini`) and its
-own log (`data/logs/<job_id>.log`), so parallel runs never collide.
+The console opens on **Shared services**. Each environment is its own screen, and
+each workload is a row you open, configure and run. Workloads run independently
+and in parallel — every run gets its own inventory and its own log, so nothing
+collides.
 
-- Set the **Default SSH User/Password** at the top and click **Apply Defaults To Cards** to
-  prefill all cards (default user `autoprovision`).
+Four tabs on every workload:
 
-## Step 3 — Run the tracks in parallel
+| Tab | What it holds |
+| --- | ------------- |
+| **Configure** | The form, the resolved plan, the inventory, and live output |
+| **Requirements** | VM count, sizing, ports, and what must be true before you run |
+| **Guide** | The operator walkthrough |
+| **Theory** | Why it is designed this way, and what it does not protect against |
 
-Fill each card and click **Run** (or **Preview** to see the inventory + playbook steps first).
-Click **Run All Configured** to launch every card that has its target filled in.
+A workload that is waiting on another says so — `Waiting on 4 · RKE2 cluster` —
+rather than appearing runnable and failing ten minutes in.
 
-| Card | What it installs | Key inputs |
-| ---- | ---------------- | ---------- |
-| **GitLab (shared)** | Docker base → **Traefik** → Platform (PostgreSQL + Dockhand) → GitLab CE+Runner+Registry → SonarQube | GitLab VM IP, domains, runner token (optional) |
-| **Prod RKE2 Cluster** | RKE2 v1.36.1 on 3 servers + 5 agents, Canal CNI, kubeconfig pulled to jump host | cluster name, 3 CP IPs, 5 worker IPs, registration address, RKE2 token |
-| **UAT RKE2 Cluster** | RKE2 on 1 server + 2 agents | cluster name, 1 CP IP, 2 worker IPs, RKE2 token |
-| **Prod ELK** | Docker base → **Traefik** → Elasticsearch/Logstash/Kibana/Fleet/APM (Kibana via Traefik) | ELK VM IP, Kibana domain |
-| **UAT ELK** | same, UAT ELK VM | ELK VM IP, Kibana domain |
-| **Prod MSSQL AG** | SQL Server 2025 (or 2022) on 3 nodes + Always On HA AG with Pacemaker (first IP = primary) | 3 node IPs, SA password, AG name, listener/VIP |
-| **UAT MSSQL** | SQL Server 2025 (or 2022) single instance | VM IP, SA password |
-| **Istio / ArgoCD / Headlamp / WSO2 / cert cards** | Per-cluster add-ons + WSO2 (see Step 4–5) | cluster name, hosts, MetalLB range |
-| **Backups & DR** | RKE2 etcd snapshots (scheduled + on-demand) · MSSQL FULL/LOG backups with retention | server/node IPs, SA password |
-
-> **Every Docker VM runs Traefik.** Traefik is installed as its own stack right after Docker base
-> and **owns the shared `platform` network** that the service stacks attach to. Each service is
-> reachable over HTTPS at its domain (GitLab/registry/Dockhand/SonarQube on the GitLab VM; Kibana
-> on each ELK VM) — no raw service ports. The GitLab VM's platform stack is **PostgreSQL + Dockhand
-> only** (Traefik is separate). This Traefik (v3.7.1) is the Docker-platform ingress and is
-> unrelated to Istio (Kubernetes ingress).
-
-> **Order tip:** start **GitLab** first (it hosts manifests/registry), then fire everything else.
-> All tracks are independent and run together.
-
-### CLI equivalent (optional)
-
-The same playbooks can run directly from the jump host with a hand-written INI inventory.
-Groups: `docker_vm` (Docker stacks), `mssql` / `mssql_ag` / `mssql_backup` (SQL Server),
-`rke2_servers` / `rke2_agents` (cluster) — one `ip ansible_user=autoprovision ansible_become=true`
-line per host:
-
-```bash
-# RKE2 cluster (first host in rke2_servers bootstraps; default CNI = Canal)
-ansible-playbook -i <inv> ansible/rke2_cluster.yml \
-  --extra-vars '{"cluster_name":"prod-cluster","rke2_token":"<token>","registration_address":"rke2-prod.example.local"}'
-
-# SQL Server — read-scale AG (3 nodes) / single (UAT)
-ansible-playbook -i <inv> ansible/mssql_ag.yml     --extra-vars '{"sa_password":"<pw>","ag_name":"ag1"}'
-ansible-playbook -i <inv> ansible/mssql_single.yml --extra-vars '{"sa_password":"<pw>"}'
-
-# Docker stacks — install Traefik right after the base, before any service stack
-ansible-playbook -i <inv> ansible/docker_vm_base.yml
-ansible-playbook -i <inv> ansible/traefik_stack.yml                  # every Docker VM; creates the shared `platform` network
-ansible-playbook -i <inv> ansible/docker_platform_up.yml --extra-vars '{"dockhand_domain":"dockhand.example.com"}'  # GitLab VM: PostgreSQL + Dockhand
-ansible-playbook -i <inv> ansible/elk_stack.yml      --extra-vars '{"kibana_domain":"kibana.example.com"}'
-ansible-playbook -i <inv> ansible/gitlab_stack.yml   --extra-vars '{"gitlab_domain":"gitlab.example.com"}'
-```
-
-After the RKE2 track completes, the cluster kubeconfig is on the jump host at
-`data/k8s/<cluster_name>/kubeconfig`:
-
-```bash
-export KUBECONFIG="$HOME/autoprovision/data/k8s/prod-cluster/kubeconfig"
-kubectl get nodes -o wide      # all nodes Ready, CNI = Canal
-```
-
-## Step 4 — Per-cluster add-ons (web UI cards)
-
-For **each** cluster, run the add-on cards in this order (each card runs
-[ansible/k8s_addons.yml](ansible/k8s_addons.yml) against the cluster's kubeconfig on the
-jump host — no SSH to the nodes):
-
-1. **Istio** card (fill the MetalLB IP range) — installs MetalLB, then Istio **1.30 ambient**
-   (istiod + istio-cni + ztunnel with the RKE2-correct CNI paths `/etc/cni/net.d` +
-   `/opt/cni/bin`; any old sidecar install is purged first), the Gateway API CRDs
-   (**standard** channel), and the **single shared ingress Gateway** (`shared-gateway` in
-   `istio-system` → svc `shared-gateway-istio` → **one MetalLB IP for ALL hosts**).
-2. **cert-manager (internal CA)** card — cert-manager + self-signed root CA
-   (`ca-issuer` ClusterIssuer).
-3. **Certificate — Kubernetes** card — the gateway TLS secret `wso2-ingress-cert` in
-   **`istio-system`** (the shared Gateway only reads its own namespace — Gateway API
-   `certificateRefs`). Paste a PEM, or leave it empty to auto-issue + auto-renew from the
-   internal CA (use a wildcard `cert_dns` covering all hosts).
-4. **ArgoCD** and **Headlamp** cards — each exposed via an `HTTPRoute` on the shared gateway
-   (no extra IPs).
-5. OpenTelemetry Collector — runbook step.
-
-Manual CLI equivalent + troubleshooting detail:
-[rke2-cluster/rke2-addons-istio-argocd-headlamp.md](rke2-cluster/rke2-addons-istio-argocd-headlamp.md)
-(prod: [prod-rke2-installation.md](rke2-cluster/prod-rke2-installation.md) · uat:
-[uat-rke2-installation.md](rke2-cluster/uat-rke2-installation.md)).
-
-## Step 5 — WSO2 (web UI cards; manual = her steps)
-
-WSO2 APIM (Control Plane + Internal/External Gateways) and Identity Server deploy from the
-**WSO2 APIM / WSO2 IS cards** — they run [ansible/k8s_wso2.yml](ansible/k8s_wso2.yml), which
-renders [`WSO2_APIM_KUBE_ISTIO/`](WSO2_APIM_KUBE_ISTIO/README.md) with your hostnames + MSSQL
-address, enrolls the WSO2 namespaces in ambient, and applies everything. **Tested working**
-(latest lab run). Manual equivalent with `KUBECONFIG` set and Istio already installed:
-
-```bash
-cd WSO2_APIM_KUBE_ISTIO
-
-# namespaces + ambient mesh enrollment (no sidecars)
-kubectl create ns wso2-cp; kubectl create ns wso2-is
-kubectl create ns wso2-internal-gw; kubectl create ns wso2-external-gw
-for ns in wso2-cp wso2-is wso2-internal-gw wso2-external-gw; do kubectl label ns $ns istio.io/dataplane-mode=ambient --overwrite; done
-
-# certs + ingress TLS secret in istio-system (the Gateway API Gateway picks it up automatically)
-./scripts/generate-local-certificates.sh
-kubectl -n istio-system create secret tls wso2-ingress-cert \
-  --cert=certificates/server.crt --key=certificates/server.key --dry-run=client -o yaml | kubectl apply -f -
-
-# (optional) build images with MSSQL JDBC baked in: ./scripts/build-apim-images.sh
-kubectl apply -f istio-gateway.yaml            # single shared ingress Gateway → svc shared-gateway-istio
-kubectl apply -f control-plane/ -f internal-gw/ -f external-gw/ -f wso2-is/
-```
-
-**Database wiring (read-scale AG):** load `mssql/shared_mssql.sql` and `mssql/apim_mssql.sql`,
-then point WSO2 JDBC at the **AG primary node** in Production (no listener with `CLUSTER_TYPE=NONE`)
-or the **single instance** in UAT. Details: [planning/wso2-rke2.md](planning/wso2-rke2.md).
-
-WSO2 ingress hosts (from the repo's `istio-gateway.yaml`, all TLS on 443 →
-secret `wso2-ingress-cert` in `istio-system`): `apim.example.com`, `internal-gw.example.com`,
-`external-gw.example.com`, `wso2is.example.com`. Point DNS / `/etc/hosts` at the Gateway API
-ingress IP (`kubectl -n istio-system get svc shared-gateway-istio`).
-
-## Step 6 — Backups (production-grade — run once per environment)
-
-Web UI → **Backups & DR**:
-
-- **RKE2 etcd Snapshots** ([ansible/k8s_etcd_backup.yml](ansible/k8s_etcd_backup.yml)) —
-  schedules a daily etcd snapshot on every RKE2 server (drop-in config under
-  `config.yaml.d/`, rolling restart so the API stays up), takes one snapshot immediately, and
-  prunes by retention. etcd holds ALL cluster state — without snapshots a lost etcd means
-  rebuilding from scratch. Restore: `rke2 server --cluster-reset --cluster-reset-restore-path=…`.
-- **MSSQL Scheduled Backups** ([ansible/mssql_backup.yml](ansible/mssql_backup.yml)) — FULL
-  daily + LOG every 15 min + retention pruning via a root-only script + cron. Install on **all**
-  AG nodes: only the current PRIMARY backs up, so backups follow failover (a standalone/UAT
-  instance counts as primary). The AG protects against node loss only — backups are what protect
-  against corruption / accidental `DELETE` / ransomware. **Point the backup dir at NFS/NAS.**
-
-## Step 7 — Observability, migration, validation
-
-Per ELK stack: configure Elasticsearch ILM/retention, archive paths to NFS/NAS, run the 8.14 →
-9.1.4 snapshot/restore migration, the WSO2 APIM credential migration job, and the base
-ElastAlert2 rules. See [planning/installation-steps-rke2.md](planning/installation-steps-rke2.md).
+**Run ready workloads** starts everything that is configured and unblocked. It
+never starts anything destructive; that exclusion is enforced in the API, not the
+browser.
 
 ---
 
-## Health checks
+## What it installs
 
-```bash
-# Kubernetes (per cluster)
-kubectl get nodes -o wide                                   # Ready, CNI = Canal
-kubectl get pods -A
-kubectl get svc -n istio-system shared-gateway-istio          # EXTERNAL-IP populated (Gateway API)
-kubectl get gateway,httproute -A                            # Gateway API ingress objects
-kubectl get pods -n istio-system                            # istiod, ztunnel, istio-cni (ambient)
-kubectl get pods -n wso2-cp; kubectl get pods -n wso2-is
+### Environments
 
-# SQL Server read-scale AG (on the primary)
-/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P '<pw>' -C \
-  -Q "SELECT ag.name, ar.replica_server_name, rs.role_desc, rs.synchronization_health_desc
-      FROM sys.availability_groups ag
-      JOIN sys.availability_replicas ar ON ag.group_id=ar.group_id
-      JOIN sys.dm_hadr_availability_replica_states rs ON ar.replica_id=rs.replica_id;"
+**Shared services** holds only what both environments genuinely share: GitLab, the
+container registry, and SonarQube.
 
-# Docker stacks
-docker ps | grep -E 'pg-platform|traefik|dockhand|gitlab|elk-'
-curl -u elastic:changeme http://<elk-vm>:9200/_cluster/health
-```
+**UAT** and **Production** are complete, separate environments. Each has its own
+cluster, database, object storage and monitoring, and neither depends on the other
+at runtime. They offer identical capabilities; only the sizing differs.
 
-## SQL Server — apply a real license key
+| # | Workload | What it does |
+| - | -------- | ------------ |
+| 1 | Docker + Traefik | Docker CE, then Traefik owning the shared `platform` network |
+| 2 | Object storage | MinIO or SeaweedFS — standalone, or distributed across 2–4 nodes |
+| 3 | Monitoring | **One** stack: LGTM, OpenSearch or Elastic |
+| 4 | RKE2 cluster | Kubernetes with Canal CNI, bundled ingress disabled |
+| 4b | Add or scale nodes | Joins new addresses; existing nodes are skipped |
+| 5 | MetalLB + Istio ambient | LoadBalancer addresses, ambient mesh, one shared gateway |
+| 6 | ArgoCD | GitOps delivery over the shared gateway |
+| 7 | Headlamp | Cluster dashboard, optional |
+| 8 | Database engine | SQL Server, PostgreSQL or MySQL — single or highly available |
+| 8b | Database users | A provisioning admin, then one least-privilege login per component |
+| 9 | WSO2 API Manager | Control plane and both gateways |
+| 10 | WSO2 Identity Server | |
 
-The playbooks install SQL Server with `MSSQL_PID=Enterprise` (the Enterprise **evaluation** edition).
-To activate a purchased license, apply the product key. On **Linux (Ubuntu 24.04)** the Windows GUI
-"Edition Upgrade" path does **not** apply — use `mssql-conf` on each node:
+### Platform operations
 
-```bash
-# 1. Stop SQL Server
-sudo systemctl stop mssql-server
+**Certificates** — cert-manager with an internal CA, the Kubernetes gateway
+certificate, and the Traefik default certificate.
+**Secrets** — self-hosted Infisical.
+**Backups & DR** — etcd snapshots, database backups, object store replication.
+**Danger zone** — teardown workloads, excluded from bulk runs and gated behind
+typed confirmation.
 
-# 2. Set the edition / product key. In current builds `set-edition` is INTERACTIVE — it lists the
-#    editions and lets you choose a number OR paste a 25-character product key:
-sudo /opt/mssql/bin/mssql-conf set-edition
+### Databases
 
-#    Non-interactive alternative (set the PID, then re-run setup): the PID may be an edition name
-#    (Enterprise, Standard, Developer, Express, EnterpriseCore) or a product key:
-sudo MSSQL_PID='<edition-name-or-25-char-product-key>' /opt/mssql/bin/mssql-conf set-edition
+Three engines, each in several shapes. The console refuses combinations that
+cannot work rather than letting you discover them at 2am:
 
-# 3. Start it back
-sudo systemctl start mssql-server
+| | Single | Two-node | Managed cluster | Multi-primary |
+| --- | --- | --- | --- | --- |
+| **SQL Server** | ✓ | Availability group | Availability group + Pacemaker | — |
+| **PostgreSQL** | ✓ | Streaming replication | Patroni + etcd | — |
+| **MySQL** | ✓ | Semi-synchronous | InnoDB Cluster | ✓ |
 
-# 4. Verify the edition (this repo ships mssql-tools18; -C trusts the self-signed cert)
-/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P '<pw>' -C \
-  -Q "SELECT SERVERPROPERTY('Edition'), SERVERPROPERTY('ProductVersion');"
-```
+An even node count is refused with the reason stated. SQL Server on Windows stops
+and points at [docs/mssql/windows-ad-ag.md](docs/mssql/windows-ad-ag.md) rather
+than silently assuming Linux.
 
-> Apply the key on **every** AG node (run it on each of the 3 replicas), one at a time. SQL Server
-> restarts on each node anyway, so do it during a maintenance window; Pacemaker will keep the AG
-> primary available on the others while one node restarts.
-
-### Check edition, license, and evaluation expiry
-
-Run with `sqlcmd` (e.g. `/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P '<pw>' -C -Q "<query>"`).
-
-```sql
--- Edition / version / license type
-SELECT
-    SERVERPROPERTY('Edition')        AS Edition,
-    SERVERPROPERTY('ProductVersion') AS ProductVersion,
-    SERVERPROPERTY('ProductLevel')   AS ProductLevel,
-    SERVERPROPERTY('LicenseType')    AS LicenseType,
-    SERVERPROPERTY('NumLicenses')    AS NumLicenses,
-    @@VERSION                        AS FullVersion;
-```
-
-> Note: `LicenseType` always returns `DISABLED` on SQL Server 2012+ — Microsoft stopped tracking it
-> in the engine. Use `Edition` to tell evaluation from licensed (e.g. `Enterprise Evaluation Edition`
-> vs `Enterprise Edition`).
-
-```sql
--- How long it has been installed (NT AUTHORITY\SYSTEM is created at install time)
-SELECT
-    @@SERVERNAME                          AS ServerName,
-    create_date                           AS InstallDate,
-    DATEDIFF(DAY, create_date, GETDATE()) AS DaysRunning,
-    SERVERPROPERTY('Edition')             AS Edition
-FROM sys.server_principals
-WHERE name = 'NT AUTHORITY\SYSTEM';
-```
-
-```sql
--- Evaluation expiry — ONLY meaningful if Edition is 'Enterprise Evaluation Edition' (180-day trial)
-SELECT
-    @@SERVERNAME                          AS ServerName,
-    create_date                           AS InstallDate,
-    DATEADD(DD, 180, create_date)         AS ExpiryDate,
-    DATEDIFF(DAY, GETDATE(),
-        DATEADD(DD, 180, create_date))    AS DaysLeft
-FROM sys.server_principals
-WHERE SID = 0x010100000000000512000000;   -- NT AUTHORITY\SYSTEM
-```
-
-```sql
--- Days remaining direct from the engine (extended proc)
-DECLARE @daysleft INT;
-DECLARE @instancename SYSNAME = CONVERT(SYSNAME, SERVERPROPERTY('InstanceName'));
-EXEC @daysleft = xp_qv '2715127595', @instancename;
-SELECT @daysleft AS DaysLeft;
-```
-
-## Security notes (read before a production rollout)
-
-The lab defaults favor automation speed; harden these for production:
-
-- **Web UI**: `bootstrap-jumphost.sh` binds uvicorn to `0.0.0.0:3000` with **no
-  authentication** — anyone who can reach the jump host can trigger deployments and read job
-  logs. Restrict port 3000 to operator IPs at the firewall (or bind to `127.0.0.1` and use SSH
-  port-forwarding: `ssh -L 3000:localhost:3000 <jump-host>`).
-- **Inventories**: per-job inventory files under `data/inventory/` contain the SSH password
-  (`ansible_password=`); they are written `0600`. Prefer SSH keys for the `autoprovision` user
-  in production and leave the password fields empty.
-- **SSH host keys**: `ansible/ansible.cfg` sets `host_key_checking = False` for first-contact
-  automation. For production, pre-populate `known_hosts` and set it back to `True`.
-- **Derived passwords**: `mssql_ag.yml` derives Pacemaker/hacluster/cert/master-key passwords
-  from the AG name when not provided (`<ag>-…-Pa55!`). Always pass explicit strong values for
-  production (`pacemaker_password`, `hacluster_password`, `cert_password`,
-  `master_key_password`).
-- **Secrets in logs/process list**: playbook passwords travel via `--extra-vars` (visible in
-  `ps` on the jump host while a job runs) and job logs are world-readable in the UI; sensitive
-  tasks use `no_log`, but treat jump-host shell access as privileged.
-- **PEMs**: pasted certs are staged to `data/certs/<track>/` (key `0600`) and are NOT stored in
-  the DB; delete them after rotation if the jump host is shared.
-- **Backups**: run the **Backups & DR** cards (etcd + MSSQL) and point targets at NFS/NAS —
-  same-disk backups don't survive the VM.
-
-## Troubleshooting (common)
-
-| Symptom | Fix |
-| ------- | --- |
-| RKE2 node `NotReady` | Check `rke2-server`/`rke2-agent` service + token; Canal pods in `kube-system`. |
-| Two ingress controllers fighting for 80/443 | Confirm the RKE2 bundled ingress was disabled (`disable:` in `/etc/rancher/rke2/config.yaml`). |
-| `shared-gateway-istio` has no EXTERNAL-IP | MetalLB must back the `LoadBalancer` (apply `istio-gateway.yaml` to create it); production uses a VIP. |
-| WSO2 TLS errors | Secret `wso2-ingress-cert` must be in **`istio-system`**; the Gateway API `Gateway` reloads it automatically (no restart needed). |
-| HTTPRoute not routing | Gateway API CRDs must be installed and pods must carry the `istio.io/dataplane-mode=ambient` namespace label (`istioctl ztunnel-config workloads`). |
-| AG replica not HEALTHY | Re-check cert exchange + `Hadr_endpoint` on all nodes (see `mssql_ag.yml` checklist). |
-| GitLab Runner `404/403` on job request | Create a new instance runner token in GitLab UI, paste into the GitLab card, re-run. |
-| Kibana Fleet `encrypted saved object api key` | Set a 32+ char `xpack.encryptedSavedObjects.encryptionKey` in `docker/elk/kibana/config/kibana.yml`. |
+**Applications never connect as `sa`, `root` or `postgres`.** Those accounts reach
+a shell on the host — `xp_cmdshell`, `FILE`, `COPY … FROM PROGRAM`. The Database
+users workload creates a provisioning admin that is disabled afterwards, and one
+DML-only login per component.
 
 ---
 
-## Repository map
+## Layout
 
-| Path | Purpose |
-| ---- | ------- |
-| `bootstrap-jumphost.sh` | One-shot jump host prep + start the web UI |
-| `app/` | FastAPI control plane — `main.py` + `ui_parallel.html` (the multi-track dashboard at `/`) |
-| `ansible/rke2_cluster.yml` | RKE2 servers + agents install (Canal, bundled ingress disabled) |
-| `ansible/k8s_addons.yml` | Per-cluster add-ons: MetalLB · Istio ambient + shared Gateway · cert-manager + internal CA · ArgoCD · Headlamp |
-| `ansible/k8s_wso2.yml` | WSO2 APIM/IS — renders `WSO2_APIM_KUBE_ISTIO/` and applies (ambient enrollment) |
-| `ansible/k8s_cert.yml` | TLS secret for the shared gateway (`istio-system`) — PEM or cert-manager auto-renew |
-| `ansible/k8s_etcd_backup.yml`, `ansible/mssql_backup.yml` | Backups: RKE2 etcd snapshots · MSSQL FULL/LOG + retention |
-| `ansible/mssql_single.yml`, `ansible/mssql_ag.yml`, `ansible/mssql_ag_clean.yml` | SQL Server 2025/2022 single · HA AG (Pacemaker) · AG cleanup/reset |
-| `ansible/traefik_stack.yml` | Traefik edge proxy — every Docker VM, right after base; owns the `platform` network |
-| `ansible/docker_*.yml`, `elk_stack.yml`, `gitlab_stack.yml`, `sonarqube_stack.yml` | Docker platform stacks (platform = PostgreSQL + Dockhand only) |
-| `rke2-cluster/` | RKE2 cluster + Istio/ArgoCD/Headlamp/WSO2 runbooks (prod, uat, shared) |
-| `WSO2_APIM_KUBE_ISTIO/` | Team's WSO2 + Istio deployment repo (authoritative for WSO2) |
-| `planning/` | Requirement docs (RKE2/Istio/MSSQL/parallel) — start with `00-old-vs-new.md` |
-| `mssql/` | SQL Server manual-install + theory guides (Linux AG, Windows-AD alternative) |
-| `docker/` | Docker compose for the platform + ELK |
+| Path | What it is |
+| ---- | ---------- |
+| `bootstrap-jumphost.sh` | One-shot jump host prep, then starts the console |
+| `app/workloads.py` | **The registry — every workload declared once** |
+| `app/planner.py` | Resolves a workload plus its values into playbooks and an inventory |
+| `app/runner.py`, `state.py`, `deps.py`, `content.py` | Execution, persistence, dependencies, docs |
+| `app/dist/` | Built console. Committed, so the jump host needs no Node |
+| `console/` | React and TypeScript source |
+| `content/<workload>/` | `requirements.md`, `guide.md`, `theory.md` |
+| `ansible/db/` | SQL Server, PostgreSQL, MySQL — install, users, backup, teardown |
+| `ansible/k8s/` | RKE2, add-ons, WSO2, etcd snapshots |
+| `ansible/platform/` | Docker, Traefik, GitLab, SonarQube, Infisical |
+| `ansible/monitoring/` | LGTM, OpenSearch, Elastic |
+| `ansible/object/` | MinIO, SeaweedFS, replication |
+| `ansible/certs/` | Kubernetes and Traefik certificates |
+| `docs/planning/` | Requirements — start with `00-old-vs-new.md` |
+| `docs/runbooks/` | Manual procedures for what is not automated |
+| `docs/specs/` | Design documents |
+| `docs/mssql/` | SQL Server theory and the Windows path |
+| `WSO2_APIM_KUBE_ISTIO/` | The team's WSO2 repository — authoritative for WSO2 |
+| `tests/` | pytest — the planner and the API's safety guarantees |
+| `scripts/install-aidlc.sh` | Regenerates `CLAUDE.md` from project context plus AI-DLC |
+
+---
+
+## Development
+
+```bash
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+.venv/bin/python -m pytest tests/ -q                    # 88 tests
+.venv/bin/python -m uvicorn app.main:app --port 3000
+
+cd console && npm ci
+npm run dev                                             # proxies /api to :3000
+npm run build                                           # writes app/dist/, commit it
+node smoke.mjs                                          # 28 browser checks
+```
+
+**Adding a workload is a registry change.** Add a `Workload` to `WORKLOADS` in
+`app/workloads.py` and an action handler in `app/planner.py`. Never add one to the
+frontend — it renders from the registry the API serves. The tests fail if an
+action has no planner, or if a workload depends on something that does not exist.
+
+---
+
+## Security
+
+Read this before a production rollout. The lab defaults favour speed.
+
+| Gap | Impact | What to do |
+| --- | ------ | ---------- |
+| **The console has no authentication** | Anyone who reaches the jump host can deploy and read logs | Restrict port 3000 to operator addresses, or bind to localhost and use `ssh -L 3000:localhost:3000` |
+| **Passwords travel via `--extra-vars`** | Visible in `ps` on the jump host for the length of a run | Run the Infisical workload; playbooks then fetch at run time |
+| **Inventories contain `ansible_password=`** | Plaintext on disk, mode `0600` | Use the host bootstrap workload and leave passwords empty |
+| **`host_key_checking = False`** | First contact accepts any host key | Pre-populate `known_hosts` and set it back to `True` |
+| Derived cluster passwords | Predictable when explicit values are not passed | Always pass explicit values |
+| Pasted PEMs | Staged to `data/certs/`, key `0600`, never in the database | Delete after rotation if the jump host is shared |
+
+Backups are not optional. High availability replicates a `DROP TABLE` faithfully
+to every replica; only backups held somewhere the database cannot write protect
+against corruption, mistakes and ransomware.
+
+---
+
+## Troubleshooting
+
+| Symptom | Cause |
+| ------- | ----- |
+| RKE2 node `NotReady` | Check the service and token; Canal pods in `kube-system` |
+| Two ingress controllers fighting for 443 | The RKE2 bundled ingress was not disabled |
+| Gateway has no external address | MetalLB must back the `LoadBalancer` service |
+| WSO2 TLS errors | The secret must be in `istio-system` — the gateway reads only its own namespace |
+| `HTTPRoute` not routing | Namespace needs `istio.io/dataplane-mode=ambient` |
+| Availability group replica unhealthy | Re-check certificate exchange and endpoints on every node |
+| Corosync split brain on a healthy network | Ubuntu's default `127.0.1.1` hostname mapping |
+| Certificate exchange fails during cluster setup | Clock skew. `harden.yml` installs chrony and prints the offset |
+| Application cannot connect after a failover | Orphaned login — the SID differs between replicas |
+| Monitoring pods crash-looping | LGTM was installed before object storage had buckets |

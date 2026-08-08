@@ -1,0 +1,144 @@
+---
+# OpenSearch and OpenSearch Dashboards.
+#
+# Apache 2.0 licensed, and the migration path off Elasticsearch. Unlike LGTM this
+# builds a full-text index, so it answers "find this string anywhere" well and
+# costs proportionally more storage for the same retention.
+
+- name: OpenSearch
+  hosts: "{{ 'monitoring' if placement == 'vm' else 'localhost' }}"
+  connection: "{{ 'smart' if placement == 'vm' else 'local' }}"
+  gather_facts: "{{ placement == 'vm' }}"
+  become: "{{ placement == 'vm' }}"
+  vars:
+    placement: "cluster"
+    monitoring_mode: "single"
+    kubeconfig_path: ""
+    dashboard_domain: "opensearch.example.com"
+    admin_password: ""
+    retention_days: 30
+    namespace: "monitoring"
+
+  pre_tasks:
+    - name: Require an admin password meeting the OpenSearch policy
+      ansible.builtin.assert:
+        that: admin_password | length >= 12
+        fail_msg: >-
+          OpenSearch 2.12 and newer refuse to start with a weak initial admin
+          password. Use at least 12 characters with mixed case, a digit and a symbol.
+      no_log: true
+
+    - name: Require an odd node count in HA
+      when: placement == 'vm' and monitoring_mode == 'ha'
+      ansible.builtin.assert:
+        that: ansible_play_hosts | length is odd
+        fail_msg: >-
+          Cluster-manager election needs an odd node count.
+          {{ ansible_play_hosts | length }} was given.
+
+  tasks:
+    # OpenSearch will not start without this; the error it gives names a memory
+    # map limit rather than a sysctl, which sends people the wrong way.
+    - name: Raise vm.max_map_count
+      when: placement == 'vm'
+      ansible.posix.sysctl:
+        name: vm.max_map_count
+        value: "262144"
+        sysctl_file: /etc/sysctl.d/60-opensearch.conf
+        reload: true
+
+    - name: Add the OpenSearch Helm repository
+      when: placement == 'cluster'
+      kubernetes.core.helm_repository:
+        name: opensearch
+        repo_url: https://opensearch-project.github.io/helm-charts/
+
+    - name: Create the monitoring namespace
+      when: placement == 'cluster'
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig_path }}"
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: "{{ namespace }}"
+            labels:
+              istio.io/dataplane-mode: ambient
+
+    - name: Install OpenSearch
+      when: placement == 'cluster'
+      kubernetes.core.helm:
+        kubeconfig: "{{ kubeconfig_path }}"
+        name: opensearch
+        chart_ref: opensearch/opensearch
+        release_namespace: "{{ namespace }}"
+        wait: true
+        wait_timeout: 15m
+        values:
+          replicas: "{{ 3 if monitoring_mode == 'ha' else 1 }}"
+          singleNode: "{{ monitoring_mode != 'ha' }}"
+          extraEnvs:
+            - name: OPENSEARCH_INITIAL_ADMIN_PASSWORD
+              value: "{{ admin_password }}"
+          persistence:
+            size: "{{ '500Gi' if monitoring_mode == 'ha' else '250Gi' }}"
+      no_log: true
+
+    - name: Install OpenSearch Dashboards
+      when: placement == 'cluster'
+      kubernetes.core.helm:
+        kubeconfig: "{{ kubeconfig_path }}"
+        name: dashboards
+        chart_ref: opensearch/opensearch-dashboards
+        release_namespace: "{{ namespace }}"
+        wait: true
+        wait_timeout: 10m
+
+    - name: Route Dashboards over the shared gateway
+      when: placement == 'cluster'
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig_path }}"
+        state: present
+        definition:
+          apiVersion: gateway.networking.k8s.io/v1
+          kind: HTTPRoute
+          metadata:
+            name: opensearch-dashboards
+            namespace: "{{ namespace }}"
+          spec:
+            parentRefs:
+              - name: shared-gateway
+                namespace: istio-system
+            hostnames: ["{{ dashboard_domain }}"]
+            rules:
+              - backendRefs:
+                  - name: dashboards-opensearch-dashboards
+                    port: 5601
+
+    # Without a lifecycle policy the index grows until the disk is full, and the
+    # first symptom is the cluster refusing writes.
+    - name: Apply an index lifecycle policy matching the retention setting
+      when: placement == 'cluster'
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig_path }}"
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: opensearch-ism-policy
+            namespace: "{{ namespace }}"
+          data:
+            policy.json: |
+              {"policy":{"description":"Autoprovision retention",
+               "default_state":"hot","states":[
+                {"name":"hot","actions":[],"transitions":[
+                  {"state_name":"delete","conditions":{"min_index_age":"{{ retention_days }}d"}}]},
+                {"name":"delete","actions":[{"delete":{}}],"transitions":[]}]}}
+
+    - name: Report
+      ansible.builtin.debug:
+        msg: >-
+          OpenSearch is up at https://{{ dashboard_domain }},
+          retention {{ retention_days }} days.

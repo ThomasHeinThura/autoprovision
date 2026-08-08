@@ -1,0 +1,178 @@
+---
+# MySQL high availability — InnoDB Cluster (Group Replication + MySQL Router).
+#
+# Group Replication gives automatic failover and certification-based conflict
+# detection. MySQL Router sits in front and hides which node is primary, so the
+# application holds one address across a failover.
+#
+# ha_shape=multiprimary switches every node to accepting writes. Read the theory
+# note before choosing it: conflicting writes to the same row on different nodes
+# are resolved by rolling one back at COMMIT, and most applications treat that as
+# an unexpected error rather than something to retry.
+
+- name: MySQL InnoDB Cluster
+  hosts: db_mysql
+  become: true
+  vars:
+    db_port: "3306"
+    db_admin_user: "provisioner"
+    db_admin_password: ""
+    cluster_label: "mysqlcluster"
+    ha_shape: "cluster"
+    router_port: 6446
+
+  pre_tasks:
+    - name: Require an odd node count of at least three
+      ansible.builtin.assert:
+        that:
+          - ansible_play_hosts | length >= 3
+          - ansible_play_hosts | length is odd
+        fail_msg: >-
+          Group Replication needs an odd number of nodes, at least three, to hold a
+          write quorum. {{ ansible_play_hosts | length }} was given. A two-node group
+          loses quorum when either node fails, so it cannot accept writes at all —
+          strictly worse than a single node.
+
+    - name: Require an administration password
+      ansible.builtin.assert:
+        that: db_admin_password | length >= 12
+        fail_msg: "db_admin_password must be at least 12 characters."
+      no_log: true
+
+  tasks:
+    - name: Install MySQL Shell and Router
+      ansible.builtin.apt:
+        name: [mysql-shell, mysql-router, python3-pymysql]
+        state: present
+        update_cache: true
+
+    - name: Configure the node for Group Replication
+      ansible.builtin.copy:
+        dest: /etc/mysql/mysql.conf.d/group-replication.cnf
+        mode: "0644"
+        content: |
+          # Managed by Autoprovision — ansible/db/mysql_innodb_cluster.yml
+          [mysqld]
+          server-id                        = {{ ansible_play_hosts.index(inventory_hostname) + 1 }}
+          gtid_mode                        = ON
+          enforce_gtid_consistency         = ON
+          binlog_format                    = ROW
+          binlog_checksum                  = NONE
+          # Every table needs a primary key: Group Replication cannot certify a
+          # write against a table whose rows it cannot uniquely identify.
+          sql_require_primary_key          = ON
+          plugin_load_add                  = group_replication.so
+          group_replication_local_address  = "{{ inventory_hostname }}:33061"
+          group_replication_group_seeds    = "{{ ansible_play_hosts | map('regex_replace', '^(.*)$', '\\1:33061') | join(',') }}"
+          group_replication_start_on_boot  = ON
+          group_replication_bootstrap_group = OFF
+          group_replication_single_primary_mode = {{ 'OFF' if ha_shape == 'multiprimary' else 'ON' }}
+          group_replication_enforce_update_everywhere_checks = {{ 'ON' if ha_shape == 'multiprimary' else 'OFF' }}
+      notify: restart mysql
+
+    - name: Restart so the plugin loads
+      ansible.builtin.meta: flush_handlers
+
+    - name: Wait for MySQL
+      ansible.builtin.wait_for:
+        port: "{{ db_port | int }}"
+        host: 127.0.0.1
+        timeout: 120
+
+    # The cluster administration account must exist on every node with identical
+    # credentials BEFORE the group forms — a node that cannot authenticate cannot
+    # be added, and the error names the instance rather than the missing account.
+    - name: Create the cluster administration account on every node
+      community.mysql.mysql_user:
+        name: "{{ db_admin_user }}"
+        host: "%"
+        password: "{{ db_admin_password }}"
+        priv: "*.*:ALL,GRANT"
+        state: present
+        login_unix_socket: /var/run/mysqld/mysqld.sock
+      no_log: true
+
+    - name: Configure each instance for InnoDB Cluster
+      ansible.builtin.command: >-
+        mysqlsh --uri {{ db_admin_user }}@{{ inventory_hostname }}:{{ db_port }}
+        --password={{ db_admin_password }} --js
+        -e "dba.configureInstance('{{ db_admin_user }}@{{ inventory_hostname }}:{{ db_port }}',
+            {password: '{{ db_admin_password }}', interactive: false, restart: false})"
+      register: configure_out
+      changed_when: "'was configured' in configure_out.stdout"
+      no_log: true
+
+    - name: Create the cluster on the first node
+      when: inventory_hostname == ansible_play_hosts[0]
+      ansible.builtin.command: >-
+        mysqlsh --uri {{ db_admin_user }}@{{ inventory_hostname }}:{{ db_port }}
+        --password={{ db_admin_password }} --js
+        -e "try { dba.getCluster('{{ cluster_label }}'); print('exists'); }
+            catch(e) { dba.createCluster('{{ cluster_label }}',
+              {multiPrimary: {{ 'true' if ha_shape == 'multiprimary' else 'false' }},
+               force: {{ 'true' if ha_shape == 'multiprimary' else 'false' }}}); print('created'); }"
+      register: create_out
+      changed_when: "'created' in create_out.stdout"
+      no_log: true
+
+    - name: Add the remaining nodes
+      when: inventory_hostname != ansible_play_hosts[0]
+      ansible.builtin.command: >-
+        mysqlsh --uri {{ db_admin_user }}@{{ ansible_play_hosts[0] }}:{{ db_port }}
+        --password={{ db_admin_password }} --js
+        -e "var c = dba.getCluster('{{ cluster_label }}');
+            var s = c.status();
+            if (!('{{ inventory_hostname }}:{{ db_port }}' in s.defaultReplicaSet.topology)) {
+              c.addInstance('{{ db_admin_user }}@{{ inventory_hostname }}:{{ db_port }}',
+                {password: '{{ db_admin_password }}', recoveryMethod: 'clone'});
+              print('added');
+            } else { print('already a member'); }"
+      register: add_out
+      changed_when: "'added' in add_out.stdout"
+      throttle: 1          # nodes must join one at a time; concurrent joins fail
+      no_log: true
+
+    - name: Deploy MySQL Router
+      ansible.builtin.command: >-
+        mysqlrouter --bootstrap {{ db_admin_user }}@{{ ansible_play_hosts[0] }}:{{ db_port }}
+        --user=mysqlrouter --force --conf-base-port {{ router_port }}
+      environment:
+        MYSQL_PWD: "{{ db_admin_password }}"
+      args:
+        creates: /etc/mysqlrouter/mysqlrouter.conf
+      no_log: true
+
+    - name: Start MySQL Router
+      ansible.builtin.systemd:
+        name: mysqlrouter
+        state: started
+        enabled: true
+
+    - name: Read the cluster status
+      when: inventory_hostname == ansible_play_hosts[0]
+      ansible.builtin.command: >-
+        mysqlsh --uri {{ db_admin_user }}@{{ inventory_hostname }}:{{ db_port }}
+        --password={{ db_admin_password }} --js
+        -e "print(JSON.stringify(dba.getCluster('{{ cluster_label }}').status()))"
+      register: status_out
+      changed_when: false
+      no_log: true
+
+    - name: Assert the cluster tolerates a node failure
+      when: inventory_hostname == ansible_play_hosts[0]
+      ansible.builtin.assert:
+        that: "'OK' in (status_out.stdout | from_json).defaultReplicaSet.status"
+        fail_msg: >-
+          The cluster did not reach an OK status. Run
+          "mysqlsh -- dba get-cluster {{ cluster_label }} status" to see which
+          member is missing.
+        success_msg: >-
+          Cluster {{ cluster_label }} is
+          {{ (status_out.stdout | from_json).defaultReplicaSet.status }}.
+          Applications connect through MySQL Router on {{ router_port }}.
+
+  handlers:
+    - name: restart mysql
+      ansible.builtin.systemd:
+        name: mysql
+        state: restarted
