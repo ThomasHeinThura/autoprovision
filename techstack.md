@@ -24,7 +24,9 @@ credible alternative that a customer may mandate:
 
 ## Part A — Platform stack
 
-What gets deployed onto the 19 customer VMs.
+What the control plane installs onto your machines. Nothing here assumes a particular machine
+count — environments are declared in [`config/environments.yml`](config/environments.yml), and
+each workload is sized when you configure it.
 
 ### A1 · Kubernetes layer
 

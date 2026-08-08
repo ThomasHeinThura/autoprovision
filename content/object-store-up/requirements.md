@@ -5,7 +5,7 @@
 | Deploy mode | Nodes | vCPU | RAM | Disks per node |
 | ----------- | ----- | ---- | --- | -------------- |
 | Standalone | 1 | 4 | 16 GB | 1 or more |
-| Distributed | **2–4** | 4 | 16 GB | **4 identical raw disks, minimum** |
+| Distributed | **2 or more** | 4 | 16 GB | **4 identical raw disks, minimum** |
 
 **Four drives per node is a hard minimum in distributed mode**, and the playbook
 refuses to run with fewer. Erasure coding spreads each object across every drive
@@ -16,6 +16,9 @@ a drive failure at the same time.
 node going down consumes the entire parity budget — so a disk failing *while that
 node is down* loses data. The console warns rather than blocks, because two-node
 is legitimate for a lab.
+
+There is no upper bound. If you have sixteen storage nodes, use them — the console
+checks the erasure-set arithmetic rather than capping the count.
 
 ## Disks
 

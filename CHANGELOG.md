@@ -41,8 +41,8 @@ Planned work, agreed in [docs/specs/](docs/specs/) and awaiting approval. Nothin
   sudo, free disk, clock skew and DNS resolution. Catches the wrong-Ubuntu-release and
   clock-skew-broke-the-certificate-exchange failures before 40 minutes are spent installing.
 - **Host bootstrap workload** — creates the `autoprovision` account and installs the jump host's
-  SSH key across every VM, then reconnects as it and asserts `sudo -n true`. Replaces 19 manual
-  SSH sessions, and moves the whole system to key-based authentication.
+  SSH key across every machine, then reconnects as it and asserts `sudo -n true`. Replaces one
+  manual SSH session per machine, and moves the whole estate to key-based authentication.
 - **AI-DLC** installed as a generated `CLAUDE.md` plus `.aidlc-rule-details/`, with
   `scripts/install-aidlc.sh` regenerating it deterministically so an upstream version bump never
   loses project context.
@@ -113,6 +113,31 @@ Planned work, agreed in [docs/specs/](docs/specs/) and awaiting approval. Nothin
   no behaviour change, validated by a full lab re-run before any new engine is added. They encode
   the Corosync fix, the SID handling and the primary-aware backup script, and that knowledge is
   the asset.
+
+### Not sized for one estate
+
+**Changed**
+
+- **Environments are declared in [`config/environments.yml`](config/environments.yml), not
+  hardcoded.** Adding one gives it a complete workload set, its own screen and its own recorded
+  state with no code change. The registry builds itself from the config, and example addresses in
+  form placeholders come from each environment's own subnet rather than another environment's.
+- **Removed the four-node cap on object storage.** That was one engagement's machine budget, not
+  a property of erasure coding. The planner now checks the erasure-set arithmetic and accepts
+  whatever node count you actually have — tested at 4, 6, 8, 12, 16 and 24.
+- [`docs/planning/vm-requirements-rke2.md`](docs/planning/vm-requirements-rke2.md) is marked as
+  the historical record of one 19-machine rollout. New sizing lives in
+  [`capacity-planning.md`](docs/planning/capacity-planning.md): per-role sizing, the counting
+  rules the console enforces and why each exists, and worked examples from 3 machines to 50+.
+
+**Added**
+
+- **Topology view** — every machine you have configured, with its roles, the workloads that
+  reference it, the networks actually in use, and a downloadable inventory of the whole estate.
+  It flags machines carrying more than one role, and reports environments that saved state refers
+  to but the config no longer declares.
+- Fields carrying machine addresses are marked in the registry, so topology is derived rather
+  than guessed from field-name patterns — and stays correct as workloads are added.
 
 ### Phase F — Secrets · [spec](docs/specs/2026-08-08-database-secrets-design.md)
 

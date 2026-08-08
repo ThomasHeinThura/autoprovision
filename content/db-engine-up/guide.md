@@ -9,8 +9,8 @@ node, closer to forty for a three-node cluster.
 ## 1 · Prepare the machines
 
 Run **Host bootstrap** if you have not already. It creates the `autoprovision`
-account and installs the jump host's key across every VM at once, which is the
-alternative to nineteen manual SSH sessions.
+account and installs the jump host's key across every machine at once, however
+many there are.
 
 Attach the data disk and leave it unmounted. The playbook formats and mounts it.
 

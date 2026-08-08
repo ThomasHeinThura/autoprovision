@@ -191,13 +191,20 @@ def _object_store(body):
     if mode == "dist":
         if len(ips) < 2:
             raise PlanError("Distributed mode needs at least two nodes.")
-        if len(ips) > 4:
-            raise PlanError("This console supports up to four nodes. Beyond that, size the "
-                            "erasure set deliberately rather than by default.")
         if drives < 4:
             raise PlanError(
                 f"Erasure coding needs at least 4 drives per node; {drives} was given. "
                 "With fewer, the parity budget cannot survive a node outage plus a drive failure.")
+        # MinIO builds erasure sets from the total drive count, and a set must
+        # divide evenly across nodes. An indivisible layout is rejected at startup
+        # with an error that names neither the node nor the drive count.
+        total_drives = len(ips) * drives
+        if total_drives % len(ips) != 0:
+            raise PlanError(
+                f"{len(ips)} nodes × {drives} drives does not divide into even erasure sets.")
+        if total_drives < 4:
+            raise PlanError(
+                f"{total_drives} drives in total is below the minimum erasure set of 4.")
 
     return {"inventory": {group: ips}, "steps": [
         _step(playbook, f"{label} ({'standalone' if mode == 'single' else f'{len(ips)} nodes'})", {

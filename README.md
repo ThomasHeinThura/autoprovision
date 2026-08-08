@@ -2,9 +2,10 @@
 
 On-premise infrastructure provisioning, driven from one jump host.
 
-A FastAPI control plane runs Ansible against your VMs and installs RKE2 clusters,
-databases, object storage, monitoring, the Docker platform stack and WSO2 —
-several at once, on execution day. Every workload carries its own requirements,
+A FastAPI control plane runs Ansible against your machines and installs RKE2
+clusters, databases, object storage, monitoring, the Docker platform stack and
+WSO2 — several at once, on execution day. Declare as many environments as you
+need; nothing assumes a particular machine count. Every workload carries its own requirements,
 operator guide and design reasoning, so the person running it does not need the
 person who built it.
 
@@ -17,7 +18,7 @@ person who built it.
 
 ## Start here
 
-### 1 · Prepare one VM
+### 1 · Prepare one machine
 
 You need a **jump host** — 2 vCPU, 4 GB RAM, Ubuntu 24.04 — that can reach every
 target on `22/tcp`. Nothing else is required to begin.
@@ -46,8 +47,9 @@ Stop it with `scripts/stop-console.sh`; start it again by re-running the bootstr
 ### 3 · Prepare the targets
 
 The console's **Host bootstrap** workload creates the `autoprovision` account and
-installs the jump host's SSH key across every VM at once. That replaces nineteen
-manual SSH sessions and moves the whole system onto key authentication.
+installs the jump host's SSH key across every machine at once — however many there
+are. That is the alternative to one manual SSH session per machine, and it moves
+the whole estate onto key authentication.
 
 To do it by hand instead, on each target:
 
@@ -73,7 +75,7 @@ Four tabs on every workload:
 | Tab | What it holds |
 | --- | ------------- |
 | **Configure** | The form, the resolved plan, the inventory, and live output |
-| **Requirements** | VM count, sizing, ports, and what must be true before you run |
+| **Requirements** | Machine count, sizing, ports, and what must be true before you run |
 | **Guide** | The operator walkthrough |
 | **Theory** | Why it is designed this way, and what it does not protect against |
 
@@ -90,17 +92,32 @@ browser.
 
 ### Environments
 
-**Shared services** holds only what both environments genuinely share: GitLab, the
-container registry, and SonarQube.
+Environments are declared in [`config/environments.yml`](config/environments.yml),
+not hardcoded. Add one and it appears with its complete workload set, its own
+screen and its own recorded state — no code change:
 
-**UAT** and **Production** are complete, separate environments. Each has its own
-cluster, database, object storage and monitoring, and neither depends on the other
-at runtime. They offer identical capabilities; only the sizing differs.
+```yaml
+  - id: dr
+    title: Disaster recovery
+    stack: full
+    subnet: 10.90.7
+    blurb: Standby site. Object storage replicates here.
+```
+
+**`stack: full`** gives an environment everything — its own cluster, database,
+object storage, monitoring and applications — with no runtime dependency on any
+other. **`stack: shared`** gives only what several environments have in common.
+
+**Nothing assumes a machine count.** Three machines and fifty are the same amount
+of configuration; each workload is sized when you fill it in, and the console
+refuses topologies that cannot work rather than letting you find out during a
+change window. Sizing guidance is in
+[docs/planning/capacity-planning.md](docs/planning/capacity-planning.md).
 
 | # | Workload | What it does |
 | - | -------- | ------------ |
 | 1 | Docker + Traefik | Docker CE, then Traefik owning the shared `platform` network |
-| 2 | Object storage | MinIO or SeaweedFS — standalone, or distributed across 2–4 nodes |
+| 2 | Object storage | MinIO or SeaweedFS — standalone, or distributed across as many nodes as you have |
 | 3 | Monitoring | **One** stack: LGTM, OpenSearch or Elastic |
 | 4 | RKE2 cluster | Kubernetes with Canal CNI, bundled ingress disabled |
 | 4b | Add or scale nodes | Joins new addresses; existing nodes are skipped |
@@ -113,6 +130,11 @@ at runtime. They offer identical capabilities; only the sizing differs.
 | 10 | WSO2 Identity Server | |
 
 ### Platform operations
+
+**Topology** — every machine you have configured, with its roles, the workloads
+that reference it, and a downloadable Ansible inventory of the whole estate. It
+flags machines carrying more than one role, which is how estates quietly become
+fragile.
 
 **Certificates** — cert-manager with an internal CA, the Kubernetes gateway
 certificate, and the Traefik default certificate.
@@ -160,7 +182,8 @@ DML-only login per component.
 | `ansible/monitoring/` | LGTM, OpenSearch, Elastic |
 | `ansible/object/` | MinIO, SeaweedFS, replication |
 | `ansible/certs/` | Kubernetes and Traefik certificates |
-| `docs/planning/` | Requirements — start with `00-old-vs-new.md` |
+| `config/environments.yml` | **Which environments exist.** Add one and its whole stack appears. |
+| `docs/planning/` | Requirements and sizing — start with `capacity-planning.md` |
 | `docs/runbooks/` | Manual procedures for what is not automated |
 | `docs/specs/` | Design documents |
 | `docs/mssql/` | SQL Server theory and the Windows path |

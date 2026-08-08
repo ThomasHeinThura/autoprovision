@@ -107,11 +107,20 @@ check('wrong token keeps it disabled', await page.locator('dialog .btn.danger').
 await page.fill('#confirm-token', await page.inputValue('#f-cluster_label'))
 check('correct token enables it', !(await page.locator('dialog .btn.danger').isDisabled()))
 
-// 13 — handbook
+// 13 — topology: the estate, at whatever size it happens to be
+await page.goto(BASE + '/topology', { waitUntil: 'networkidle' })
+check('topology loads', await page.locator('h1', { hasText: 'Topology' }).count() > 0)
+const topo = await page.locator('.stage').innerText()
+check('topology says it reflects configuration, not discovery', topo.includes('not from a discovery scan'))
+check('topology assumes no machine count', topo.includes('assumes a particular machine count'))
+check('topology accounts for workloads with no machines yet',
+  topo.includes('no machines yet') || topo.includes('Nothing configured yet'))
+
+// 14 — handbook
 await page.goto(BASE + '/handbook', { waitUntil: 'networkidle' })
 check('handbook loads', await page.locator('h1', { hasText: 'Handbook' }).count() > 0)
 
-// 14 — no horizontal body scroll at laptop width
+// 15 — no horizontal body scroll at laptop width
 await page.setViewportSize({ width: 1280, height: 800 })
 await page.goto(BASE + '/env/prod', { waitUntil: 'networkidle' })
 const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1)

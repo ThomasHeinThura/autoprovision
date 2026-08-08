@@ -13,6 +13,7 @@ import { api, type Environment } from './lib/api'
 import { useStore } from './lib/store'
 import { Ribbon } from './components/common'
 import { RunSheet } from './components/RunSheet'
+import { Topology } from './components/Topology'
 import { WorkloadDetail } from './components/WorkloadDetail'
 import './app.css'
 
@@ -41,6 +42,7 @@ export function App() {
           <Route path="/" element={<Navigate to="/env/shared" replace />} />
           <Route path="/env/:envId" element={<RunSheet />} />
           <Route path="/env/:envId/:workloadId" element={<WorkloadDetail />} />
+          <Route path="/topology" element={<Topology />} />
           <Route path="/handbook" element={<Handbook />} />
           <Route path="*" element={<div className="center-msg">No such page.</div>} />
         </Routes>
@@ -196,6 +198,16 @@ function Rail() {
       ))}
 
       <h3 className="eyebrow">Reference</h3>
+      <NavLink
+        to="/topology"
+        className="rail-item"
+        style={{ display: 'block' }}
+        aria-current={location.pathname === '/topology' ? 'page' : undefined}
+      >
+        <span className="top">
+          <span className="nm">Topology</span>
+        </span>
+      </NavLink>
       <NavLink
         to="/handbook"
         className="rail-item"

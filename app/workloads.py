@@ -13,6 +13,9 @@ from dataclasses import dataclass
 from dataclasses import field as dc_field
 from typing import Any
 
+from .environments import FULL, EnvSpec
+from .environments import load as load_environments
+
 # ── field primitives ─────────────────────────────────────────────────────────
 
 @dataclass
@@ -25,6 +28,7 @@ class Field:
     hint: str = ""
     options: list[dict] | None = None   # [{value, label, hint}] for select
     show_if: dict[str, list[str]] | None = None   # {other_key: [values]}
+    hosts: bool = False           # value is one or more machine addresses
 
     def as_dict(self) -> dict:
         d = {
@@ -35,19 +39,23 @@ class Field:
             d["options"] = self.options
         if self.show_if:
             d["showIf"] = self.show_if
+        if self.hosts:
+            d["hosts"] = True
         return d
 
 
-def txt(key, label, default="", placeholder="", hint="", show_if=None):
-    return Field(key, label, "text", default, placeholder, hint, show_if=show_if)
+def txt(key, label, default="", placeholder="", hint="", show_if=None, hosts=False):
+    return Field(key, label, "text", default, placeholder, hint,
+                 show_if=show_if, hosts=hosts)
 
 
 def secret(key, label, hint="", show_if=None):
     return Field(key, label, "password", hint=hint or "Never written to disk.", show_if=show_if)
 
 
-def area(key, label, default="", placeholder="", hint="", show_if=None):
-    return Field(key, label, "textarea", default, placeholder, hint, show_if=show_if)
+def area(key, label, default="", placeholder="", hint="", show_if=None, hosts=False):
+    return Field(key, label, "textarea", default, placeholder, hint,
+                 show_if=show_if, hosts=hosts)
 
 
 def sel(key, label, options, default="", hint="", show_if=None):
@@ -96,21 +104,12 @@ class Environment:
     meta: str = ""
 
 
-ENVIRONMENTS: list[Environment] = [
-    Environment("shared", "Environments", "Shared services",
-                "Only what both environments genuinely share: source control, the container "
-                "registry, and code quality. Build these first — UAT and Production both pull "
-                "images from here.",
-                "GitLab VM"),
-    Environment("uat", "Environments", "UAT",
-                "A complete, self-contained environment. Its own cluster, its own database, its "
-                "own object storage and its own monitoring — sized for testing, not for surviving "
-                "a node failure at three in the morning.",
-                "5–8 VMs"),
-    Environment("prod", "Environments", "Production",
-                "A complete, self-contained environment with no runtime dependency on UAT. "
-                "Everything that can be highly available, is.",
-                "12–15 VMs"),
+# Environments come from config/environments.yml, so this control plane is not
+# tied to any particular topology. Declare as many as you need; the machine count
+# follows from how each workload is sized, not from anything fixed here.
+ENV_SPECS: list[EnvSpec] = load_environments()
+
+OPERATIONS: list[Environment] = [
     Environment("certs", "Platform operations", "Certificates",
                 "TLS for the Kubernetes shared gateway and for every Traefik VM. Paste your own "
                 "PEM, or let the internal CA issue and renew automatically.", ""),
@@ -124,6 +123,11 @@ ENVIRONMENTS: list[Environment] = [
                 "Workloads that destroy state. Excluded from Run ready workloads, and each "
                 "requires you to type its target before it starts.", ""),
 ]
+
+ENVIRONMENTS: list[Environment] = [
+    Environment(spec.id, "Environments", spec.title, spec.blurb, "")
+    for spec in ENV_SPECS
+] + OPERATIONS
 
 
 # ── reusable field sets ──────────────────────────────────────────────────────
@@ -147,7 +151,7 @@ HA_SHAPES = [
 ]
 
 
-def db_fields(prefix_ips: str) -> list[Field]:
+def db_fields(spec: EnvSpec) -> list[Field]:
     return [
         sel("engine", "Database engine", DB_ENGINES, "mssql",
             "The plan, the requirements and the node count all follow from this."),
@@ -160,9 +164,9 @@ def db_fields(prefix_ips: str) -> list[Field]:
         sel("ha_shape", "High availability shape", HA_SHAPES, "cluster",
             "Two-node replication has no arbiter. Prefer three nodes.",
             show_if={"mode": ["ha"]}),
-        area("node_ips", "Node IPs", "", prefix_ips,
-             "One per line. The first is the initial primary."),
-        txt("vip", "Virtual IP", "", "192.168.51.40",
+        area("node_ips", "Node IPs", "", spec.ips(31, 32, 33),
+             "One per line, as many as you need. The first is the initial primary.", hosts=True),
+        txt("vip", "Virtual IP", "", spec.ip(40),
             "The address applications connect to. Must be unassigned.",
             show_if={"mode": ["ha"]}),
         txt("cluster_label", "Cluster name", "ag1", "", "Names the availability group or cluster."),
@@ -171,7 +175,8 @@ def db_fields(prefix_ips: str) -> list[Field]:
         secret("admin_password", "Provisioning admin password"),
         txt("data_dir", "Data directory", "", "/var/opt/mssql/data",
             "Put this on its own disk. A full root filesystem takes the whole VM down."),
-        txt("port", "Listening port", "", "1433", "Restrict to application subnets at the firewall."),
+        txt("port", "Listening port", "", "1433",
+            "Restrict to application subnets at the firewall, never the whole LAN."),
         sel("mssql_version", "SQL Server version", [
             opt("2025", "2025", "Requires Ubuntu 24.04."),
             opt("2022", "2022", "Requires Ubuntu 20.04 or 22.04."),
@@ -179,11 +184,11 @@ def db_fields(prefix_ips: str) -> list[Field]:
     ]
 
 
-def db_user_fields(prefix_ips: str) -> list[Field]:
+def db_user_fields(spec: EnvSpec) -> list[Field]:
     return [
         sel("engine", "Database engine", DB_ENGINES, "mssql"),
-        area("node_ips", "Node IPs", "", prefix_ips,
-             "Every node. Logins must exist on all of them, not just the primary."),
+        area("node_ips", "Node IPs", "", spec.ips(31, 32, 33),
+             "Every node. Logins must exist on all of them, not just the primary.", hosts=True),
         txt("cluster_label", "Cluster name", "ag1"),
         txt("admin_user", "Provisioning admin", "provisioner"),
         secret("admin_password", "Provisioning admin password"),
@@ -204,7 +209,7 @@ def db_user_fields(prefix_ips: str) -> list[Field]:
     ]
 
 
-def object_fields(prefix_ips: str) -> list[Field]:
+def object_fields(spec: EnvSpec) -> list[Field]:
     return [
         sel("provider", "Provider", [
             opt("minio", "MinIO", "S3-compatible, erasure coded."),
@@ -214,22 +219,19 @@ def object_fields(prefix_ips: str) -> list[Field]:
             opt("single", "Standalone", "One node. No redundancy."),
             opt("dist", "Distributed", "2–4 nodes with erasure coding."),
         ], "dist"),
-        sel("nodes", "Node count", [
-            opt("2", "2 nodes", "Parity-limited — a drive failure during a node outage loses data."),
-            opt("3", "3 nodes", "Parity-limited."),
-            opt("4", "4 nodes", "Survives a node outage and a drive failure during it."),
-        ], "4", show_if={"mode": ["dist"]}),
-        area("node_ips", "Node IPs", "", prefix_ips,
-             "One per line. Every node needs an identical disk layout."),
         txt("drives_per_node", "Drives per node", "4", "",
-            "Minimum four for erasure coding. Raw disks, not a RAID volume."),
-        txt("console_domain", "Console domain", "", "minio.example.com"),
+            "Minimum four for erasure coding. Raw disks, not a RAID volume. Every node "
+            "must present the same count.", show_if={"mode": ["dist"]}),
+        area("node_ips", "Node IPs", "", spec.ips(41, 42, 43, 44),
+             "One per line, as many as you need. Every node must present an identical "
+             "disk layout.", hosts=True),
+        txt("console_domain", "Console domain", "", f"objects-{spec.id}.example.com"),
         txt("admin_user", "Root user", "minioadmin"),
         secret("admin_password", "Root password"),
     ]
 
 
-def monitoring_fields(env: str) -> list[Field]:
+def monitoring_fields(spec: EnvSpec) -> list[Field]:
     return [
         sel("stack", "Monitoring stack", [
             opt("lgtm", "LGTM", "Loki, Grafana, Tempo, Mimir. Needs object storage."),
@@ -244,28 +246,32 @@ def monitoring_fields(env: str) -> list[Field]:
             opt("single", "Single node", "No redundancy."),
             opt("ha", "High availability", "Three nodes, odd count for quorum."),
         ], "single"),
-        txt("cluster_name", "Cluster (kubeconfig)", f"{env}-cluster", "",
+        txt("cluster_name", "Cluster (kubeconfig)", f"{spec.id}-cluster", "",
             "Which cluster to install into.", show_if={"placement": ["cluster"]}),
-        area("node_ips", "Docker VM IPs", "", "192.168.65.50",
-             "One per line.", show_if={"placement": ["vm"]}),
-        txt("dashboard_domain", "Dashboard domain", "", f"grafana-{env}.example.com"),
+        area("node_ips", "Docker VM IPs", "", spec.ip(50),
+             "One per line. An odd count in high availability, so the cluster manager "
+             "can hold quorum.", show_if={"placement": ["vm"]}, hosts=True),
+        txt("dashboard_domain", "Dashboard domain", "", f"dashboard-{spec.id}.example.com"),
         secret("admin_password", "Admin password"),
         txt("retention_days", "Log retention (days)", "30", "",
             "Shortening this later does not reclaim space already written."),
-        txt("object_endpoint", "Object store endpoint", "", "http://192.168.65.60:9000",
+        txt("object_endpoint", "Object store endpoint", "", f"http://{spec.ip(41)}:9000",
             "Loki, Tempo and Mimir each get their own bucket.",
             show_if={"stack": ["lgtm"]}),
     ]
 
 
-def rke2_fields(env: str, cps: str, wks: str) -> list[Field]:
+def rke2_fields(spec: EnvSpec) -> list[Field]:
     return [
-        txt("cluster_name", "Cluster name", f"{env}-cluster", "",
+        txt("cluster_name", "Cluster name", f"{spec.id}-cluster", "",
             "Names the kubeconfig directory."),
-        area("control_plane_ips", "Control plane IPs", "", cps, "The first bootstraps etcd."),
-        area("worker_ips", "Worker IPs", "", wks, "One per line, or comma separated."),
+        area("control_plane_ips", "Control plane IPs", "", spec.ips(11, 12, 13),
+             "One, three or five — etcd needs an odd count to hold quorum. "
+             "The first bootstraps the cluster.", hosts=True),
+        area("worker_ips", "Worker IPs", "", spec.ips(21, 22, 23),
+             "As many as you need. One per line, or comma separated.", hosts=True),
         txt("registration_address", "Registration address / VIP", "",
-            f"rke2-{env}.example.local", "One stable endpoint new nodes join through."),
+            f"rke2-{spec.id}.example.local", "One stable endpoint new nodes join through."),
         txt("rke2_version", "RKE2 version", "v1.36.1+rke2r2"),
         secret("rke2_token", "Cluster join token"),
         txt("rke2_images_local_dir", "Air-gapped image directory", "",
@@ -273,54 +279,64 @@ def rke2_fields(env: str, cps: str, wks: str) -> list[Field]:
     ]
 
 
-def wso2_fields(env: str) -> list[Field]:
+def wso2_fields(spec: EnvSpec) -> list[Field]:
+    env = spec.id
     return [
         txt("cluster_name", "Cluster (kubeconfig)", f"{env}-cluster"),
         txt("apim_host", "APIM host", f"apim-{env}.example.com"),
         txt("internal_gw_host", "Internal gateway host", f"internal-gw-{env}.example.com"),
         txt("external_gw_host", "External gateway host", f"external-gw-{env}.example.com"),
         txt("is_host", "Identity Server host", f"wso2is-{env}.example.com"),
-        txt("mssql_host", "Database host", "", "192.168.65.31",
+        txt("mssql_host", "Database host", "", spec.ip(40),
             "The virtual IP in a highly available setup."),
         txt("wso2_db_user", "Database login", "wso2_apim",
             hint="Must match a login created by Database users."),
         secret("wso2_db_password", "Database password"),
-        txt("logstash_host", "Log shipper host", "", "192.168.65.50", "Optional."),
+        txt("logstash_host", "Log shipper host", "", spec.ip(50), "Optional."),
     ]
 
 
 # ── the registry ─────────────────────────────────────────────────────────────
 
-def _env_stack(env: str, cps: str, wks: str, dbips: str, objips: str) -> list[Workload]:
-    """UAT and Production are the same shape. Only addresses and sizing differ."""
-    E = env
+def _env_stack(spec: EnvSpec) -> list[Workload]:
+    """The complete workload set for one environment.
+
+    Every `full` environment gets the same shape. Machine counts are not fixed
+    here — each workload is sized when you configure it, so three environments of
+    three machines and three of fifteen are the same amount of code.
+
+    Example addresses come from the environment's subnet, and are placeholders
+    only: nothing is deployed from them.
+    """
+    E = spec.id
     return [
         Workload(f"{E}_docker", E, "1", "Docker + Traefik",
                  "Docker CE, then Traefik owning the shared platform network.",
                  "docker-traefik-up",
-                 [txt("docker_ip", "Docker VM IP", "", "192.168.65.40")],
+                 [txt("docker_ip", "Docker VM IP", "", spec.ip(50), hosts=True)],
                  docs="docker-traefik-up"),
         Workload(f"{E}_object", E, "2", "Object storage",
                  "S3-compatible storage. Backs monitoring, database backups and cluster snapshots.",
-                 "object-store-up", object_fields(objips), requires=[f"{E}_docker"],
+                 "object-store-up", object_fields(spec), requires=[f"{E}_docker"],
                  docs="object-store-up"),
         Workload(f"{E}_monitoring", E, "3", "Monitoring",
                  "One stack — logs, metrics and traces for this environment.",
-                 "monitoring-up", monitoring_fields(E), requires=[f"{E}_object"],
+                 "monitoring-up", monitoring_fields(spec), requires=[f"{E}_object"],
                  docs="monitoring-up"),
         Workload(f"{E}_rke2", E, "4", "RKE2 cluster",
                  "Kubernetes with the bundled Canal CNI. Ingress disabled so Istio owns 443.",
-                 "rke2-cluster-up", rke2_fields(E, cps, wks), docs="rke2-cluster-up"),
+                 "rke2-cluster-up", rke2_fields(spec), docs="rke2-cluster-up"),
         Workload(f"{E}_rke2_scale", E, "4b", "Add or scale nodes",
                  "Joins new addresses. Nodes already in the cluster are skipped.",
-                 "rke2-scale-up", rke2_fields(E, cps, wks), requires=[f"{E}_rke2"],
+                 "rke2-scale-up", rke2_fields(spec), requires=[f"{E}_rke2"],
                  always=True, docs="rke2-scale-up"),
         Workload(f"{E}_istio", E, "5", "MetalLB + Istio ambient",
                  "LoadBalancer addresses, then the ambient mesh and one shared gateway.",
                  "k8s-istio-up",
                  [txt("cluster_name", "Cluster (kubeconfig)", f"{E}-cluster"),
-                  txt("metallb_ip_range", "MetalLB address range", "", "192.168.65.200-192.168.65.220",
-                      "Unassigned addresses on the node subnet.")],
+                  txt("metallb_ip_range", "MetalLB address range", "",
+                      f"{spec.ip(200)}-{spec.ip(220)}",
+                      "A contiguous block of unassigned addresses on the node subnet.")],
                  requires=[f"{E}_rke2"], docs="k8s-istio-up"),
         Workload(f"{E}_argocd", E, "6", "ArgoCD",
                  "GitOps delivery, routed over the shared gateway.",
@@ -336,46 +352,60 @@ def _env_stack(env: str, cps: str, wks: str, dbips: str, objips: str) -> list[Wo
                  requires=[f"{E}_istio"], docs="k8s-headlamp-up"),
         Workload(f"{E}_db", E, "8", "Database engine",
                  "Install and harden a database engine on your own VMs.",
-                 "db-engine-up", db_fields(dbips), docs="db-engine-up"),
+                 "db-engine-up", db_fields(spec), docs="db-engine-up"),
         Workload(f"{E}_db_users", E, "8b", "Database users",
                  "A provisioning admin, then one least-privilege login per component.",
-                 "db-users-up", db_user_fields(dbips), requires=[f"{E}_db"],
+                 "db-users-up", db_user_fields(spec), requires=[f"{E}_db"],
                  docs="db-users-up"),
         Workload(f"{E}_wso2_apim", E, "9", "WSO2 API Manager",
                  "Control plane and both gateways, rendered with this environment's hostnames.",
-                 "k8s-wso2-apim-up", wso2_fields(E),
+                 "k8s-wso2-apim-up", wso2_fields(spec),
                  requires=[f"{E}_istio", f"{E}_db_users"], docs="k8s-wso2-apim-up"),
         Workload(f"{E}_wso2_is", E, "10", "WSO2 Identity Server",
                  "Identity Server for this environment.",
-                 "k8s-wso2-is-up", wso2_fields(E),
+                 "k8s-wso2-is-up", wso2_fields(spec),
                  requires=[f"{E}_istio", f"{E}_db_users"], docs="k8s-wso2-is-up"),
     ]
 
 
-WORKLOADS: list[Workload] = [
-    # ── shared: only what both environments genuinely share ──
-    Workload("shared_docker", "shared", "1", "Docker + Traefik",
-             "Docker CE, then Traefik owning the shared platform network on the GitLab VM.",
-             "docker-traefik-up",
-             [txt("docker_ip", "GitLab VM IP", "", "192.168.66.10")],
-             docs="docker-traefik-up"),
-    Workload("shared_gitlab", "shared", "2", "Source control + SonarQube",
-             "GitLab CE with its runner and container registry, PostgreSQL, Dockhand, SonarQube.",
-             "gitlab-platform-up",
-             [txt("docker_ip", "GitLab VM IP", "", "192.168.66.10"),
-              txt("gitlab_domain", "GitLab domain", "gitlab.example.com"),
-              txt("gitlab_registry_domain", "Registry domain", "registry.example.com"),
-              txt("dockhand_domain", "Dockhand domain", "dockhand.example.com"),
-              txt("sonarqube_domain", "SonarQube domain", "sonar.example.com"),
-              secret("gitlab_runner_token", "Runner token")],
-             requires=["shared_docker"], docs="gitlab-platform-up"),
+def _shared_stack(spec: EnvSpec) -> list[Workload]:
+    """Only what several environments have in common. Kept deliberately small:
+    anything an environment could reasonably own, it owns."""
+    E = spec.id
+    return [
+        Workload(f"{E}_docker", E, "1", "Docker + Traefik",
+                 "Docker CE, then Traefik owning the shared platform network.",
+                 "docker-traefik-up",
+                 [txt("docker_ip", "Docker VM IP", "", spec.ip(10), hosts=True)],
+                 docs="docker-traefik-up"),
+        Workload(f"{E}_gitlab", E, "2", "Source control + SonarQube",
+                 "GitLab CE with its runner and container registry, PostgreSQL, Dockhand, "
+                 "SonarQube.",
+                 "gitlab-platform-up",
+                 [txt("docker_ip", "Docker VM IP", "", spec.ip(10), hosts=True),
+                  txt("gitlab_domain", "GitLab domain", "gitlab.example.com"),
+                  txt("gitlab_registry_domain", "Registry domain", "registry.example.com"),
+                  txt("dockhand_domain", "Dockhand domain", "dockhand.example.com"),
+                  txt("sonarqube_domain", "SonarQube domain", "sonar.example.com"),
+                  secret("gitlab_runner_token", "Runner token")],
+                 requires=[f"{E}_docker"], docs="gitlab-platform-up"),
+    ]
 
-    *_env_stack("uat", "192.168.65.11", "192.168.65.21\n192.168.65.22",
-                "192.168.65.31", "192.168.65.60"),
-    *_env_stack("prod", "192.168.51.11\n192.168.51.12\n192.168.51.13",
-                "192.168.51.21\n192.168.51.22\n192.168.51.23\n192.168.51.24\n192.168.51.25",
-                "192.168.51.31\n192.168.51.32\n192.168.51.33", "192.168.51.60"),
 
+def _build_registry() -> list[Workload]:
+    """Instantiate every declared environment, then the operational sections.
+
+    Adding an environment to config/environments.yml adds its whole stack here
+    with no code change.
+    """
+    out: list[Workload] = []
+    for spec in ENV_SPECS:
+        out.extend(_env_stack(spec) if spec.stack == FULL else _shared_stack(spec))
+    out.extend(_OPERATIONS_WORKLOADS)
+    return out
+
+
+_OPERATIONS_WORKLOADS: list[Workload] = [
     # ── certificates ──
     Workload("certs_certmanager", "certs", "1", "cert-manager + internal CA",
              "Installs cert-manager and a self-signed root, so certificates renew themselves.",
@@ -400,7 +430,7 @@ WORKLOADS: list[Workload] = [
     Workload("certs_traefik", "certs", "3", "Traefik certificate",
              "The default certificate every Traefik router uses. Re-run to rotate.",
              "traefik-cert-apply",
-             [area("docker_ips", "Traefik VM IPs", "", "192.168.66.10\n192.168.65.40"),
+             [area("docker_ips", "Traefik VM IPs", "", "192.168.66.10\n192.168.65.40", hosts=True),
               area("cert_pem", "Certificate PEM", "", "-----BEGIN CERTIFICATE-----"),
               area("key_pem", "Private key PEM", "", "-----BEGIN PRIVATE KEY-----")],
              docs="traefik-cert-apply"),
@@ -409,7 +439,7 @@ WORKLOADS: list[Workload] = [
     Workload("secrets_vault", "secrets", "1", "Infisical vault",
              "Self-hosted secrets management, so credentials stop travelling on command lines.",
              "vault-up",
-             [txt("docker_ip", "Vault VM IP", "", "192.168.66.30"),
+             [txt("docker_ip", "Vault VM IP", "", "192.168.66.30", hosts=True),
               txt("vault_domain", "Vault domain", "vault.example.com"),
               secret("admin_password", "Initial admin password"),
               txt("project_slug", "Project slug", "autoprovision")],
@@ -419,7 +449,7 @@ WORKLOADS: list[Workload] = [
     Workload("backups_etcd", "backups", "1", "Cluster state snapshots",
              "Daily etcd snapshots on every RKE2 server, plus one immediately.",
              "k8s-etcd-backup",
-             [area("control_plane_ips", "RKE2 server IPs", "", "192.168.51.11"),
+             [area("control_plane_ips", "RKE2 server IPs", "", "192.168.51.11", hosts=True),
               txt("cluster_name", "Cluster (kubeconfig)", "prod-cluster"),
               txt("snapshot_cron", "Schedule", "0 2 * * *"),
               txt("snapshot_retention", "Snapshots to keep", "14")],
@@ -429,7 +459,7 @@ WORKLOADS: list[Workload] = [
              "so backups follow a failover.",
              "db-backup-setup",
              [sel("engine", "Database engine", DB_ENGINES, "mssql"),
-              area("node_ips", "Database node IPs", "", "192.168.51.31"),
+              area("node_ips", "Database node IPs", "", "192.168.51.31", hosts=True),
               txt("admin_user", "Provisioning admin", "provisioner"),
               secret("admin_password", "Provisioning admin password"),
               txt("backup_dir", "Backup directory", "/var/opt/mssql/backup",
@@ -452,7 +482,7 @@ WORKLOADS: list[Workload] = [
              "on every node. The engine and your databases stay.",
              "db-cluster-clean",
              [sel("engine", "Database engine", DB_ENGINES, "mssql"),
-              area("node_ips", "Node IPs", "", "192.168.51.31"),
+              area("node_ips", "Node IPs", "", "192.168.51.31", hosts=True),
               txt("cluster_label", "Cluster name", "prodag",
                   hint="Type this again below to confirm."),
               txt("vip", "Virtual IP", "", "192.168.51.40",
@@ -465,7 +495,7 @@ WORKLOADS: list[Workload] = [
              "is never touched.",
              "sonarqube-clean",
              [txt("docker_ip", "GitLab VM IP", "", "192.168.66.10",
-                  hint="Type this again below to confirm."),
+                  hint="Type this again below to confirm.", hosts=True),
               sel("purge_data", "Purge data", [
                   opt("true", "Yes — wipe volumes and database"),
                   opt("false", "No — keep data, remove the container only")], "true")],
@@ -474,10 +504,12 @@ WORKLOADS: list[Workload] = [
              "Recreates the database if missing and force-recreates just the SonarQube container. "
              "PostgreSQL and GitLab keep running.",
              "sonarqube-up",
-             [txt("docker_ip", "GitLab VM IP", "", "192.168.66.10"),
+             [txt("docker_ip", "GitLab VM IP", "", "192.168.66.10", hosts=True),
               txt("sonarqube_domain", "SonarQube domain", "sonar.example.com")],
              docs="sonarqube-up"),
 ]
+
+WORKLOADS: list[Workload] = _build_registry()
 
 BY_ID: dict[str, Workload] = {w.id: w for w in WORKLOADS}
 ALL_TRACKS: list[str] = [w.id for w in WORKLOADS]      # derived, never hand-maintained

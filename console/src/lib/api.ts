@@ -22,6 +22,8 @@ export interface Field {
   hint: string
   options?: SelectOption[]
   showIf?: Record<string, string[]>
+  /** Value is one or more machine addresses. Drives the topology view. */
+  hosts?: boolean
 }
 
 export interface Workload {
@@ -91,6 +93,26 @@ export interface Plan {
   steps: PlanStep[]
   needsCert: boolean
   destructive: boolean
+}
+
+export interface TopologyHost {
+  host: string
+  roles: string[]
+  environments: string[]
+  workloads: { id: string; ordinal: string; title: string; status: WorkloadStatus }[]
+  /** True when one machine carries more than one role. */
+  shared: boolean
+}
+
+export interface Topology {
+  hosts: TopologyHost[]
+  totalHosts: number
+  environments: { id: string; title: string; hostCount: number; networks: string[] }[]
+  operations: { id: string; hostCount: number }[]
+  sharedHosts: string[]
+  unconfigured: { id: string; env: string; ordinal: string; title: string }[]
+  /** Saved state referring to environments no longer in config/environments.yml. */
+  orphanedEnvironments: string[]
 }
 
 export class ApiError extends Error {}
@@ -172,6 +194,7 @@ export const api = {
   log: (workload: string) => req<string>(`/api/log/${workload}`),
   content: (slug: string, page: string) => req<string>(`/api/content/${slug}/${page}`),
   handbook: () => req<{ slug: string; title: string; body: string }[]>('/api/handbook'),
+  topology: () => req<Topology>('/api/topology'),
 }
 
 /** True when this field should be shown, given the current values of its siblings. */

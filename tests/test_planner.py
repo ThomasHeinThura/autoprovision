@@ -207,7 +207,7 @@ def test_components_reach_the_playbook_as_a_list():
 # ── object storage ───────────────────────────────────────────────────────────
 
 def _obj(**over):
-    body = {"provider": "minio", "mode": "dist", "nodes": "4",
+    body = {"provider": "minio", "mode": "dist",
             "node_ips": "1.1.1.1\n1.1.1.2\n1.1.1.3\n1.1.1.4", "drives_per_node": "4"}
     body.update(over)
     return body
@@ -228,9 +228,19 @@ def test_standalone_object_storage_takes_one_node():
     assert p["inventory"] == {"object_store": ["1.1.1.1"]}
 
 
-def test_object_storage_caps_at_four_nodes():
-    with pytest.raises(PlanError, match="up to four"):
-        plan("object-store-up", _obj(node_ips="\n".join(f"1.1.1.{i}" for i in range(1, 6))))
+@pytest.mark.parametrize("count", [4, 6, 8, 12, 16, 24])
+def test_object_storage_scales_past_a_handful_of_nodes(count):
+    """The platform is not sized for one customer's rack. If someone brings 24
+    storage nodes, that is a valid layout, not an error."""
+    ips = "\n".join(f"10.0.0.{i}" for i in range(1, count + 1))
+    p = plan("object-store-up", _obj(node_ips=ips))
+    assert len(p["inventory"]["object_store"]) == count
+
+
+def test_object_storage_still_refuses_too_few_drives_at_any_scale():
+    ips = "\n".join(f"10.0.0.{i}" for i in range(1, 17))
+    with pytest.raises(PlanError, match="parity budget"):
+        plan("object-store-up", _obj(node_ips=ips, drives_per_node="2"))
 
 
 # ── monitoring ───────────────────────────────────────────────────────────────

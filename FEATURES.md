@@ -157,6 +157,6 @@ does not deploy the others.
 | Question | Why it matters |
 | -------- | -------------- |
 | **Which monitoring stack?** | LGTM is the recommendation; **Elastic is the lower-risk answer** because it is what the lab has tested. Every shipper and the WSO2 gateway sidecars point at whichever you choose. |
-| **Does UAT get one database node or three?** | The README says one, the old UI ran three. The console now asks per environment, so this is a choice rather than a contradiction — but Production sizing depends on the answer. |
-| **Where do the object storage VMs come from?** | Distributed MinIO wants four nodes with four raw disks each. That is not in the 19-VM topology. |
+| **How is each environment sized?** | The console asks per workload rather than assuming, so this is a choice now rather than a contradiction. Worth writing the intended sizing down per environment so it is a decision and not an accident. |
+| **Where do the object storage machines come from?** | Distributed object storage wants at least four nodes with four raw disks each. Confirm that capacity exists before committing to LGTM, which depends on it. |
 | **Do you need MySQL and PostgreSQL now, or is SQL Server enough?** | Both are written but untested. Testing them costs lab time that could go to proving Production instead. |

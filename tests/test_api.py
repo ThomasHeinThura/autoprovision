@@ -268,3 +268,105 @@ def test_committed_console_build_is_not_older_than_its_source():
         f"app/dist/ is older than {os.path.relpath(newest_name, root)}. "
         "Run: cd console && npm run build — and commit the result."
     )
+
+
+# ── the platform is not sized for one customer ───────────────────────────────
+
+def test_environments_come_from_config_not_hardcoded_python():
+    """The original engagement was 19 machines. Nothing may depend on that."""
+    from app import environments
+    specs = environments.load()
+    assert len(specs) >= 1
+    assert all(s.id and s.title for s in specs)
+
+
+def test_an_added_environment_gets_a_full_stack_with_no_code_change(tmp_path, monkeypatch):
+    from app import environments
+
+    cfg = tmp_path / "environments.yml"
+    cfg.write_text(
+        "environments:\n"
+        "  - id: alpha\n    title: Alpha\n    stack: full\n    subnet: 10.9.1\n"
+        "  - id: beta\n    title: Beta\n    stack: shared\n    subnet: 10.9.2\n"
+    )
+    monkeypatch.setattr(environments, "CONFIG_PATH", str(cfg))
+    specs = environments.load()
+    assert [s.id for s in specs] == ["alpha", "beta"]
+    assert specs[0].ip(31) == "10.9.1.31"
+
+
+@pytest.mark.parametrize("bad,reason", [
+    ("environments:\n  - title: no id\n", "no id"),
+    ("environments:\n  - id: a\n  - id: a\n", "twice"),
+    ("environments:\n  - id: danger\n", "reserved"),
+    ("environments:\n  - id: 'has space'\n", "may contain only"),
+    ("environments:\n  - id: a\n    stack: nonsense\n", "expected"),
+    ("environments: []\n", "no environments"),
+])
+def test_a_broken_environment_file_fails_loudly(tmp_path, monkeypatch, bad, reason):
+    """A half-built registry nobody can explain is worse than refusing to start."""
+    from app import environments
+
+    cfg = tmp_path / "environments.yml"
+    cfg.write_text(bad)
+    monkeypatch.setattr(environments, "CONFIG_PATH", str(cfg))
+    with pytest.raises(environments.ConfigError, match=reason):
+        environments.load()
+
+
+def test_no_workload_hardcodes_a_machine_count(client):
+    """Sizing is a per-workload decision, not a property of the platform."""
+    import re
+    for w in client.get("/api/registry").json()["workloads"]:
+        blob = w["summary"] + " ".join(f["hint"] for f in w["fields"])
+        assert not re.search(r"\b19 (VM|machine)", blob), f"{w['id']} assumes a topology"
+
+
+# ── topology ─────────────────────────────────────────────────────────────────
+
+def test_topology_is_empty_until_something_is_configured(client):
+    body = client.get("/api/topology").json()
+    assert body["totalHosts"] == 0
+    assert len(body["unconfigured"]) > 0
+
+
+def test_topology_collects_hosts_across_workloads_and_dedupes(client):
+    client.post("/api/targets", json={"workload": "prod_rke2", "values": {
+        "control_plane_ips": "10.1.1.11\n10.1.1.12\n10.1.1.13",
+        "worker_ips": "10.1.1.21\n10.1.1.22",
+    }})
+    client.post("/api/targets", json={"workload": "prod_db", "values": {
+        "engine": "mssql", "node_ips": "10.1.1.31\n10.1.1.32\n10.1.1.33",
+    }})
+    body = client.get("/api/topology").json()
+    assert body["totalHosts"] == 8
+    hosts = {h["host"]: h for h in body["hosts"]}
+    assert hosts["10.1.1.11"]["roles"] == ["Kubernetes control plane"]
+    assert hosts["10.1.1.21"]["roles"] == ["Kubernetes worker"]
+    assert hosts["10.1.1.31"]["roles"] == ["Database"]
+
+
+def test_topology_flags_a_machine_carrying_more_than_one_role(client):
+    """How estates quietly become fragile: one reboot takes out two things."""
+    client.post("/api/targets", json={"workload": "prod_db", "values": {
+        "engine": "mssql", "node_ips": "10.2.2.9"}})
+    client.post("/api/targets", json={"workload": "prod_monitoring", "values": {
+        "placement": "vm", "node_ips": "10.2.2.9"}})
+    body = client.get("/api/topology").json()
+    assert body["sharedHosts"] == ["10.2.2.9"]
+    assert next(h for h in body["hosts"] if h["host"] == "10.2.2.9")["shared"] is True
+
+
+def test_topology_sorts_addresses_numerically_not_lexically(client):
+    client.post("/api/targets", json={"workload": "prod_rke2", "values": {
+        "control_plane_ips": "10.0.0.100\n10.0.0.9\n10.0.0.11"}})
+    hosts = [h["host"] for h in client.get("/api/topology").json()["hosts"]]
+    assert hosts == ["10.0.0.9", "10.0.0.11", "10.0.0.100"]
+
+
+def test_topology_exports_an_inventory_without_credentials(client):
+    client.post("/api/targets", json={"workload": "prod_db", "values": {
+        "engine": "mssql", "node_ips": "10.3.3.1", "admin_password": "hunter2"}})
+    text = client.get("/api/topology/inventory").text
+    assert "[prod]" in text and "10.3.3.1" in text
+    assert "hunter2" not in text and "ansible_password" not in text

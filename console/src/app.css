@@ -274,3 +274,36 @@ dialog::backdrop { background: rgba(8, 20, 15, .5); }
   .pane.configure { overflow: visible; }
   pre.log { max-height: 55vh; }
 }
+
+/* ── topology ────────────────────────────────────────────────────────────── */
+
+.env-counts { display: flex; flex-wrap: wrap; gap: 0; }
+.env-count {
+  display: grid; gap: 2px; padding: 12px 18px; border: 0; background: none;
+  border-right: 1px solid var(--rule-soft); cursor: pointer; text-align: left; min-width: 150px;
+}
+.env-count:last-child { border-right: 0; }
+.env-count:hover { background: var(--sunken); }
+.env-count .n { font-size: 22px; font-weight: 680; letter-spacing: -.02em; color: var(--green-deep); }
+.env-count .t { font-size: 12.5px; font-weight: 570; }
+.env-count .s { font-size: 11px; color: var(--faint); }
+
+table.hosts { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+table.hosts th {
+  text-align: left; padding: 8px 14px; background: var(--sunken);
+  font-size: 10.5px; font-weight: 650; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--faint); border-bottom: 1px solid var(--rule-soft); white-space: nowrap;
+}
+table.hosts td { padding: 8px 14px; border-bottom: 1px solid var(--rule-soft); vertical-align: top; }
+table.hosts tr:last-child td { border-bottom: 0; }
+table.hosts tr:hover td { background: var(--sunken); }
+/* A machine carrying several unrelated roles is worth noticing, not hiding. */
+table.hosts tr.shared td:first-child { box-shadow: inset 3px 0 0 var(--run); }
+
+.wl-links { display: flex; flex-direction: column; gap: 3px; align-items: flex-start; }
+.wl-link {
+  border: 0; background: none; padding: 0; cursor: pointer; font-size: 12px;
+  color: var(--green-deep); display: inline-flex; align-items: center; gap: 5px; text-align: left;
+}
+.wl-link:hover { text-decoration: underline; }
+.unconfigured { display: flex; flex-wrap: wrap; gap: 6px 18px; padding: 12px 14px; }

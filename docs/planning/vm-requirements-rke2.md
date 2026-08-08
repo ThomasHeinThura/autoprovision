@@ -1,4 +1,16 @@
-# VM Requirements — RKE2 / Istio (New)
+# VM Requirements — RKE2 / Istio
+
+> **Historical record — one rollout, not the product.**
+>
+> This documents the 19-machine topology of the original engagement. The control
+> plane is no longer built around it: environments are declared in
+> [`config/environments.yml`](../../config/environments.yml) and every workload is
+> sized when you configure it, so anything from three machines to fifty is the
+> same amount of work.
+>
+> **For sizing anything new, use [capacity-planning.md](capacity-planning.md).**
+> This file is kept because it records what was actually built and tested, which
+> is worth having when something behaves unexpectedly in that estate.
 
 Updated VM topology for the new requirement. Supersedes the original Talos-era sizing doc
 (removed in cleanup) for Production and UAT execution.

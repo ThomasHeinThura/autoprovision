@@ -14,7 +14,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import content, deps, runner, state
+from . import content, deps, runner, state, topology
 from .planner import PlanError, plan
 from .workloads import BY_ID, DESTRUCTIVE, registry_payload
 
@@ -249,6 +249,26 @@ async def api_stream(workload_id: str):
 @app.get("/api/runs")
 async def api_runs():
     return JSONResponse(state.recent_runs())
+
+
+# ── topology ─────────────────────────────────────────────────────────────────
+
+@app.get("/api/topology")
+async def api_topology():
+    """Every machine this control plane is managing, derived from configuration.
+
+    At fifty machines nobody holds the estate in their head, and nothing else can
+    answer "what am I actually managing?" — inventories are per-run and Ansible
+    keeps no memory between them.
+    """
+    return JSONResponse({**topology.survey(),
+                         "orphanedEnvironments": topology.unknown_environments()})
+
+
+@app.get("/api/topology/inventory", response_class=PlainTextResponse)
+async def api_topology_inventory():
+    return PlainTextResponse(topology.as_inventory(),
+                             headers={"Content-Disposition": "attachment; filename=estate.ini"})
 
 
 # ── documentation ────────────────────────────────────────────────────────────
