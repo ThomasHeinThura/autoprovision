@@ -15,6 +15,28 @@ GO
 CREATE DATABASE WSO2AM_SHARED_DB COLLATE Latin1_General_CS_AS;
 GO
 
+-- ── READ-COMMITTED SNAPSHOT — REQUIRED, do not remove ────────────────────────────
+-- Matches WSO2AM_DB and the WSO2_IS_* databases in is_mssql.sql. Under the default
+-- READ COMMITTED (locking), a reader blocks on any uncommitted writer; several WSO2 code
+-- paths hold a write transaction open on one pooled connection while reading the same rows
+-- on a second, which deadlocks in a way SQL Server cannot detect or break (the holder is
+-- 'sleeping' waiting on the application, so there is no cycle and no victim).
+-- MySQL/PostgreSQL never hit this because MVCC readers do not block; RCSI gives SQL Server
+-- the same semantics. See issues-tracker/fix-log.md (production incident 2026-08-25).
+--
+-- MUST run here, at create time, before ansible/mssql_wso2_db.yml adds the database to the
+-- availability group — enabling RCSI on an existing synchronous-commit AG member requires a
+-- database restart that can strand it OFFLINE.
+-- WSO2 documents BOTH of these under "Eliminate concurrency issues in tables":
+--   https://apim.docs.wso2.com/en/latest/install-and-setup/setup/setting-up-databases/
+--           changing-default-databases/changing-to-mssql/
+-- ALLOW_SNAPSHOT_ISOLATION needs no database restart; READ_COMMITTED_SNAPSHOT does, which is why
+-- it must be set here, before the database joins the availability group.
+ALTER DATABASE WSO2AM_SHARED_DB SET ALLOW_SNAPSHOT_ISOLATION ON;
+GO
+ALTER DATABASE WSO2AM_SHARED_DB SET READ_COMMITTED_SNAPSHOT ON;
+GO
+
 IF NOT EXISTS (SELECT * FROM sys.server_principals WHERE name = '$(WSO2_USER)')
 BEGIN
     CREATE LOGIN [$(WSO2_USER)] WITH PASSWORD = '$(WSO2_PW)', SID = $(WSO2_SID), CHECK_POLICY = OFF;

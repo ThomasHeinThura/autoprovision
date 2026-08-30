@@ -16,6 +16,32 @@ GO
 CREATE DATABASE WSO2AM_DB COLLATE Latin1_General_CS_AS;
 GO
 
+-- ── READ-COMMITTED SNAPSHOT — REQUIRED, do not remove ────────────────────────────
+-- APIM's deleteAPIRevision holds an UNCOMMITTED "DELETE FROM AM_REVISION" on one pooled
+-- connection while reading the same rows on a SECOND pooled connection. Under the default
+-- READ COMMITTED (locking) the reader takes an S lock and waits on the writer's X lock; the
+-- application thread waits on the reader, so the writer never commits. SQL Server CANNOT
+-- break it — the holder is 'sleeping' waiting on the application, so there is no cycle and no
+-- deadlock victim. Result: AM_REVISION locks permanently and the publisher hangs.
+-- MySQL/PostgreSQL never hit this because MVCC readers do not block; RCSI gives SQL Server the
+-- same semantics. Observed in production 2026-08-25 (see issues-tracker/fix-log.md).
+--
+-- This MUST run here, at create time, while the database is NOT yet an availability-group
+-- member. ansible/mssql_wso2_db.yml adds it to the AG in a later play. Setting RCSI on a
+-- database that is already a synchronous-commit AG member requires a database restart, which
+-- drops the secondary connections and can strand the database OFFLINE.
+-- WSO2 documents BOTH of these under "Eliminate concurrency issues in tables":
+--   https://apim.docs.wso2.com/en/latest/install-and-setup/setup/setting-up-databases/
+--           changing-default-databases/changing-to-mssql/
+-- ALLOW_SNAPSHOT_ISOLATION enables the explicit SNAPSHOT isolation level and does NOT require a
+-- database restart. READ_COMMITTED_SNAPSHOT changes the default READ COMMITTED level to use row
+-- versioning and DOES require a restart — which is why it must be set here, before the database
+-- joins the availability group.
+ALTER DATABASE WSO2AM_DB SET ALLOW_SNAPSHOT_ISOLATION ON;
+GO
+ALTER DATABASE WSO2AM_DB SET READ_COMMITTED_SNAPSHOT ON;
+GO
+
 IF NOT EXISTS (SELECT * FROM sys.server_principals WHERE name = '$(WSO2_USER)')
 BEGIN
     CREATE LOGIN [$(WSO2_USER)] WITH PASSWORD = '$(WSO2_PW)', SID = $(WSO2_SID), CHECK_POLICY = OFF;
