@@ -1,0 +1,74 @@
+# Environments this control plane manages.
+#
+# Add, remove or rename freely. Every environment declared here with
+# `stack: full` gets the complete workload set — its own cluster, database,
+# object storage, monitoring and applications — and appears as its own screen in
+# the console. Nothing about the platform assumes a particular number of
+# environments or a particular number of machines.
+#
+# After editing this file, restart the control plane. The console reads the
+# registry from the API, so no rebuild is needed.
+#
+# Fields
+#   id      Short slug. Becomes part of workload ids and URLs, so keep it stable
+#           once you have run anything — changing it orphans that environment's
+#           recorded install status.
+#   title   What operators see.
+#   blurb   One or two sentences. Say what this environment is FOR, because that
+#           is what tells someone whether they are on the right screen.
+#   stack   full   — the complete workload set (cluster, data, monitoring, apps)
+#           shared — only what several environments have in common
+#   subnet  Optional. Used to generate example addresses in form placeholders.
+#           Cosmetic only; nothing is deployed from it.
+
+environments:
+  - id: shared
+    title: Shared services
+    stack: shared
+    subnet: 192.168.66
+    blurb: >-
+      Only what several environments genuinely share: source control, the
+      container registry, and code quality. Build these first — every other
+      environment pulls images from here.
+
+  - id: uat
+    title: UAT
+    stack: full
+    subnet: 192.168.65
+    blurb: >-
+      A complete, self-contained environment for testing. Sized to exist and to
+      match production's shape, not to survive a node failure at three in the
+      morning.
+
+  - id: prod
+    title: Production
+    stack: full
+    subnet: 192.168.51
+    blurb: >-
+      A complete, self-contained environment with no runtime dependency on any
+      other. Everything that can be highly available, is.
+
+  # ── Add your own ────────────────────────────────────────────────────────────
+  # Uncomment or copy. Each `full` environment adds its own complete stack, and
+  # the machine count follows from how you size each workload rather than from
+  # anything fixed here.
+  #
+  # - id: dev
+  #   title: Development
+  #   stack: full
+  #   subnet: 192.168.60
+  #   blurb: Single-node everything. Rebuilt often, backed up never.
+  #
+  # - id: dr
+  #   title: Disaster recovery
+  #   stack: full
+  #   subnet: 192.168.52
+  #   blurb: >-
+  #     Standby site. Object storage replicates here, and the cluster stays warm
+  #     but carries no traffic until it has to.
+  #
+  # - id: customer-a
+  #   title: Customer A
+  #   stack: full
+  #   subnet: 10.40.10
+  #   blurb: Dedicated tenant. Shares the registry and nothing else.

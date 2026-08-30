@@ -1,0 +1,105 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"      # matches Ubuntu 24.04 on the jump host
+      - run: pip install fastapi "uvicorn[standard]" pytest httpx ruff
+      - run: ruff check app/ tests/ scripts/check-links.py
+      - run: python -m pytest tests/ -q
+
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # Documentation rots silently. A moved file keeps rendering as a link and
+      # nobody finds out until someone follows it during an incident.
+      - run: python scripts/check-links.py
+
+  playbooks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install ansible-core ansible-lint pyyaml
+      - name: Every playbook is valid YAML
+        run: |
+          python - <<'PY'
+          import pathlib, sys, yaml
+          bad = []
+          for f in sorted(pathlib.Path("ansible").rglob("*.yml")):
+              try:
+                  yaml.safe_load(f.read_text())
+              except Exception as e:
+                  bad.append((f, e))
+          for f, e in bad:
+              print(f"INVALID {f}: {e}")
+          print(f"checked {len(list(pathlib.Path('ansible').rglob('*.yml')))} playbooks")
+          sys.exit(1 if bad else 0)
+          PY
+      # Advisory while the style backlog is worked through — a failing lint here
+      # would block work on the console for reasons unrelated to it.
+      - run: ansible-lint ansible/ --nocolor || true
+
+  console:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm ci
+        working-directory: console
+      - run: npx tsc -b --noEmit
+        working-directory: console
+      - run: npm run build
+        working-directory: console
+      # app/dist/ is committed so the jump host needs neither Node nor a registry.
+      # If building here changes it, the committed output is stale.
+      - name: Committed build matches source
+        run: |
+          if ! git diff --quiet -- app/dist; then
+            echo "::error::app/dist/ is stale. Run 'cd console && npm run build' and commit the result."
+            git diff --stat -- app/dist
+            exit 1
+          fi
+
+  browser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: pip install fastapi "uvicorn[standard]"
+      - run: npm ci
+        working-directory: console
+      - run: npx playwright install --with-deps chromium
+        working-directory: console
+      - run: python -m uvicorn app.main:app --host 127.0.0.1 --port 3111 &
+      - name: Wait for the control plane
+        run: |
+          for _ in $(seq 1 30); do
+            curl -sf http://127.0.0.1:3111/healthz && exit 0
+            sleep 1
+          done
+          echo "control plane never became healthy" && exit 1
+      - run: node smoke.mjs
+        working-directory: console

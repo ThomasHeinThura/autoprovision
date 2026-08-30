@@ -1,0 +1,91 @@
+---
+# MySQL — two-tier user provisioning.
+#
+# One database and one account per component, each scoped to a host pattern rather
+# than '%'. MySQL accounts are per-node data, not cluster-global: with Group
+# Replication, DDL propagates, but an account created after a node joined may be
+# missing on a node that was offline. So this runs on every node and is
+# idempotent, rather than only on the primary.
+
+- name: MySQL users and databases
+  hosts: db_mysql
+  become: true
+  vars:
+    db_admin_user: "provisioner"
+    db_admin_password: ""
+    app_user_prefix: "app"
+    app_password: ""
+    components: []
+    # Restrict every account to the subnet its application lives on. '%' means
+    # any host that can reach the port may attempt a login.
+    app_host_pattern: "%"
+
+  pre_tasks:
+    - name: Require at least one component
+      ansible.builtin.assert:
+        that: components | length > 0
+        fail_msg: "List at least one component."
+
+    - name: Require a runtime password
+      ansible.builtin.assert:
+        that: app_password | length >= 12
+        fail_msg: "app_password must be at least 12 characters."
+      no_log: true
+
+    - name: Warn when accounts would be reachable from anywhere
+      ansible.builtin.debug:
+        msg: >-
+          app_host_pattern is '%', so these accounts accept a login attempt from any
+          host that can reach {{ inventory_hostname }}. Set it to the application
+          subnet, for example '10.20.30.%'.
+      when: app_host_pattern == '%'
+
+  tasks:
+    - name: Create one database per component
+      community.mysql.mysql_db:
+        name: "{{ app_user_prefix }}_{{ item }}"
+        encoding: utf8mb4
+        collation: utf8mb4_0900_ai_ci
+        state: present
+        login_user: "{{ db_admin_user }}"
+        login_password: "{{ db_admin_password }}"
+        login_host: 127.0.0.1
+      loop: "{{ components }}"
+      no_log: true
+
+    # DML only. No DDL, no FILE, no SUPER, no GRANT. FILE alone would let the
+    # account read any file the daemon can reach.
+    - name: Create one least-privilege account per component
+      community.mysql.mysql_user:
+        name: "{{ app_user_prefix }}_{{ item }}"
+        host: "{{ app_host_pattern }}"
+        password: "{{ app_password }}"
+        priv: "{{ app_user_prefix }}_{{ item }}.*:SELECT,INSERT,UPDATE,DELETE,EXECUTE,SHOW VIEW"
+        state: present
+        login_user: "{{ db_admin_user }}"
+        login_password: "{{ db_admin_password }}"
+        login_host: 127.0.0.1
+      loop: "{{ components }}"
+      no_log: true
+
+    - name: Check no application account holds a dangerous global privilege
+      community.mysql.mysql_query:
+        query: >-
+          SELECT user, host FROM mysql.user
+          WHERE user LIKE '{{ app_user_prefix }}%'
+            AND (Super_priv = 'Y' OR File_priv = 'Y' OR Grant_priv = 'Y'
+                 OR Shutdown_priv = 'Y' OR Create_user_priv = 'Y')
+        login_user: "{{ db_admin_user }}"
+        login_password: "{{ db_admin_password }}"
+        login_host: 127.0.0.1
+      register: overprivileged
+      no_log: true
+
+    - name: Stop if any application account is over-privileged
+      ansible.builtin.assert:
+        that: overprivileged.query_result[0] | length == 0
+        fail_msg: >-
+          An application account holds SUPER, FILE, GRANT, SHUTDOWN or CREATE USER.
+          FILE alone reads and writes any file the daemon can reach. Investigate
+          before continuing.
+        success_msg: "All application accounts are DML-only on their own database."

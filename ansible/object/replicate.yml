@@ -1,0 +1,49 @@
+---
+# Bucket replication to a second site.
+#
+# A single object-storage cluster in one rack is not disaster recovery, however
+# many parity drives it has. Fire, flood and a bad firmware rollout take the whole
+# rack. This mirrors every bucket to a second endpoint.
+- name: Object store replication
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    source_endpoint: ""
+    target_endpoint: ""
+    target_access_key: ""
+    target_secret_key: ""
+  tasks:
+    - name: Require both endpoints
+      ansible.builtin.assert:
+        that:
+          - source_endpoint | length > 0
+          - target_endpoint | length > 0
+          - source_endpoint != target_endpoint
+        fail_msg: "Source and target must both be set, and must differ."
+
+    - name: Register the target alias
+      ansible.builtin.command: >-
+        mc alias set dr {{ target_endpoint }} {{ target_access_key }} {{ target_secret_key }}
+      changed_when: false
+      no_log: true
+
+    - name: List source buckets
+      ansible.builtin.command: mc ls --json autoprovision
+      register: buckets
+      changed_when: false
+
+    - name: Mirror each bucket to the second site
+      ansible.builtin.command: >-
+        mc mirror --overwrite --remove --watch=false
+        autoprovision/{{ (item | from_json).key | regex_replace('/$', '') }}
+        dr/{{ (item | from_json).key | regex_replace('/$', '') }}
+      loop: "{{ buckets.stdout_lines }}"
+      when: item | length > 0
+      changed_when: true
+
+    - name: Report
+      ansible.builtin.debug:
+        msg: >-
+          Mirrored {{ buckets.stdout_lines | length }} buckets to {{ target_endpoint }}.
+          Schedule this workload — a one-off mirror is a snapshot, not replication.

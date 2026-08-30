@@ -1,0 +1,118 @@
+---
+# PostgreSQL — two-tier user provisioning.
+#
+# One database and one LOGIN role per component. Roles are NOSUPERUSER,
+# NOCREATEDB and NOCREATEROLE, own only their own schema, and are granted nothing
+# on any other database. A superuser reaches COPY ... FROM PROGRAM, which is a
+# shell on the host — so an application must never hold one.
+#
+# PostgreSQL roles are cluster-global and reach streaming replicas automatically,
+# so unlike SQL Server there is no SID to pin. The ordering constraint is
+# different: roles must exist before a replica bootstraps, or the replica starts
+# without them.
+
+- name: PostgreSQL roles and databases
+  hosts: db_postgres
+  become: true
+  vars:
+    pg_version: "17"
+    db_port: "5432"
+    db_admin_user: "provisioner"
+    db_admin_password: ""
+    app_user_prefix: "app"
+    app_password: ""
+    components: []
+    lock_builtins: true
+
+  pre_tasks:
+    - name: Require at least one component
+      ansible.builtin.assert:
+        that: components | length > 0
+        fail_msg: "List at least one component. Each gets its own role and database."
+
+    - name: Require a runtime password
+      ansible.builtin.assert:
+        that: app_password | length >= 12
+        fail_msg: "app_password must be at least 12 characters."
+      no_log: true
+
+  tasks:
+    # Only the first host runs this — roles and databases are cluster-global, so
+    # creating them on every replica would race.
+    - name: Provision roles and databases on the primary
+      when: inventory_hostname == ansible_play_hosts[0]
+      block:
+        - name: Create one database per component
+          become_user: postgres
+          community.postgresql.postgresql_db:
+            name: "{{ app_user_prefix }}_{{ item }}"
+            encoding: UTF-8
+            lc_collate: en_US.UTF-8
+            lc_ctype: en_US.UTF-8
+            template: template0
+            port: "{{ db_port }}"
+          loop: "{{ components }}"
+
+        - name: Create one least-privilege role per component
+          become_user: postgres
+          community.postgresql.postgresql_user:
+            name: "{{ app_user_prefix }}_{{ item }}"
+            password: "{{ app_password }}"
+            # Explicit negatives: the defaults are safe today, but a future
+            # PostgreSQL default changing silently would be a privilege escalation.
+            role_attr_flags: LOGIN,NOSUPERUSER,NOCREATEDB,NOCREATEROLE,NOREPLICATION,NOBYPASSRLS
+            port: "{{ db_port }}"
+          loop: "{{ components }}"
+          no_log: true
+
+        - name: Give each role ownership of its own database and nothing else
+          become_user: postgres
+          community.postgresql.postgresql_owner:
+            db: "{{ app_user_prefix }}_{{ item }}"
+            new_owner: "{{ app_user_prefix }}_{{ item }}"
+            obj_type: database
+            port: "{{ db_port }}"
+          loop: "{{ components }}"
+
+        # PUBLIC can create objects in every database by default before PG 15, and
+        # can still connect to every database. Revoke both.
+        - name: Revoke PUBLIC connect on each component database
+          become_user: postgres
+          community.postgresql.postgresql_query:
+            db: postgres
+            port: "{{ db_port }}"
+            query: >-
+              REVOKE ALL ON DATABASE {{ app_user_prefix }}_{{ item }} FROM PUBLIC;
+              GRANT CONNECT ON DATABASE {{ app_user_prefix }}_{{ item }}
+                TO {{ app_user_prefix }}_{{ item }};
+          loop: "{{ components }}"
+
+        - name: Revoke PUBLIC create on the public schema
+          become_user: postgres
+          community.postgresql.postgresql_query:
+            db: "{{ app_user_prefix }}_{{ item }}"
+            port: "{{ db_port }}"
+            query: "REVOKE CREATE ON SCHEMA public FROM PUBLIC;"
+          loop: "{{ components }}"
+
+        - name: List what now exists
+          become_user: postgres
+          community.postgresql.postgresql_query:
+            query: >-
+              SELECT rolname, rolsuper, rolcreatedb, rolcreaterole
+              FROM pg_roles WHERE rolname LIKE '{{ app_user_prefix }}%' ORDER BY rolname
+            port: "{{ db_port }}"
+          register: created_roles
+
+        - name: Show the roles
+          ansible.builtin.debug:
+            var: created_roles.query_result
+
+        # A role that came back as a superuser means something else granted it.
+        # Stop rather than hand an application a shell on the database host.
+        - name: Assert no application role is a superuser
+          ansible.builtin.assert:
+            that: not (created_roles.query_result | selectattr('rolsuper') | list | length > 0)
+            fail_msg: >-
+              An application role holds SUPERUSER. That is a shell on this host via
+              COPY ... FROM PROGRAM. Investigate before continuing.

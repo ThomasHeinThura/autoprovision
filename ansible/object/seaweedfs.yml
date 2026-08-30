@@ -1,0 +1,100 @@
+---
+# SeaweedFS — S3-compatible object storage.
+#
+# Chosen over MinIO when the workload is very many small objects: SeaweedFS keeps
+# file metadata in a separate filer rather than one flat namespace, so per-object
+# memory stays low as the count grows into the hundreds of millions.
+- name: SeaweedFS object storage
+  hosts: object_store
+  become: true
+  vars:
+    object_mode: "dist"
+    object_root_user: "seaweed"
+    object_root_password: ""
+    drive_root: "/mnt/seaweedfs"
+    drives_per_node: 4
+    master_port: 9333
+    volume_port: 8080
+    s3_port: 8333
+    version: "3.80"
+
+  pre_tasks:
+    - name: Require a root password
+      ansible.builtin.assert:
+        that: object_root_password | length >= 12
+        fail_msg: "object_root_password must be at least 12 characters."
+      no_log: true
+
+  tasks:
+    - name: Create the seaweedfs user
+      ansible.builtin.user: {name: seaweedfs, system: true, shell: /usr/sbin/nologin}
+
+    - name: Download SeaweedFS
+      ansible.builtin.unarchive:
+        src: "https://github.com/seaweedfs/seaweedfs/releases/download/{{ version }}/linux_amd64.tar.gz"
+        dest: /usr/local/bin
+        remote_src: true
+        mode: "0755"
+        creates: /usr/local/bin/weed
+
+    - name: Create the volume directories
+      ansible.builtin.file:
+        path: "{{ drive_root }}/disk{{ item }}"
+        state: directory
+        owner: seaweedfs
+        group: seaweedfs
+        mode: "0750"
+      loop: "{{ range(1, (drives_per_node | int) + 1) | list }}"
+
+    - name: Write the S3 credentials
+      ansible.builtin.copy:
+        dest: /etc/seaweedfs/s3.json
+        owner: seaweedfs
+        mode: "0600"
+        content: |
+          {"identities":[{"name":"{{ object_root_user }}",
+            "credentials":[{"accessKey":"{{ object_root_user }}",
+                            "secretKey":"{{ object_root_password }}"}],
+            "actions":["Admin","Read","Write","List","Tagging"]}]}
+      no_log: true
+
+    - name: Install the systemd unit
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/seaweedfs.service
+        mode: "0644"
+        content: |
+          # Managed by Autoprovision — ansible/object/seaweedfs.yml
+          [Unit]
+          Description=SeaweedFS
+          After=network-online.target
+
+          [Service]
+          User=seaweedfs
+          ExecStart=/usr/local/bin/weed server \
+            -dir={{ range(1, (drives_per_node | int) + 1) | map('regex_replace', '^(.*)$', drive_root ~ '/disk\1') | join(',') }} \
+            -master.port={{ master_port }} -volume.port={{ volume_port }} \
+            -s3 -s3.port={{ s3_port }} -s3.config=/etc/seaweedfs/s3.json \
+            {% if object_mode == 'dist' %}-master.peers={{ ansible_play_hosts | map('regex_replace', '^(.*)$', '\1:' ~ master_port) | join(',') }} -master.volumeSizeLimitMB=30000 -volume.replication=010{% endif %}
+          Restart=always
+          RestartSec=5
+          LimitNOFILE=65536
+
+          [Install]
+          WantedBy=multi-user.target
+      notify: [reload systemd, restart seaweedfs]
+
+    - name: Start SeaweedFS
+      ansible.builtin.systemd: {name: seaweedfs, state: started, enabled: true, daemon_reload: true}
+
+    - name: Wait for the S3 endpoint
+      ansible.builtin.wait_for: {port: "{{ s3_port }}", host: "{{ inventory_hostname }}", timeout: 120}
+
+    - name: Report
+      ansible.builtin.debug:
+        msg: "SeaweedFS S3 endpoint on http://{{ inventory_hostname }}:{{ s3_port }}"
+
+  handlers:
+    - name: reload systemd
+      ansible.builtin.systemd: {daemon_reload: true}
+    - name: restart seaweedfs
+      ansible.builtin.systemd: {name: seaweedfs, state: restarted}

@@ -9,11 +9,14 @@ __pycache__/
 *.pyc
 .venv/
 
-# Node / build output
+# Node
 node_modules/
-dist/
-build/
 coverage/
+
+# The console build output is COMMITTED on purpose: the jump host has no Node and
+# no registry access, so app/dist/ must ship in the repository.
+console/dist/
+!app/dist/
 
 # Runtime state on the jump host (inventories with credentials, logs, kubeconfigs, staged PEMs)
 data/
@@ -28,7 +31,6 @@ data/
 *.key
 *.csr
 *.srl
-.claude
 WSO2_APIM_KUBE_ISTIO/certificates/
 docker/traefik/certs/
 
@@ -37,3 +39,9 @@ sql-docs*
 reference/
 
 credential*
+# TypeScript build cache
+*.tsbuildinfo
+
+# Local incident/runbook writeups — internal topology, IPs, outage timelines.
+# Never belongs in this public repo.
+issues-tracker/

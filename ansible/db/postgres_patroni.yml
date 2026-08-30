@@ -1,0 +1,211 @@
+---
+# PostgreSQL high availability — Patroni with an etcd consensus store.
+#
+# Patroni holds leader election in a distributed configuration store and promotes
+# a replica automatically when the leader disappears. etcd is deployed as its own
+# 3-node cluster on the same hosts.
+#
+# It is deliberately NOT the RKE2 cluster's etcd. Sharing that would mean a
+# database failover storm can destabilise the Kubernetes control plane, which is
+# the one component that must stay up while everything else is being repaired.
+
+- name: PostgreSQL Patroni cluster
+  hosts: db_postgres
+  become: true
+  vars:
+    pg_version: "17"
+    db_port: "5432"
+    db_data_dir: "/var/lib/postgresql/17/main"
+    db_admin_user: "provisioner"
+    db_admin_password: ""
+    cluster_label: "pg-cluster"
+    listener_ip: ""
+    patroni_rest_port: 8008
+    etcd_client_port: 2379
+    etcd_peer_port: 2380
+
+  pre_tasks:
+    - name: Require an odd node count of at least three
+      ansible.builtin.assert:
+        that:
+          - ansible_play_hosts | length >= 3
+          - ansible_play_hosts | length is odd
+        fail_msg: >-
+          Patroni needs an odd number of nodes, at least three, so etcd can hold
+          quorum. {{ ansible_play_hosts | length }} was given. With two nodes both
+          sides believe they are leader and the data diverges.
+
+    - name: Require a replication password
+      ansible.builtin.assert:
+        that: db_admin_password | length >= 12
+        fail_msg: "db_admin_password must be at least 12 characters."
+      no_log: true
+
+  tasks:
+    - name: Install PostgreSQL, Patroni and etcd
+      ansible.builtin.apt:
+        name: [etcd-server, etcd-client, patroni, python3-psycopg2, "postgresql-{{ pg_version }}"]
+        state: present
+        update_cache: true
+
+    - name: Stop the packaged PostgreSQL — Patroni owns the cluster lifecycle
+      ansible.builtin.systemd:
+        name: postgresql
+        state: stopped
+        enabled: false
+      failed_when: false
+
+    - name: Remove the packaged cluster so Patroni can bootstrap its own
+      ansible.builtin.command: "pg_dropcluster {{ pg_version }} main --stop"
+      args:
+        removes: "/etc/postgresql/{{ pg_version }}/main/postgresql.conf"
+
+    - name: Configure etcd
+      ansible.builtin.copy:
+        dest: /etc/default/etcd
+        mode: "0644"
+        content: |
+          # Managed by Autoprovision — ansible/db/postgres_patroni.yml
+          ETCD_NAME={{ inventory_hostname }}
+          ETCD_DATA_DIR=/var/lib/etcd/default
+          ETCD_LISTEN_PEER_URLS=http://{{ inventory_hostname }}:{{ etcd_peer_port }}
+          ETCD_LISTEN_CLIENT_URLS=http://{{ inventory_hostname }}:{{ etcd_client_port }},http://127.0.0.1:{{ etcd_client_port }}
+          ETCD_INITIAL_ADVERTISE_PEER_URLS=http://{{ inventory_hostname }}:{{ etcd_peer_port }}
+          ETCD_ADVERTISE_CLIENT_URLS=http://{{ inventory_hostname }}:{{ etcd_client_port }}
+          ETCD_INITIAL_CLUSTER={{ ansible_play_hosts | map('regex_replace', '^(.*)$', '\\1=http://\\1:' ~ etcd_peer_port) | join(',') }}
+          ETCD_INITIAL_CLUSTER_STATE=new
+          ETCD_INITIAL_CLUSTER_TOKEN={{ cluster_label }}
+      notify: restart etcd
+
+    - name: Start etcd
+      ansible.builtin.systemd:
+        name: etcd
+        state: started
+        enabled: true
+
+    - name: Flush handlers so etcd is live before Patroni starts
+      ansible.builtin.meta: flush_handlers
+
+    - name: Wait for etcd quorum
+      ansible.builtin.command: "etcdctl --endpoints=http://127.0.0.1:{{ etcd_client_port }} endpoint health"
+      register: etcd_health
+      retries: 12
+      delay: 5
+      until: etcd_health.rc == 0
+      changed_when: false
+
+    - name: Create the Patroni data directory
+      ansible.builtin.file:
+        path: "{{ db_data_dir }}"
+        state: directory
+        owner: postgres
+        group: postgres
+        mode: "0700"
+
+    - name: Write the Patroni configuration
+      ansible.builtin.copy:
+        dest: /etc/patroni/config.yml
+        owner: postgres
+        group: postgres
+        mode: "0600"
+        content: |
+          # Managed by Autoprovision — ansible/db/postgres_patroni.yml
+          scope: {{ cluster_label }}
+          name: {{ inventory_hostname }}
+
+          restapi:
+            listen: 0.0.0.0:{{ patroni_rest_port }}
+            connect_address: {{ inventory_hostname }}:{{ patroni_rest_port }}
+
+          etcd3:
+            hosts: {{ ansible_play_hosts | map('regex_replace', '^(.*)$', '\\1:' ~ etcd_client_port) | join(',') }}
+
+          bootstrap:
+            dcs:
+              ttl: 30
+              loop_wait: 10
+              retry_timeout: 10
+              maximum_lag_on_failover: 1048576
+              # Synchronous mode: a commit is not acknowledged until a replica has
+              # it. Costs latency, and it is the only setting under which failover
+              # cannot silently lose an acknowledged transaction.
+              synchronous_mode: true
+              postgresql:
+                use_pg_rewind: true
+                parameters:
+                  password_encryption: scram-sha-256
+                  wal_level: replica
+                  hot_standby: "on"
+                  max_wal_senders: 10
+                  max_replication_slots: 10
+            initdb:
+              - encoding: UTF8
+              - data-checksums
+            pg_hba:
+              - host replication replicator 0.0.0.0/0 scram-sha-256
+              - host all all 0.0.0.0/0 scram-sha-256
+
+          postgresql:
+            listen: 0.0.0.0:{{ db_port }}
+            connect_address: {{ inventory_hostname }}:{{ db_port }}
+            data_dir: {{ db_data_dir }}
+            bin_dir: /usr/lib/postgresql/{{ pg_version }}/bin
+            authentication:
+              replication:
+                username: replicator
+                password: "{{ db_admin_password }}"
+              superuser:
+                username: "{{ db_admin_user }}"
+                password: "{{ db_admin_password }}"
+
+          tags:
+            nofailover: false
+            noloadbalance: false
+            clonefrom: false
+      no_log: true
+      notify: restart patroni
+
+    - name: Start Patroni
+      ansible.builtin.systemd:
+        name: patroni
+        state: started
+        enabled: true
+
+    - name: Flush handlers
+      ansible.builtin.meta: flush_handlers
+
+    - name: Wait for a leader to be elected
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ patroni_rest_port }}/cluster"
+        return_content: true
+      register: patroni_cluster
+      retries: 24
+      delay: 5
+      until:
+        - patroni_cluster.status == 200
+        - (patroni_cluster.json.members | selectattr('role', 'equalto', 'leader') | list | length) == 1
+
+    - name: Show the cluster
+      when: inventory_hostname == ansible_play_hosts[0]
+      ansible.builtin.debug:
+        msg: >-
+          {{ patroni_cluster.json.members
+             | map(attribute='name') | zip(patroni_cluster.json.members | map(attribute='role'))
+             | list }}
+
+    - name: Assert every member is healthy
+      ansible.builtin.assert:
+        that: patroni_cluster.json.members | selectattr('state', 'equalto', 'running') | list | length
+              == ansible_play_hosts | length
+        fail_msg: "Not every member reached the running state. Check 'patronictl list'."
+
+  handlers:
+    - name: restart etcd
+      ansible.builtin.systemd:
+        name: etcd
+        state: restarted
+
+    - name: restart patroni
+      ansible.builtin.systemd:
+        name: patroni
+        state: restarted

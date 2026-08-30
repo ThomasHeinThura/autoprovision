@@ -1,0 +1,206 @@
+---
+# MinIO — S3-compatible object storage, standalone or distributed.
+#
+# Distributed mode spreads every object across all drives on all nodes with
+# erasure-coding parity, so the cluster survives losing drives. The parity budget
+# is what determines how many, and it is why four nodes is the smallest layout
+# worth running: with fewer, a single node outage consumes the entire budget and a
+# drive failure *during* that outage loses data.
+#
+# Every node must present an identical drive layout. MinIO computes the erasure
+# set from the expansion notation, and an asymmetric layout is rejected at startup
+# with an error that does not name the odd node.
+
+- name: MinIO object storage
+  hosts: object_store
+  become: true
+  vars:
+    object_mode: "dist"
+    drives_per_node: 4
+    object_root_user: "minioadmin"
+    object_root_password: ""
+    console_domain: "minio.example.com"
+    api_port: 9000
+    console_port: 9001
+    drive_root: "/mnt/minio"
+
+  pre_tasks:
+    - name: Require a root password
+      ansible.builtin.assert:
+        that: object_root_password | length >= 12
+        fail_msg: >-
+          object_root_password must be at least 12 characters. This account can read
+          and delete every bucket.
+      no_log: true
+
+    - name: Require at least four drives per node in distributed mode
+      when: object_mode == 'dist'
+      ansible.builtin.assert:
+        that: drives_per_node | int >= 4
+        fail_msg: >-
+          Erasure coding needs at least four drives per node;
+          {{ drives_per_node }} was given. With fewer, parity cannot survive a node
+          outage plus a concurrent drive failure.
+
+    - name: Warn when the layout is parity-limited
+      when: object_mode == 'dist' and ansible_play_hosts | length < 4
+      ansible.builtin.debug:
+        msg: >-
+          {{ ansible_play_hosts | length }} nodes is parity-limited. A single node
+          outage consumes the parity budget, so a drive failure while that node is
+          down loses data. Four nodes is the smallest layout that tolerates both.
+
+  tasks:
+    - name: Create the minio system user
+      ansible.builtin.user:
+        name: minio
+        system: true
+        shell: /usr/sbin/nologin
+        home: /var/lib/minio
+        create_home: true
+
+    - name: Download the MinIO server binary
+      ansible.builtin.get_url:
+        url: https://dl.min.io/server/minio/release/linux-amd64/minio
+        dest: /usr/local/bin/minio
+        mode: "0755"
+        owner: root
+        group: root
+
+    - name: Download the MinIO client
+      ansible.builtin.get_url:
+        url: https://dl.min.io/client/mc/release/linux-amd64/mc
+        dest: /usr/local/bin/mc
+        mode: "0755"
+
+    - name: Create the drive mount points
+      ansible.builtin.file:
+        path: "{{ drive_root }}/disk{{ item }}"
+        state: directory
+        owner: minio
+        group: minio
+        mode: "0750"
+      loop: "{{ range(1, (drives_per_node | int) + 1) | list }}"
+
+    - name: Verify every node presents the same drive count
+      ansible.builtin.assert:
+        that: >-
+          ansible_play_hosts
+          | map('extract', hostvars, 'drives_per_node')
+          | map('int') | unique | length == 1
+        fail_msg: >-
+          Nodes report different drive counts. MinIO computes its erasure set from a
+          symmetric layout and refuses to start on an asymmetric one.
+      when: object_mode == 'dist'
+
+    - name: Write the MinIO environment
+      ansible.builtin.copy:
+        dest: /etc/default/minio
+        owner: root
+        group: minio
+        mode: "0640"
+        content: |
+          # Managed by Autoprovision — ansible/object/minio.yml
+          MINIO_ROOT_USER={{ object_root_user }}
+          MINIO_ROOT_PASSWORD={{ object_root_password }}
+          MINIO_BROWSER_REDIRECT_URL=https://{{ console_domain }}
+          MINIO_PROMETHEUS_AUTH_TYPE=public
+          {% if object_mode == 'dist' %}
+          MINIO_VOLUMES="http://{{ ansible_play_hosts | join(',') | regex_replace('^', '') }}{{ drive_root }}/disk{1...{{ drives_per_node }}}"
+          {% else %}
+          MINIO_VOLUMES="{{ drive_root }}/disk{1...{{ drives_per_node }}}"
+          {% endif %}
+          MINIO_OPTS="--address :{{ api_port }} --console-address :{{ console_port }}"
+      no_log: true
+      notify: restart minio
+
+    # The expansion notation above needs the full host list in MinIO's own syntax.
+    # Building it explicitly is clearer than fighting Jinja inside the env file.
+    - name: Write the distributed volume specification
+      when: object_mode == 'dist'
+      ansible.builtin.lineinfile:
+        path: /etc/default/minio
+        regexp: "^MINIO_VOLUMES="
+        line: >-
+          MINIO_VOLUMES="{{ ansible_play_hosts
+            | map('regex_replace', '^(.*)$', 'http://\\1:' ~ api_port ~ drive_root ~ '/disk{1...' ~ drives_per_node ~ '}')
+            | join(' ') }}"
+      notify: restart minio
+
+    - name: Install the systemd unit
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/minio.service
+        mode: "0644"
+        content: |
+          # Managed by Autoprovision
+          [Unit]
+          Description=MinIO object storage
+          After=network-online.target
+          Wants=network-online.target
+
+          [Service]
+          Type=notify
+          User=minio
+          Group=minio
+          EnvironmentFile=/etc/default/minio
+          ExecStart=/usr/local/bin/minio server $MINIO_OPTS $MINIO_VOLUMES
+          Restart=always
+          RestartSec=5
+          LimitNOFILE=65536
+          TasksMax=infinity
+
+          [Install]
+          WantedBy=multi-user.target
+      notify:
+        - reload systemd
+        - restart minio
+
+    - name: Start MinIO
+      ansible.builtin.systemd:
+        name: minio
+        state: started
+        enabled: true
+        daemon_reload: true
+
+    - name: Flush handlers
+      ansible.builtin.meta: flush_handlers
+
+    # In distributed mode a node blocks until quorum forms, so this legitimately
+    # takes a while on first start. Failing fast here would be wrong.
+    - name: Wait for the cluster to answer
+      ansible.builtin.uri:
+        url: "http://{{ inventory_hostname }}:{{ api_port }}/minio/health/live"
+        status_code: 200
+      register: minio_health
+      retries: 30
+      delay: 5
+      until: minio_health.status == 200
+
+    - name: Register the alias for the client
+      when: inventory_hostname == ansible_play_hosts[0]
+      ansible.builtin.command: >-
+        mc alias set autoprovision http://{{ inventory_hostname }}:{{ api_port }}
+        {{ object_root_user }} {{ object_root_password }}
+      changed_when: false
+      no_log: true
+
+    - name: Report the cluster layout
+      when: inventory_hostname == ansible_play_hosts[0]
+      ansible.builtin.command: mc admin info autoprovision
+      register: minio_info
+      changed_when: false
+
+    - name: Show it
+      when: inventory_hostname == ansible_play_hosts[0]
+      ansible.builtin.debug:
+        var: minio_info.stdout_lines
+
+  handlers:
+    - name: reload systemd
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+    - name: restart minio
+      ansible.builtin.systemd:
+        name: minio
+        state: restarted

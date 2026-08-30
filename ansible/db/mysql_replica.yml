@@ -1,0 +1,108 @@
+---
+# MySQL two-node semi-synchronous replication.
+#
+# Semi-synchronous: the primary waits for the replica to acknowledge receipt
+# before returning a commit. It bounds data loss without the quorum requirements
+# of Group Replication. Failover is manual — with two nodes there is no arbiter.
+
+- name: MySQL semi-synchronous replication
+  hosts: db_mysql
+  become: true
+  vars:
+    db_port: "3306"
+    db_admin_user: "provisioner"
+    db_admin_password: ""
+
+  pre_tasks:
+    - name: Require exactly two nodes
+      ansible.builtin.assert:
+        that: ansible_play_hosts | length == 2
+        fail_msg: "This shape is exactly two nodes. Use InnoDB Cluster for three or more."
+
+  tasks:
+    - name: Load the semi-synchronous plugins
+      community.mysql.mysql_query:
+        query:
+          - "INSTALL PLUGIN rpl_semi_sync_source SONAME 'semisync_source.so'"
+          - "INSTALL PLUGIN rpl_semi_sync_replica SONAME 'semisync_replica.so'"
+        login_user: "{{ db_admin_user }}"
+        login_password: "{{ db_admin_password }}"
+        login_host: 127.0.0.1
+      failed_when: false
+      no_log: true
+
+    - name: Configure semi-synchronous replication
+      ansible.builtin.copy:
+        dest: /etc/mysql/mysql.conf.d/semisync.cnf
+        mode: "0644"
+        content: |
+          # Managed by Autoprovision — ansible/db/mysql_replica.yml
+          [mysqld]
+          server-id                              = {{ ansible_play_hosts.index(inventory_hostname) + 1 }}
+          rpl_semi_sync_source_enabled           = 1
+          rpl_semi_sync_replica_enabled          = 1
+          # If the replica does not acknowledge within this window the primary
+          # falls back to asynchronous rather than blocking writes indefinitely.
+          rpl_semi_sync_source_timeout           = 10000
+          relay_log                              = relay-bin
+          log_replica_updates                    = ON
+      notify: restart mysql
+
+    - name: Flush handlers
+      ansible.builtin.meta: flush_handlers
+
+    - name: Create the replication account on the primary
+      when: inventory_hostname == ansible_play_hosts[0]
+      community.mysql.mysql_user:
+        name: repl
+        host: "{{ ansible_play_hosts[1] }}"
+        password: "{{ db_admin_password }}"
+        priv: "*.*:REPLICATION SLAVE"
+        login_user: "{{ db_admin_user }}"
+        login_password: "{{ db_admin_password }}"
+        login_host: 127.0.0.1
+      no_log: true
+
+    - name: Point the replica at the primary
+      when: inventory_hostname == ansible_play_hosts[1]
+      community.mysql.mysql_replication:
+        mode: changeprimary
+        primary_host: "{{ ansible_play_hosts[0] }}"
+        primary_user: repl
+        primary_password: "{{ db_admin_password }}"
+        primary_auto_position: true
+        login_user: "{{ db_admin_user }}"
+        login_password: "{{ db_admin_password }}"
+        login_host: 127.0.0.1
+      no_log: true
+
+    - name: Start replication
+      when: inventory_hostname == ansible_play_hosts[1]
+      community.mysql.mysql_replication:
+        mode: startreplica
+        login_user: "{{ db_admin_user }}"
+        login_password: "{{ db_admin_password }}"
+        login_host: 127.0.0.1
+      no_log: true
+
+    - name: Confirm the replica is caught up
+      when: inventory_hostname == ansible_play_hosts[1]
+      community.mysql.mysql_replication:
+        mode: getreplica
+        login_user: "{{ db_admin_user }}"
+        login_password: "{{ db_admin_password }}"
+        login_host: 127.0.0.1
+      register: repl_status
+      retries: 12
+      delay: 5
+      until: repl_status.Replica_IO_Running == 'Yes' and repl_status.Replica_SQL_Running == 'Yes'
+      no_log: true
+
+    - name: Report
+      when: inventory_hostname == ansible_play_hosts[1]
+      ansible.builtin.debug:
+        msg: "Replication running, {{ repl_status.Seconds_Behind_Source | default(0) }}s behind."
+
+  handlers:
+    - name: restart mysql
+      ansible.builtin.systemd: {name: mysql, state: restarted}

@@ -1,0 +1,87 @@
+---
+# Lock the built-in superuser accounts.
+#
+# Runs AFTER application accounts exist, never before — disabling the only account
+# that can log in leaves you locked out of your own database with no recovery path
+# short of single-user mode.
+#
+# Why this matters more than it looks:
+#   sa       (SQL Server) → xp_cmdshell           → shell on the host
+#   root     (MySQL)      → FILE privilege        → read and write any file
+#   postgres              → COPY ... FROM PROGRAM → shell on the host
+# These are not "privileged accounts". They are remote code execution with a
+# password in front.
+
+- name: Lock built-in superuser accounts
+  hosts: all
+  become: true
+  vars:
+    db_engine: "mssql"
+    db_admin_user: "provisioner"
+    db_admin_password: ""
+
+  pre_tasks:
+    - name: Refuse to lock built-ins without a replacement admin
+      ansible.builtin.assert:
+        that:
+          - db_admin_user | length > 0
+          - db_admin_password | length > 0
+          - db_admin_user not in ['sa', 'root', 'postgres']
+        fail_msg: >-
+          A named provisioning admin must exist before the built-in account is
+          disabled, or this host becomes unreachable.
+      no_log: true
+
+  tasks:
+    # ── SQL Server ────────────────────────────────────────────────────────────
+    - name: SQL Server — confirm the provisioning admin works before touching sa
+      when: db_engine == 'mssql'
+      ansible.builtin.command: >-
+        /opt/mssql-tools18/bin/sqlcmd -S localhost -U {{ db_admin_user }}
+        -P {{ db_admin_password }} -C -Q "SELECT 1"
+      register: mssql_admin_check
+      changed_when: false
+      no_log: true
+
+    - name: SQL Server — disable sa
+      when: db_engine == 'mssql' and mssql_admin_check.rc == 0
+      ansible.builtin.command: >-
+        /opt/mssql-tools18/bin/sqlcmd -S localhost -U {{ db_admin_user }}
+        -P {{ db_admin_password }} -C
+        -Q "IF EXISTS (SELECT 1 FROM sys.sql_logins WHERE name='sa' AND is_disabled=0)
+            BEGIN ALTER LOGIN sa DISABLE; PRINT 'sa disabled'; END
+            ELSE PRINT 'sa already disabled';"
+      register: mssql_sa
+      changed_when: "'sa disabled' in mssql_sa.stdout"
+      no_log: true
+
+    # ── PostgreSQL ────────────────────────────────────────────────────────────
+    # The postgres role owns the catalog and cannot be dropped. Removing LOGIN
+    # keeps local peer maintenance working while closing network access.
+    - name: PostgreSQL — remove network login from the postgres superuser
+      when: db_engine == 'postgres'
+      become_user: postgres
+      community.postgresql.postgresql_query:
+        query: "ALTER ROLE postgres NOLOGIN"
+        db: postgres
+      register: pg_lock
+      changed_when: true
+
+    # ── MySQL ─────────────────────────────────────────────────────────────────
+    - name: MySQL — restrict root to loopback only
+      when: db_engine == 'mysql'
+      community.mysql.mysql_query:
+        query:
+          - "DELETE FROM mysql.user WHERE user='root' AND host NOT IN ('localhost','127.0.0.1','::1')"
+          - "FLUSH PRIVILEGES"
+        login_user: "{{ db_admin_user }}"
+        login_password: "{{ db_admin_password }}"
+        login_host: 127.0.0.1
+      no_log: true
+
+    - name: Report
+      ansible.builtin.debug:
+        msg: >-
+          Built-in superuser locked for {{ db_engine }}. Administration is now
+          {{ db_admin_user }}. Keep its password in the vault — there is no
+          built-in account to fall back to.

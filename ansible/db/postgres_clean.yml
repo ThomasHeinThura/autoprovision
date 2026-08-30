@@ -1,0 +1,31 @@
+---
+# DESTRUCTIVE — tear down a Patroni cluster so it can be rebuilt from clean.
+# Removes Patroni, its etcd state and the data directory. Does NOT uninstall
+# PostgreSQL itself.
+- name: PostgreSQL cluster teardown
+  hosts: db_postgres
+  become: true
+  vars:
+    cluster_label: "pg-cluster"
+    db_data_dir: "/var/lib/postgresql/17/main"
+  tasks:
+    - name: Stop Patroni
+      ansible.builtin.systemd: {name: patroni, state: stopped, enabled: false}
+      failed_when: false
+    - name: Remove the cluster key from etcd
+      when: inventory_hostname == ansible_play_hosts[0]
+      ansible.builtin.command: "etcdctl --endpoints=http://127.0.0.1:2379 del --prefix /service/{{ cluster_label }}"
+      failed_when: false
+      changed_when: true
+    - name: Stop etcd
+      ansible.builtin.systemd: {name: etcd, state: stopped, enabled: false}
+      failed_when: false
+    - name: Remove etcd data
+      ansible.builtin.file: {path: /var/lib/etcd/default, state: absent}
+    - name: Remove the PostgreSQL data directory
+      ansible.builtin.file: {path: "{{ db_data_dir }}", state: absent}
+    - name: Report
+      ansible.builtin.debug:
+        msg: >-
+          Patroni, etcd state and {{ db_data_dir }} removed on {{ inventory_hostname }}.
+          PostgreSQL is still installed. Re-run the Database engine workload with Force.

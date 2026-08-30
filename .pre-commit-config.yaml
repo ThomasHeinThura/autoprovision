@@ -1,0 +1,46 @@
+# Autoprovision pre-commit hooks.
+#   pip install pre-commit && pre-commit install
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+        args: [--allow-multiple-documents]
+        # Ansible templating is not valid YAML until it is rendered.
+        exclude: ^ansible/
+      - id: check-added-large-files
+        args: [--maxkb=1200]
+      - id: check-merge-conflict
+      - id: detect-private-key
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.9.6
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.24.0
+    hooks:
+      - id: gitleaks
+
+  - repo: local
+    hooks:
+      # Documentation rots silently: a file moves, the link keeps rendering, and
+      # nobody finds out until someone follows it during an incident.
+      - id: check-links
+        name: markdown links resolve
+        entry: scripts/check-links.py
+        language: system
+        types: [markdown]
+        pass_filenames: false
+
+      - id: pytest
+        name: pytest
+        entry: .venv/bin/python -m pytest tests/ -q
+        language: system
+        types: [python]
+        pass_filenames: false
