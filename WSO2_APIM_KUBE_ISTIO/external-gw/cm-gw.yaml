@@ -18,7 +18,7 @@ data:
 
     [database.shared_db]
     type = "mssql"
-    url = "jdbc:sqlserver://<MSSQL_DB_URL>:1433;databaseName=WSO2AM_SHARED_DB;encrypt=true;trustServerCertificate=true;"
+    url = "jdbc:sqlserver://<MSSQL_DB_URL>:1433;databaseName=WSO2AM_SHARED_DB;SendStringParametersAsUnicode=false;encrypt=true;trustServerCertificate=true;"
     username = "<WSO2_DB_USER>"
     password = "<WSO2_DB_PASSWORD>"
     driver = "com.microsoft.sqlserver.jdbc.SQLServerDriver"

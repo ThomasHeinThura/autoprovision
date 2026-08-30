@@ -37,3 +37,7 @@ sql-docs*
 reference/
 
 credential*
+
+# Local incident/runbook writeups — internal topology, IPs, outage timelines.
+# Never belongs in this public repo.
+issues-tracker/

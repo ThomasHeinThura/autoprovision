@@ -38,7 +38,7 @@ data:
     # and the IS 7.2.0 pack dbscripts loaded into those DBs (see mssql/is_mssql.sql header).
     [database.identity_db]
     type = "mssql"
-    url = "jdbc:sqlserver://<MSSQL_DB_URL>:1433;databaseName=WSO2_IS_IDENTITY_DB;encrypt=true;trustServerCertificate=true;"
+    url = "jdbc:sqlserver://<MSSQL_DB_URL>:1433;databaseName=WSO2_IS_IDENTITY_DB;SendStringParametersAsUnicode=false;encrypt=true;trustServerCertificate=true;"
     username = "<WSO2_DB_USER>"
     password = "<WSO2_DB_PASSWORD>"
     driver = "com.microsoft.sqlserver.jdbc.SQLServerDriver"
@@ -53,7 +53,7 @@ data:
 
     [database.shared_db]
     type = "mssql"
-    url = "jdbc:sqlserver://<MSSQL_DB_URL>:1433;databaseName=WSO2_IS_SHARED_DB;encrypt=true;trustServerCertificate=true;"
+    url = "jdbc:sqlserver://<MSSQL_DB_URL>:1433;databaseName=WSO2_IS_SHARED_DB;SendStringParametersAsUnicode=false;encrypt=true;trustServerCertificate=true;"
     username = "<WSO2_DB_USER>"
     password = "<WSO2_DB_PASSWORD>"
     driver = "com.microsoft.sqlserver.jdbc.SQLServerDriver"
@@ -69,7 +69,7 @@ data:
     [datasource.WSO2ConsentDS]
     id = "WSO2CONSENT_DB"
     type = "mssql"
-    url = "jdbc:sqlserver://<MSSQL_DB_URL>:1433;databaseName=WSO2_IS_IDENTITY_DB;encrypt=true;trustServerCertificate=true;"
+    url = "jdbc:sqlserver://<MSSQL_DB_URL>:1433;databaseName=WSO2_IS_IDENTITY_DB;SendStringParametersAsUnicode=false;encrypt=true;trustServerCertificate=true;"
     username = "<WSO2_DB_USER>"
     password = "<WSO2_DB_PASSWORD>"
     driver = "com.microsoft.sqlserver.jdbc.SQLServerDriver"
@@ -79,7 +79,7 @@ data:
     [datasource.AgentIdentity]
     id = "AgentIdentity"
     type = "mssql"
-    url = "jdbc:sqlserver://<MSSQL_DB_URL>:1433;databaseName=WSO2_IS_IDENTITY_DB;encrypt=true;trustServerCertificate=true;"
+    url = "jdbc:sqlserver://<MSSQL_DB_URL>:1433;databaseName=WSO2_IS_IDENTITY_DB;SendStringParametersAsUnicode=false;encrypt=true;trustServerCertificate=true;"
     username = "<WSO2_DB_USER>"
     password = "<WSO2_DB_PASSWORD>"
     driver = "com.microsoft.sqlserver.jdbc.SQLServerDriver"
@@ -94,7 +94,7 @@ data:
 
     [database.user]
     type = "mssql"
-    url = "jdbc:sqlserver://<MSSQL_DB_URL>:1433;databaseName=WSO2_IS_SHARED_DB;encrypt=true;trustServerCertificate=true;"
+    url = "jdbc:sqlserver://<MSSQL_DB_URL>:1433;databaseName=WSO2_IS_SHARED_DB;SendStringParametersAsUnicode=false;encrypt=true;trustServerCertificate=true;"
     username = "<WSO2_DB_USER>"
     password = "<WSO2_DB_PASSWORD>"
     driver = "com.microsoft.sqlserver.jdbc.SQLServerDriver"
